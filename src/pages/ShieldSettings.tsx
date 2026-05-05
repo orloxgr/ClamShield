@@ -1,0 +1,156 @@
+import { useEffect, useState } from "react";
+import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, SlidersHorizontal, Bell, Plus, X } from "lucide-react";
+
+export default function ShieldSettings() {
+  const [settings, setSettings] = useState<any>(null);
+  const [systemPaths, setSystemPaths] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
+    fetch("/api/system-paths").then(r => r.json()).then(d => setSystemPaths(d));
+  }, []);
+
+  const updateSettings = async (nextSettings: any) => {
+    setSettings(nextSettings);
+    setSaving(true);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nextSettings)
+    });
+    setSaving(false);
+  };
+
+  const toggle = (key: string) => {
+    if (!settings) return;
+    updateSettings({ ...settings, [key]: !settings[key] });
+  };
+
+  const handleAddFolder = async () => {
+    try {
+      const res = await fetch("/api/select-folder");
+      const data = await res.json();
+      if (res.ok && data.path) {
+        const folders = Array.isArray(settings.customWatchedFolders) ? settings.customWatchedFolders : [];
+        if (!folders.includes(data.path)) {
+          updateSettings({ ...settings, customWatchedFolders: [...folders, data.path] });
+        }
+      } else if (data.error) {
+        console.warn("Folder picker ignored or failed:", data.error);
+      }
+    } catch (e) {
+      console.error("Failed to add folder:", e);
+    }
+  };
+
+  const handleRemoveFolder = (pathToRemove: string) => {
+    const folders = Array.isArray(settings.customWatchedFolders) ? settings.customWatchedFolders : [];
+    updateSettings({ ...settings, customWatchedFolders: folders.filter((p: string) => p !== pathToRemove) });
+  };
+
+  if (!settings) return <div className="p-8">Loading...</div>;
+
+  const defaultFolders = [
+    { key: 'monitorDownloads', name: 'Downloads Folder', pathLabel: systemPaths?.Downloads },
+    { key: 'monitorDesktop', name: 'Desktop Folder', pathLabel: systemPaths?.Desktop },
+    { key: 'monitorDocuments', name: 'Documents Folder', pathLabel: systemPaths?.Documents },
+  ];
+
+  return (
+    <div className="p-8 max-w-4xl mx-auto space-y-8">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-2">Real-Time Shield</h1>
+          <p className="text-slate-400">Background protection against new and modified files</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className={settings.shieldEnabled ? "text-emerald-400 font-medium" : "text-slate-500 font-medium"}>
+            {settings.shieldEnabled ? "ON" : "OFF"}
+          </span>
+          <button 
+            onClick={() => toggle('shieldEnabled')}
+            className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none ${settings.shieldEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
+          >
+            <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${settings.shieldEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+      </header>
+
+      <div className={`space-y-6 ${!settings.shieldEnabled && 'opacity-50 pointer-events-none'}`}>
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between font-medium text-slate-200">
+            <div className="flex items-center gap-2">
+               <SlidersHorizontal className="w-5 h-5 text-indigo-400" />
+               Monitored Locations
+            </div>
+            <button 
+                onClick={handleAddFolder}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 rounded-md transition-colors"
+            >
+                <Plus className="w-3.5 h-3.5" />
+                Add Folder
+            </button>
+          </div>
+          <div className="p-4 space-y-4">
+            {defaultFolders.map(folder => (
+              <label key={folder.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+                <div>
+                    <span className="text-slate-300 block">{folder.name}</span>
+                    <span className="text-xs text-slate-500 block">{folder.pathLabel || "Loading path..."}</span>
+                </div>
+                <input 
+                  type="checkbox" 
+                  checked={settings[folder.key]} 
+                  onChange={() => toggle(folder.key)}
+                  className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                />
+              </label>
+            ))}
+
+            {Array.isArray(settings.customWatchedFolders) && settings.customWatchedFolders.length > 0 && (
+                <div className="pt-4 mt-4 border-t border-slate-800">
+                    <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Custom Folders</h3>
+                    <div className="space-y-2">
+                    {settings.customWatchedFolders.map((customPath: string) => (
+                        <div key={customPath} className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
+                            <span className="text-slate-300 text-sm font-mono truncate mr-4">{customPath}</span>
+                            <button 
+                                onClick={() => handleRemoveFolder(customPath)} 
+                                className="text-slate-500 hover:text-red-400 bg-transparent rounded-full p-1 transition-colors shrink-0"
+                                title="Remove Folder"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                    ))}
+                    </div>
+                </div>
+            )}
+          </div>
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
+            <Bell className="w-5 h-5 text-indigo-400" />
+            Notifications
+          </div>
+          <div className="p-4 space-y-4">
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Show bottom-right popup on file scan</span>
+                <span className="text-xs text-slate-500">Displays a small toast when downloading/modifying files</span>
+              </div>
+              <input 
+                type="checkbox" 
+                checked={settings.shieldShowPopup} 
+                onChange={() => toggle('shieldShowPopup')}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
