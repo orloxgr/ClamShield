@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Save, Folder, Shield, Sliders, ShieldAlert, Heart } from "lucide-react";
+import { Save, Folder, Shield, Sliders, ShieldAlert, Heart, Send } from "lucide-react";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -239,7 +239,7 @@ export default function SettingsPage() {
             ClamAV Paths
           </div>
           <div className="p-6 space-y-4">
-            {['clamavDir', 'clamscanPath', 'freshclamPath', 'freshclamConf', 'databaseDir', 'quarantineDir', 'logsDir'].map((key) => (
+            {['clamavDir', 'clamscanPath', 'freshclamPath', 'freshclamConf', 'clamdPath', 'clamdscanPath', 'clamdConf', 'clamsubmitPath', 'databaseDir', 'quarantineDir', 'logsDir'].map((key) => (
               <div key={key}>
                 <label className="block text-sm font-medium text-slate-400 mb-1 capitalize">
                   {key.replace(/([A-Z])/g, ' $1').trim()}
@@ -252,6 +252,36 @@ export default function SettingsPage() {
                 />
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
+            <Send className="w-5 h-5 text-indigo-400" />
+            ClamSubmit
+          </div>
+          <div className="p-6 space-y-4">
+            <p className="text-sm text-slate-400">
+              Submit quarantined false-positive samples to ClamAV manually. Samples are never uploaded automatically.
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-slate-400 mb-1">Sender name</label>
+              <input
+                type="text"
+                value={settings.clamsubmitSenderName || ""}
+                onChange={e => setSettings({...settings, clamsubmitSenderName: e.target.value})}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-400 mb-1">Email</label>
+              <input
+                type="email"
+                value={settings.clamsubmitEmail || ""}
+                onChange={e => setSettings({...settings, clamsubmitEmail: e.target.value})}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
+              />
+            </div>
           </div>
         </section>
 

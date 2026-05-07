@@ -13,9 +13,14 @@ interface ScanContextType {
 
 const ScanContext = createContext<ScanContextType | null>(null);
 const MAX_TERMINAL_LINES = 800;
+const MAX_TERMINAL_LINE_LENGTH = 2000;
 
 function appendOutput(previous: string[], next: string[]) {
-  return [...previous, ...next].slice(-MAX_TERMINAL_LINES);
+  const safeNext = next.map(line => {
+    const text = typeof line === "string" ? line : (JSON.stringify(line) ?? String(line));
+    return text.length > MAX_TERMINAL_LINE_LENGTH ? `${text.slice(0, MAX_TERMINAL_LINE_LENGTH)}...` : text;
+  });
+  return [...previous, ...safeNext].slice(-MAX_TERMINAL_LINES);
 }
 
 export function ScanProvider({ children }: { children: React.ReactNode }) {
@@ -91,7 +96,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
           const res = await fetch(`/api/scan/${jobId}`);
           if (res.ok) {
             const data = await res.json();
-            if (data.logs && data.logs.length > 0) {
+            if (Array.isArray(data.logs) && data.logs.length > 0) {
               setOutput(prev => appendOutput(prev, data.logs));
             }
             if (data.status === "done") {

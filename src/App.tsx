@@ -16,11 +16,54 @@ import ExceptionsPage from "./pages/Exceptions";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { ScanProvider, useScan } from "./context/ScanContext";
-import { useEffect, useState } from "react";
+import React, { type ReactNode, useEffect, useState } from "react";
 
 // Tailwind class merger utility
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+  }
+
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: any) {
+    console.error("ClamShield UI crashed:", error, info);
+  }
+
+  render() {
+    if (!this.state.error) return (this as any).props.children;
+
+    return (
+      <div className="h-screen bg-slate-950 text-slate-200 flex items-center justify-center p-8">
+        <div className="max-w-xl w-full bg-slate-900 border border-red-500/30 rounded-xl p-6 shadow-2xl">
+          <div className="flex items-center gap-3 text-red-400 mb-3">
+            <AlertTriangle className="w-5 h-5" />
+            <h1 className="font-semibold">ClamShield UI recovered from an error</h1>
+          </div>
+          <p className="text-sm text-slate-400 mb-4">
+            The scan service can keep running in the background. Reload the interface to continue.
+          </p>
+          <pre className="max-h-40 overflow-auto rounded bg-slate-950 border border-slate-800 p-3 text-xs text-slate-400 mb-4">
+            {this.state.error.message}
+          </pre>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium"
+          >
+            Reload UI
+          </button>
+        </div>
+      </div>
+    );
+  }
 }
 
 function SetupWizard({ status, onComplete }: { status: any, onComplete: () => void }) {
@@ -220,24 +263,30 @@ function Sidebar({ status }: { status?: any }) {
 function PendingThreatsModal() {
   const [threats, setThreats] = useState<any[]>([]);
 
+  const showThreatNotification = (threat: any) => {
+    try {
+      new Notification('ClamShield Alert', {
+        body: `Threat detected: ${threat.threatName}\nFile: ${threat.originalPath}`,
+        icon: '/icon.png'
+      });
+    } catch (e) {
+      console.error("Failed to show threat notification:", e);
+    }
+  };
+
   const fetchThreats = () => {
     fetch("/api/pending-threats").then(r => r.json()).then(data => {
       if (Array.isArray(data)) {
         if (data.length > threats.length && typeof Notification !== "undefined" && Notification.permission !== 'denied') {
-          // Request permission and show notification for new threats
+          const newestThreat = data[data.length - 1];
           if (Notification.permission === 'granted') {
-             new Notification('ClamShield Alert', {
-                body: `Threat detected: ${data[data.length-1].threatName}\nFile: ${data[data.length-1].originalPath}`,
-                icon: '/icon.png'
-             });
+             showThreatNotification(newestThreat);
           } else {
              Notification.requestPermission().then(perm => {
                  if(perm === 'granted') {
-                    new Notification('ClamShield Alert', {
-                        body: `Threat detected: ${data[data.length-1].threatName}\nFile: ${data[data.length-1].originalPath}`
-                     });
+                    showThreatNotification(newestThreat);
                  }
-             });
+             }).catch(e => console.error("Notification permission failed:", e));
           }
         }
         setThreats(data);
@@ -314,25 +363,27 @@ export default function App() {
 
   return (
     <ScanProvider>
-      <Router>
-        <div className="flex h-screen bg-slate-950 text-slate-200 selection:bg-emerald-500/30">
-          <SetupWizard status={status} onComplete={fetchStatus} />
-          <Sidebar status={status} />
-          <main className="flex-1 overflow-auto relative">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/scan" element={<Scan />} />
-              <Route path="/shield" element={<ShieldSettings />} />
-              <Route path="/exceptions" element={<ExceptionsPage />} />
-              <Route path="/quarantine" element={<Quarantine />} />
-              <Route path="/updates" element={<Updates />} />
-              <Route path="/history" element={<HistoryPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </main>
-          <PendingThreatsModal />
-        </div>
-      </Router>
+      <ErrorBoundary>
+        <Router>
+          <div className="flex h-screen bg-slate-950 text-slate-200 selection:bg-emerald-500/30">
+            <SetupWizard status={status} onComplete={fetchStatus} />
+            <Sidebar status={status} />
+            <main className="flex-1 overflow-auto relative">
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/scan" element={<Scan />} />
+                <Route path="/shield" element={<ShieldSettings />} />
+                <Route path="/exceptions" element={<ExceptionsPage />} />
+                <Route path="/quarantine" element={<Quarantine />} />
+                <Route path="/updates" element={<Updates />} />
+                <Route path="/history" element={<HistoryPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Routes>
+            </main>
+            <PendingThreatsModal />
+          </div>
+        </Router>
+      </ErrorBoundary>
     </ScanProvider>
   );
 }
