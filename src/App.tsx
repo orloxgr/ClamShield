@@ -262,92 +262,6 @@ function Sidebar({ status }: { status?: any }) {
   );
 }
 
-function PendingThreatsModal() {
-  const [threats, setThreats] = useState<any[]>([]);
-
-  const showThreatNotification = (threat: any) => {
-    try {
-      new Notification('ClamShield Alert', {
-        body: `Threat detected: ${threat.threatName}\nFile: ${threat.originalPath}`,
-        icon: '/icon.png'
-      });
-    } catch (e) {
-      console.error("Failed to show threat notification:", e);
-    }
-  };
-
-  const fetchThreats = () => {
-    fetch("/api/pending-threats").then(r => r.json()).then(data => {
-      if (Array.isArray(data)) {
-        if (data.length > threats.length && typeof Notification !== "undefined" && Notification.permission !== 'denied') {
-          const newestThreat = data[data.length - 1];
-          if (Notification.permission === 'granted') {
-             showThreatNotification(newestThreat);
-          } else {
-             Notification.requestPermission().then(perm => {
-                 if(perm === 'granted') {
-                    showThreatNotification(newestThreat);
-                 }
-             }).catch(e => console.error("Notification permission failed:", e));
-          }
-        }
-        setThreats(data);
-      }
-    }).catch(e => console.error("Error fetching pending threats:", e));
-  };
-
-  useEffect(() => {
-    fetchThreats();
-    const interval = setInterval(fetchThreats, 2000);
-    return () => clearInterval(interval);
-  }, [threats.length]);
-
-  if (threats.length === 0) return null;
-
-  const handleAction = async (id: string, action: string) => {
-    try {
-      await fetch(`/api/pending-threats/${id}/action`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action })
-      });
-      fetchThreats();
-    } catch (e) {
-      console.error("Failed to handle threat:", e);
-    }
-  };
-
-  return (
-    <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-4 w-[400px]">
-      {threats.map((t, idx) => (
-        <div key={t.id || idx} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl p-5 border-t-4 border-t-red-500 animate-in slide-in-from-bottom-5">
-          <div className="flex items-center gap-3 text-red-500 mb-2">
-            <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-            <h2 className="font-bold text-sm">Threat Detected</h2>
-          </div>
-          <p className="text-red-400 font-medium mb-1 truncate text-sm" title={t.threatName}>{t.threatName}</p>
-          <p className="text-slate-400 font-mono text-xs break-all mb-4 truncate" title={t.originalPath}>{t.originalPath}</p>
-          
-          <div className="flex justify-end gap-2">
-            <button 
-             onClick={() => handleAction(t.id, "exception")}
-             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium transition-colors border border-slate-700"
-            >
-              Add to exceptions
-            </button>
-            <button 
-             onClick={() => handleAction(t.id, "quarantine")}
-             className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors border border-red-600"
-            >
-              Quarantine
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export default function App() {
   const [status, setStatus] = useState<any>(null);
 
@@ -383,7 +297,6 @@ export default function App() {
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </main>
-            <PendingThreatsModal />
           </div>
         </Router>
       </ErrorBoundary>

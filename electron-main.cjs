@@ -77,13 +77,15 @@ function createAlertWindow(threat, port, playSound) {
    
    if (playSound) shell.beep();
 
-   const offset = (activeAlerts.size - 1) * 200; 
+   const alertWidth = 460;
+   const alertHeight = 190;
+   const offset = (activeAlerts.size - 1) * 210; 
 
    const alertWin = new BrowserWindow({
-      width: 420,
-      height: 180,
-      x: workArea.x + workArea.width - 420 - 20,
-      y: workArea.y + workArea.height - 180 - 20 - offset,
+      width: alertWidth,
+      height: alertHeight,
+      x: workArea.x + workArea.width - alertWidth - 20,
+      y: workArea.y + workArea.height - alertHeight - 20 - offset,
       frame: false,
       transparent: false,
       backgroundColor: '#0f172a',

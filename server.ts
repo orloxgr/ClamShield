@@ -2332,6 +2332,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 exceptions.push(threat.originalPath);
                 await saveExceptions(exceptions);
             }
+        } else if (action === "results") {
+            await addScanResult({
+                source: "shield",
+                scanType: "shield",
+                target: threat.originalPath,
+                originalPath: threat.originalPath,
+                threatName: threat.threatName
+            });
         }
         res.json({ success: true });
     });
