@@ -1201,6 +1201,7 @@ async function startServer() {
                     const qMap = await getQuarantineMap();
                     const exceptions = await getExceptions();
                     let quarantineMapChanged = false;
+                    let actionTaken = "None";
 
                     for (const line of activeJobs[jobId].analysisLogs || []) {
                         if (line.includes(" FOUND")) {
@@ -1219,8 +1220,10 @@ async function startServer() {
                                         qMap[quarantined.fileName] = quarantined.metadata;
                                         quarantineMapChanged = true;
                                         appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
+                                        actionTaken = "Quarantined";
                                     } catch (e: any) {
                                         appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
+                                        actionTaken = "Quarantine Failed";
                                     }
                                 } else if (action === "ask") {
                                     pendingThreats.push({
@@ -1230,8 +1233,10 @@ async function startServer() {
                                         timestamp: Date.now()
                                     });
                                     appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
+                                    actionTaken = "Pending";
                                 } else {
                                     appendJobLogs(jobId, [`Threat found but action is set to Warn: ${originalPath}`]);
+                                    actionTaken = "Warned";
                                 }
                             }
                         }
@@ -1274,7 +1279,7 @@ async function startServer() {
                         threatsFound,
                         scannedFiles,
                         duration,
-                        actionTaken: isThreat ? "Quarantined" : "None"
+                        actionTaken: isThreat ? actionTaken : "None"
                     });
                     
                     delete activeJobs[jobId];
@@ -1800,6 +1805,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 const qMap = await getQuarantineMap();
                 const exceptions = await getExceptions();
                 let quarantineMapChanged = false;
+                let actionTaken = "None";
 
                 for (const line of activeJobs[jobId].analysisLogs || []) {
                     if (line.includes(" FOUND")) {
@@ -1818,8 +1824,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                                     qMap[quarantined.fileName] = quarantined.metadata;
                                     quarantineMapChanged = true;
                                     appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
+                                    actionTaken = "Quarantined";
                                 } catch (e: any) {
                                     appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
+                                    actionTaken = "Quarantine Failed";
                                 }
                             } else if (action === "ask") {
                                 pendingThreats.push({
@@ -1829,8 +1837,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                                     timestamp: Date.now()
                                 });
                                 appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
+                                actionTaken = "Pending";
                             } else {
                                 appendJobLogs(jobId, [`Threat found but action is set to Warn: ${originalPath}`]);
+                                actionTaken = "Warned";
                             }
                         }
                     }
@@ -1855,7 +1865,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     await fs.unlink(memoryFileListPath).catch(() => {});
                 }
 
-                const isThreat = code === 1;
+                const isThreat = code === 1 || threatsFound > 0;
                 await addHistory({
                     type: `scan-${type}`,
                     target: type === "memory" ? "Running process images" : (effectiveTarget || "C:\\"),
@@ -1863,7 +1873,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     threatsFound,
                     scannedFiles: type === "memory" && scannedFiles === 0 ? memoryProcessCount : scannedFiles, 
                     duration,
-                    actionTaken: isThreat ? "Quarantined" : "None"
+                    actionTaken: isThreat ? actionTaken : "None"
                 });
 
                 if ((type === "disk" || type === "folder" || type === "file") && effectiveTarget) {

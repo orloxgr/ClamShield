@@ -223,7 +223,7 @@ function PendingThreatsModal() {
   const fetchThreats = () => {
     fetch("/api/pending-threats").then(r => r.json()).then(data => {
       if (Array.isArray(data)) {
-        if (data.length > threats.length && Notification.permission !== 'denied') {
+        if (data.length > threats.length && typeof Notification !== "undefined" && Notification.permission !== 'denied') {
           // Request permission and show notification for new threats
           if (Notification.permission === 'granted') {
              new Notification('ClamShield Alert', {
@@ -330,6 +330,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </main>
+          <PendingThreatsModal />
         </div>
       </Router>
     </ScanProvider>
