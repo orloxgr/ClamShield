@@ -227,6 +227,18 @@ export default function SettingsPage() {
                 />
               </label>
             ))}
+            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
+              <div>
+                <span className="text-slate-300 block text-sm">Auto-detect browser download folders</span>
+                <span className="text-xs text-slate-500">Adds installed Chrome, Edge, Firefox, Brave, Opera, Vivaldi, and Chromium download paths.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.autoDetectBrowserDownloads !== false}
+                onChange={e => setSettings({...settings, autoDetectBrowserDownloads: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
             <div className="flex items-center justify-between border-t border-slate-800 pt-4">
               <label className="text-sm font-medium text-slate-400 block w-1/3">Shield Folder Depth</label>
               <input

@@ -10,6 +10,7 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 - One-click FreshClam signature updates.
 - Manual full system, folder, file, and memory scans.
 - Low-impact real-time shield for watched folders.
+- Automatic detection of custom Desktop, Documents, Downloads, and browser download folders.
 - Shield cache to avoid repeatedly scanning unchanged files.
 - User-controlled shield depth and concurrent scan count.
 - Quarantine management and threat action prompts.

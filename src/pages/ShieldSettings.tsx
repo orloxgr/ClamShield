@@ -56,6 +56,7 @@ export default function ShieldSettings() {
     { key: 'monitorDesktop', name: 'Desktop Folder', pathLabel: systemPaths?.Desktop },
     { key: 'monitorDocuments', name: 'Documents Folder', pathLabel: systemPaths?.Documents },
   ];
+  const browserDownloads = Array.isArray(systemPaths?.BrowserDownloads) ? systemPaths.BrowserDownloads : [];
 
   return (
     <div className="p-8 max-w-4xl mx-auto space-y-8">
@@ -107,6 +108,34 @@ export default function ShieldSettings() {
                 />
               </label>
             ))}
+
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Browser Download Folders</span>
+                <span className="text-xs text-slate-500 block">
+                  {browserDownloads.length > 0
+                    ? `${browserDownloads.length} installed browser location${browserDownloads.length === 1 ? "" : "s"} detected`
+                    : "No custom browser download folders detected"}
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.autoDetectBrowserDownloads !== false}
+                onChange={() => toggle('autoDetectBrowserDownloads')}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+
+            {settings.autoDetectBrowserDownloads !== false && browserDownloads.length > 0 && (
+              <div className="ml-2 mr-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+                {browserDownloads.map((item: any) => (
+                  <div key={`${item.browser}-${item.profile}-${item.path}`} className="flex flex-col gap-0.5">
+                    <span className="text-xs font-medium text-slate-400">{item.browser} / {item.profile}</span>
+                    <span className="text-xs text-slate-500 font-mono break-all">{item.path}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {Array.isArray(settings.customWatchedFolders) && settings.customWatchedFolders.length > 0 && (
                 <div className="pt-4 mt-4 border-t border-slate-800">
