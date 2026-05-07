@@ -49,10 +49,9 @@ export default function ResultsPage() {
       const res = await fetch("/api/results/quarantine-all", { method: "POST" });
       const data = await res.json();
       if (!res.ok && res.status !== 207) throw new Error(data.error || "Bulk quarantine failed.");
-      const missingCount = Array.isArray(data.errors) ? data.errors.filter((item: any) => String(item.error || "").includes("no longer available")).length : 0;
       setMessage(data.errors?.length
-        ? `Quarantined ${data.quarantinedCount}. ${data.errors.length} item(s) could not be moved${missingCount ? `, ${missingCount} because the original file no longer exists` : ""}.`
-        : `Quarantined ${data.quarantinedCount} item(s).`);
+        ? `Quarantined ${data.quarantinedCount}. Removed ${data.removedUnavailableCount || 0} unavailable item(s). ${data.errors.length} item(s) could not be moved.`
+        : `Quarantined ${data.quarantinedCount} item(s). Removed ${data.removedUnavailableCount || 0} unavailable item(s).`);
       fetchItems();
     } catch (e: any) {
       setMessage(e.message || "Bulk quarantine failed.");
@@ -139,7 +138,12 @@ export default function ResultsPage() {
                   </td>
                   <td className="px-6 py-4 text-slate-400 font-mono text-xs break-all">{item.originalPath}</td>
                   <td className="px-6 py-4 text-slate-400 capitalize">{item.source || "scan"}</td>
-                  <td className="px-6 py-4">{new Date(item.timestamp).toLocaleString()}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-col gap-1">
+                      <span>{new Date(item.timestamp).toLocaleString()}</span>
+                      {item.available === false && <span className="text-xs text-amber-400">Original file unavailable</span>}
+                    </div>
+                  </td>
                   <td className="px-6 py-4">
                     <div className="flex justify-end gap-2">
                       <button

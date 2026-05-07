@@ -2156,7 +2156,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.get("/api/results", async (req, res) => {
-        res.json(await getScanResults());
+        const results = await getScanResults();
+        res.json(results.map((result: any) => ({
+            ...result,
+            available: Boolean(result.originalPath && existsSync(result.originalPath))
+        })));
     });
 
     app.post("/api/results/quarantine-all", async (req, res) => {
@@ -2164,8 +2168,13 @@ if ($dialog.ShowDialog() -eq 'OK') {
         const remaining: any[] = [];
         const errors: any[] = [];
         let quarantinedCount = 0;
+        let removedUnavailableCount = 0;
 
         for (const result of results) {
+            if (!result.originalPath || !existsSync(result.originalPath)) {
+                removedUnavailableCount++;
+                continue;
+            }
             try {
                 await quarantineResultItem(settings, result);
                 quarantinedCount++;
@@ -2185,7 +2194,12 @@ if ($dialog.ShowDialog() -eq 'OK') {
             duration: 0,
             actionTaken: `Quarantined ${quarantinedCount} result${quarantinedCount === 1 ? "" : "s"}`
         });
-        res.status(errors.length === 0 ? 200 : 207).json({ success: errors.length === 0, quarantinedCount, errors });
+        res.status(errors.length === 0 ? 200 : 207).json({
+            success: errors.length === 0,
+            quarantinedCount,
+            removedUnavailableCount,
+            errors
+        });
     });
 
     app.post("/api/results/clear-missing", async (req, res) => {

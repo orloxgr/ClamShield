@@ -3,7 +3,7 @@
   "description": "ClamShield - Windows GUI for ClamAV",
   "author": "Byron Iniotakis",
   "private": true,
-  "version": "1.0.43",
+  "version": "1.0.44",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {

@@ -155,6 +155,19 @@ function createResultsReminderWindow(reminder, port) {
       resultsReminderWindow = null;
    });
 
+   resultsReminderWindow.webContents.on('will-navigate', (event, targetUrl) => {
+      if (targetUrl === `http://127.0.0.1:${port}/results`) {
+         event.preventDefault();
+         if (mainWindow) {
+            mainWindow.show();
+            mainWindow.loadURL(targetUrl).catch(err => console.error("Failed to open Results", err));
+         }
+         if (resultsReminderWindow && !resultsReminderWindow.isDestroyed()) {
+            resultsReminderWindow.close();
+         }
+      }
+   });
+
    const reminderUrl = `http://127.0.0.1:${port}/results-reminder.html?count=${encodeURIComponent(reminder.count || 0)}&port=${port}`;
    resultsReminderWindow.loadURL(reminderUrl).catch(err => console.error("Failed to load results reminder HTML", err));
 }

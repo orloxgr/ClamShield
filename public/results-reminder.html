@@ -128,7 +128,7 @@
     const count = params.get("count") || "0";
     document.getElementById("count").textContent = `${count} item${count === "1" ? "" : "s"} waiting`;
 
-    async function sendAction(action) {
+    async function sendAction(action, closeAfter = true) {
       const buttons = document.querySelectorAll("button");
       buttons.forEach(button => button.disabled = true);
       try {
@@ -138,7 +138,7 @@
           body: JSON.stringify({ action })
         });
         if (!response.ok) throw new Error("Action failed");
-        window.close();
+        if (closeAfter) window.close();
       } catch {
         buttons.forEach(button => button.disabled = false);
       }
@@ -147,7 +147,10 @@
     document.getElementById("remind10").addEventListener("click", () => sendAction("remind-10"));
     document.getElementById("remind60").addEventListener("click", () => sendAction("remind-60"));
     document.getElementById("forget").addEventListener("click", () => sendAction("forget"));
-    document.getElementById("open").addEventListener("click", () => sendAction("open"));
+    document.getElementById("open").addEventListener("click", async () => {
+      await sendAction("open", false);
+      window.location.href = `http://127.0.0.1:${port}/results`;
+    });
   </script>
 </body>
 </html>
