@@ -37,6 +37,7 @@ const defaultSettings = {
     logsDir: path.join(programDataDir, "logs"),
     defaultAction: "ask",
     actionOnDetection: "ask",
+    scanDetectionAction: "results",
     autoQuarantine: false,
     autoUpdateEnabled: true,
     updateIntervalHours: 24,
@@ -880,9 +881,13 @@ async function loadConfig() {
     try {
         const data = await fs.readFile(configPath, "utf8");
         const parsed = JSON.parse(data);
+        const actionOnDetection = parsed.actionOnDetection === "warn" ? "ask" : (parsed.actionOnDetection || defaultSettings.actionOnDetection);
+        const scanDetectionAction = parsed.scanDetectionAction || (parsed.actionOnDetection === "quarantine" || parsed.autoQuarantine ? "quarantine" : defaultSettings.scanDetectionAction);
         return {
             ...defaultSettings,
             ...parsed,
+            actionOnDetection,
+            scanDetectionAction,
             eulaAccepted: parsed.eulaAccepted !== false
         };
     } catch {
@@ -1044,6 +1049,65 @@ async function restoreQuarantinedFileAndAddException(settings: any, fileName: st
     });
 
     return { restoredPath: originalPath };
+}
+
+function getScanResultsPath() {
+    return path.join(programDataDir, "scan_results.json");
+}
+
+async function getScanResults() {
+    try {
+        const data = JSON.parse(await fs.readFile(getScanResultsPath(), "utf8"));
+        return Array.isArray(data) ? data : [];
+    } catch {
+        return [];
+    }
+}
+
+async function saveScanResults(results: any[]) {
+    await fs.writeFile(getScanResultsPath(), JSON.stringify(results, null, 2));
+}
+
+async function addScanResult(result: any) {
+    const results = await getScanResults();
+    const originalPath = path.resolve(result.originalPath);
+    const existing = results.find((item: any) =>
+        item.originalPath && path.resolve(item.originalPath).toLowerCase() === originalPath.toLowerCase()
+    );
+    if (existing) {
+        Object.assign(existing, {
+            ...result,
+            originalPath,
+            timestamp: Date.now()
+        });
+    } else {
+        results.unshift({
+            id: Date.now().toString() + randomBytes(4).toString("hex"),
+            timestamp: Date.now(),
+            originalPath,
+            ...result
+        });
+    }
+    await saveScanResults(results.sort((a: any, b: any) => Number(b.timestamp) - Number(a.timestamp)));
+}
+
+async function removeScanResult(resultId: string) {
+    const results = await getScanResults();
+    const index = results.findIndex((item: any) => item.id === resultId);
+    if (index === -1) {
+        throw new Error("Result not found.");
+    }
+    const [item] = results.splice(index, 1);
+    await saveScanResults(results);
+    return item;
+}
+
+async function quarantineResultItem(settings: any, result: any) {
+    const qMap = await getQuarantineMap();
+    const quarantined = await quarantineFile(result.originalPath, result.threatName || "Unknown Threat", settings.quarantineDir);
+    qMap[quarantined.fileName] = quarantined.metadata;
+    await saveQuarantineMap(qMap);
+    return quarantined;
 }
 
 async function addHistory(entry: any) {
@@ -1265,7 +1329,7 @@ async function startServer() {
                                     continue;
                                 }
                                 const threatName = match[2];
-                                const action = currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine" : "warn");
+                                const action = currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine" : "ask");
                                 if (action === "quarantine") {
                                     try {
                                         const quarantined = await quarantineFile(originalPath, threatName, currentSettings.quarantineDir);
@@ -1287,8 +1351,15 @@ async function startServer() {
                                     appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
                                     actionTaken = "Pending";
                                 } else {
-                                    appendJobLogs(jobId, [`Threat found but action is set to Warn: ${originalPath}`]);
-                                    actionTaken = "Warned";
+                                    await addScanResult({
+                                        source: "shield",
+                                        scanType: "shield",
+                                        target: filePath,
+                                        originalPath,
+                                        threatName
+                                    });
+                                    appendJobLogs(jobId, [`Threat found, sent silently to Results: ${originalPath}`]);
+                                    actionTaken = "Sent to Results";
                                 }
                             }
                         }
@@ -1739,22 +1810,20 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     const filePath = path.join(testPath, "eicar.com.txt");
                     activeJobs[jobId].logs.push(`FOUND: ${filePath}: Eicar-Test-Signature`);
                     
-                    const action = settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "warn");
-                    if (action === "ask") {
-                        pendingThreats.push({
-                            id: Date.now().toString() + Math.random().toString(36).substring(7),
-                            originalPath: filePath,
-                            threatName: "Eicar-Test-Signature (Simulated)",
-                            timestamp: Date.now()
-                        });
-                        activeJobs[jobId].logs.push(`Threat found, waiting for user action: ${filePath}`);
-                        actionTaken = "Pending";
-                    } else if (action === "quarantine") {
+                    const action = settings.scanDetectionAction || "results";
+                    if (action === "quarantine") {
                         activeJobs[jobId].logs.push(`Quarantined: ${filePath}`);
                         actionTaken = "Quarantined";
                     } else {
-                        activeJobs[jobId].logs.push(`Threat found but action is set to Warn: ${filePath}`);
-                        actionTaken = "Warned";
+                        await addScanResult({
+                            source: "manual",
+                            scanType: type,
+                            target: effectiveTarget || "C:\\",
+                            originalPath: filePath,
+                            threatName: "Eicar-Test-Signature (Simulated)"
+                        });
+                        activeJobs[jobId].logs.push(`Threat found, sent to Results: ${filePath}`);
+                        actionTaken = "Sent to Results";
                     }
                 }
                 
@@ -1869,7 +1938,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                                 continue;
                             }
                             const threatName = match[2];
-                            const action = settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "warn");
+                            const action = settings.scanDetectionAction || "results";
                             if (action === "quarantine") {
                                 try {
                                     const quarantined = await quarantineFile(originalPath, threatName, settings.quarantineDir);
@@ -1881,18 +1950,16 @@ if ($dialog.ShowDialog() -eq 'OK') {
                                     appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
                                     actionTaken = "Quarantine Failed";
                                 }
-                            } else if (action === "ask") {
-                                pendingThreats.push({
-                                    id: Date.now().toString() + Math.random().toString(36).substring(7),
-                                    originalPath,
-                                    threatName,
-                                    timestamp: Date.now()
-                                });
-                                appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
-                                actionTaken = "Pending";
                             } else {
-                                appendJobLogs(jobId, [`Threat found but action is set to Warn: ${originalPath}`]);
-                                actionTaken = "Warned";
+                                await addScanResult({
+                                    source: "manual",
+                                    scanType: type,
+                                    target: type === "memory" ? "Running process images" : (effectiveTarget || "C:\\"),
+                                    originalPath,
+                                    threatName
+                                });
+                                appendJobLogs(jobId, [`Threat found, sent to Results: ${originalPath}`]);
+                                actionTaken = "Sent to Results";
                             }
                         }
                     }
@@ -2064,6 +2131,87 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json({ jobId, status: "started" });
         } catch(e: any) {
             res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get("/api/results", async (req, res) => {
+        res.json(await getScanResults());
+    });
+
+    app.post("/api/results/quarantine-all", async (req, res) => {
+        const results = await getScanResults();
+        const remaining: any[] = [];
+        const errors: any[] = [];
+        let quarantinedCount = 0;
+
+        for (const result of results) {
+            try {
+                await quarantineResultItem(settings, result);
+                quarantinedCount++;
+            } catch (e: any) {
+                remaining.push(result);
+                errors.push({ id: result.id, path: result.originalPath, error: e.message });
+            }
+        }
+
+        await saveScanResults(remaining);
+        await addHistory({
+            type: "results-quarantine-all",
+            target: "Scan Results",
+            result: errors.length === 0 ? 0 : 1,
+            threatsFound: quarantinedCount,
+            scannedFiles: results.length,
+            duration: 0,
+            actionTaken: `Quarantined ${quarantinedCount} result${quarantinedCount === 1 ? "" : "s"}`
+        });
+        res.status(errors.length === 0 ? 200 : 207).json({ success: errors.length === 0, quarantinedCount, errors });
+    });
+
+    app.post("/api/results/:id/action", async (req, res) => {
+        try {
+            const action = req.body.action;
+            if (action !== "quarantine" && action !== "exception") {
+                return res.status(400).json({ success: false, error: "Invalid action." });
+            }
+
+            const results = await getScanResults();
+            const result = results.find((item: any) => item.id === req.params.id);
+            if (!result) {
+                throw new Error("Result not found.");
+            }
+            if (action === "quarantine") {
+                const quarantined = await quarantineResultItem(settings, result);
+                await saveScanResults(results.filter((item: any) => item.id !== req.params.id));
+                await addHistory({
+                    type: "results-quarantine",
+                    target: result.originalPath,
+                    result: 0,
+                    threatsFound: 1,
+                    scannedFiles: 1,
+                    duration: 0,
+                    actionTaken: "Quarantined from Results"
+                });
+                return res.json({ success: true, quarantined });
+            }
+
+            const exceptions = await getExceptions();
+            if (!exceptions.includes(result.originalPath)) {
+                exceptions.push(result.originalPath);
+                await saveExceptions(exceptions);
+            }
+            await saveScanResults(results.filter((item: any) => item.id !== req.params.id));
+            await addHistory({
+                type: "results-exception",
+                target: result.originalPath,
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 1,
+                duration: 0,
+                actionTaken: "Added to exceptions from Results"
+            });
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e.message });
         }
     });
 

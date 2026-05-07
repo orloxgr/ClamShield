@@ -370,15 +370,27 @@ export default function SettingsPage() {
             )}
             
             <div className="flex items-center justify-between py-2">
-              <span className="text-slate-300 capitalize text-sm mb-1 block">When virus found</span>
+              <span className="text-slate-300 text-sm mb-1 block">Send scanned items to</span>
               <select
-                value={settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "warn")}
+                value={settings.scanDetectionAction || "results"}
+                onChange={e => setSettings({...settings, scanDetectionAction: e.target.value})}
+                className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="results">Results checklist</option>
+                <option value="quarantine">Quarantine</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between py-2">
+              <span className="text-slate-300 text-sm mb-1 block">Real-time shield detections</span>
+              <select
+                value={settings.actionOnDetection === "warn" ? "ask" : (settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "ask"))}
                 onChange={e => setSettings({...settings, actionOnDetection: e.target.value, autoQuarantine: e.target.value === "quarantine"})}
                 className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               >
                 <option value="quarantine">Auto Quarantine</option>
                 <option value="ask">Ask Me</option>
-                <option value="warn">Warn Only</option>
+                <option value="results">Send silently to Results</option>
               </select>
             </div>
 

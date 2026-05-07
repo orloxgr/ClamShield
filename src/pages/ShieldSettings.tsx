@@ -220,6 +220,21 @@ export default function ShieldSettings() {
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">When threat found</span>
+                <span className="text-xs text-slate-500">Choose how the real-time shield handles detections</span>
+              </div>
+              <select
+                value={settings.actionOnDetection === "warn" ? "ask" : (settings.actionOnDetection || "ask")}
+                onChange={e => updateSettings({ ...settings, actionOnDetection: e.target.value, autoQuarantine: e.target.value === "quarantine" })}
+                className="w-56 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="ask">Ask me</option>
+                <option value="quarantine">Auto quarantine</option>
+                <option value="results">Send silently to Results</option>
+              </select>
+            </label>
           </div>
         </section>
       </div>
