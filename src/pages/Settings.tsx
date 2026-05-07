@@ -28,6 +28,12 @@ export default function SettingsPage() {
     return data?.Message || data?.error || "Windows 10/11 blocked the Defender change. Check Tamper Protection or policy.";
   };
 
+  const updateNumberSetting = (key: string, rawValue: string, fallback: number, min: number, max: number) => {
+    const parsed = Number(rawValue);
+    const nextValue = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+    setSettings((current: any) => ({ ...current, [key]: nextValue }));
+  };
+
   const saveSettings = async () => {
     setSaving(true);
     setMsg("");
@@ -125,7 +131,7 @@ export default function SettingsPage() {
                   min={1}
                   max={1440}
                   value={settings.defenderEnforceIntervalMinutes || 5}
-                  onChange={e => setSettings({...settings, defenderEnforceIntervalMinutes: parseInt(e.target.value)})}
+                  onChange={e => updateNumberSetting("defenderEnforceIntervalMinutes", e.target.value, 5, 1, 1440)}
                   className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -285,7 +291,7 @@ export default function SettingsPage() {
                 min={0}
                 max={20}
                 value={settings.shieldDepth ?? 1}
-                onChange={e => setSettings({...settings, shieldDepth: parseInt(e.target.value)})}
+                onChange={e => updateNumberSetting("shieldDepth", e.target.value, 1, 0, 20)}
                 className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </div>
@@ -296,7 +302,7 @@ export default function SettingsPage() {
                 min={1}
                 max={4}
                 value={settings.shieldMaxConcurrentScans ?? 1}
-                onChange={e => setSettings({...settings, shieldMaxConcurrentScans: parseInt(e.target.value)})}
+                onChange={e => updateNumberSetting("shieldMaxConcurrentScans", e.target.value, 1, 1, 4)}
                 className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </div>
@@ -305,7 +311,7 @@ export default function SettingsPage() {
               <input 
                 type="number"
                 value={settings.shieldPollInterval || 1000}
-                onChange={e => setSettings({...settings, shieldPollInterval: parseInt(e.target.value)})}
+                onChange={e => updateNumberSetting("shieldPollInterval", e.target.value, 1000, 100, 60000)}
                 className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </div>
@@ -314,7 +320,7 @@ export default function SettingsPage() {
               <input 
                 type="number"
                 value={settings.shieldStabilityThreshold || 2000}
-                onChange={e => setSettings({...settings, shieldStabilityThreshold: parseInt(e.target.value)})}
+                onChange={e => updateNumberSetting("shieldStabilityThreshold", e.target.value, 2000, 100, 120000)}
                 className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </div>
@@ -357,7 +363,7 @@ export default function SettingsPage() {
                   value={settings.updateIntervalHours || 24}
                   min={1}
                   max={720}
-                  onChange={e => setSettings({...settings, updateIntervalHours: parseInt(e.target.value)})}
+                  onChange={e => updateNumberSetting("updateIntervalHours", e.target.value, 24, 1, 720)}
                   className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -381,7 +387,7 @@ export default function SettingsPage() {
               <input 
                 type="number"
                 value={settings.maxFileSize}
-                onChange={e => setSettings({...settings, maxFileSize: parseInt(e.target.value)})}
+                onChange={e => updateNumberSetting("maxFileSize", e.target.value, 50, 1, 4096)}
                 className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </div>

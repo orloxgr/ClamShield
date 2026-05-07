@@ -46,7 +46,7 @@ ClamShield Setup x.y.z.exe
 
 Run the installer as administrator. On first launch, ClamShield can download and configure the Windows ClamAV engine and then download the latest virus definitions.
 
-During install or upgrade, the installer closes a running `ClamShield.exe` process before replacing files. Upgrades are handled as an in-place file replacement and do not run ClamShield's full uninstall cleanup. Existing ClamAV engine files and signature databases in `C:\ProgramData\ClamShield` are preserved during upgrades.
+During install or upgrade, the installer closes a running `ClamShield.exe` process before replacing files. Upgrades are handled as an in-place file replacement and do not run ClamShield's full uninstall cleanup. Existing ClamAV engine files, signature databases, settings, and first-run agreement state in `C:\ProgramData\ClamShield` are preserved during upgrades.
 
 ## Uninstall Behavior
 

@@ -59,6 +59,7 @@ const defaultSettings = {
     shieldStabilityThreshold: 2000,
     runOnStartup: true,
     startMinimized: false,
+    eulaAccepted: false,
     playSoundOnAlert: true,
     autoDisableDefender: true,
     defenderEnforceIntervalMinutes: 5
@@ -74,6 +75,7 @@ async function runPowerShellFile(script: string) {
     await fs.writeFile(scriptPath, script, "utf8");
     try {
         return await new Promise<{ stdout: string, stderr: string }>((resolve, reject) => {
+            let settled = false;
             const child = spawn("powershell", [
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
@@ -85,8 +87,22 @@ async function runPowerShellFile(script: string) {
             let stderr = "";
             child.stdout.on("data", data => stdout += data.toString());
             child.stderr.on("data", data => stderr += data.toString());
-            child.on("error", reject);
+            const timeout = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                child.kill();
+                reject(new Error("PowerShell operation timed out."));
+            }, 45000);
+            child.on("error", error => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                reject(error);
+            });
             child.on("close", code => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
                 if (code === 0) {
                     resolve({ stdout, stderr });
                 } else {
@@ -807,7 +823,12 @@ async function loadConfig() {
     const configPath = path.join(programDataDir, "settings.json");
     try {
         const data = await fs.readFile(configPath, "utf8");
-        return { ...defaultSettings, ...JSON.parse(data) };
+        const parsed = JSON.parse(data);
+        return {
+            ...defaultSettings,
+            ...parsed,
+            eulaAccepted: parsed.eulaAccepted !== false
+        };
     } catch {
         return defaultSettings;
     }
@@ -889,6 +910,34 @@ async function saveQuarantineMap(map: Record<string, any>) {
     await fs.writeFile(mapPath, JSON.stringify(map, null, 2));
 }
 
+async function getQuarantineItems(quarantineDir: string) {
+    try {
+        const files = await fs.readdir(quarantineDir);
+        const qMap = await getQuarantineMap();
+        return Promise.all(files.map(async file => {
+            const stat = await fs.stat(path.join(quarantineDir, file));
+            let meta = qMap[file];
+            if (!meta) {
+                const baseMatch = file.match(/^(.*?)(?:\.\d{3})?$/);
+                if (baseMatch && qMap[baseMatch[1]]) {
+                    meta = qMap[baseMatch[1]];
+                }
+            }
+
+            return {
+                id: file,
+                fileName: file,
+                threatName: meta ? meta.threatName : "Unknown Threat",
+                originalPath: meta ? meta.originalPath : "Unknown",
+                size: stat.size,
+                date: stat.mtime
+            };
+        }));
+    } catch {
+        return [];
+    }
+}
+
 async function addHistory(entry: any) {
     const historyPath = path.join(programDataDir, "history.json");
     const history = await getHistory();
@@ -913,16 +962,21 @@ async function startServer() {
     let settings = await loadConfig();
     await ensureDirs(settings);
     let defenderTimer: NodeJS.Timeout | null = null;
-    const scheduleDefenderEnforcement = async () => {
+    const scheduleDefenderEnforcement = async (runNow = true) => {
         if (defenderTimer) clearInterval(defenderTimer);
         if (!settings.autoDisableDefender) return;
 
-        await autoDisableDefender();
+        if (runNow) {
+            autoDisableDefender().catch(e => console.warn("Initial Defender pause failed:", e.message));
+        }
         const intervalMinutes = normalizePositiveNumber(settings.defenderEnforceIntervalMinutes, 5, 1, 1440);
-        defenderTimer = setInterval(autoDisableDefender, intervalMinutes * 60 * 1000);
+        defenderTimer = setInterval(() => {
+            autoDisableDefender().catch(e => console.warn("Scheduled Defender pause failed:", e.message));
+        }, intervalMinutes * 60 * 1000);
+        defenderTimer.unref?.();
     };
 
-    await scheduleDefenderEnforcement();
+    await scheduleDefenderEnforcement(true);
     await checkClamAV(settings);
     await manageStartup(settings);
     cachedIsAdmin = await checkIsAdmin();
@@ -1208,6 +1262,7 @@ async function startServer() {
 
         let hasEngine = false;
         let hasDb = false;
+        const quarantineItems = await getQuarantineItems(settings.quarantineDir);
         try {
             const entries = await fs.readdir(engineBaseDir, { withFileTypes: true });
             const clamDir = entries.find(e => e.isDirectory() && e.name.toLowerCase().startsWith("clamav") && e.name !== "clamav.zip");
@@ -1238,7 +1293,7 @@ async function startServer() {
                 lastScan: lastScan ? lastScan.date : null,
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
-                quarantineCount: 0, // to implement
+                quarantineCount: quarantineItems.length,
                 shieldCacheCount: Object.keys(shieldScanCache.files).length
             }
         });
@@ -1402,12 +1457,22 @@ async function startServer() {
         settings = { ...settings, ...req.body };
         await saveConfig(settings);
         await ensureDirs(settings);
-        await checkClamAV(settings);
-        startShield(settings);
-        await manageClamd(settings);
-        await manageStartup(settings);
-        await scheduleDefenderEnforcement();
-        scheduleNextUpdate();
+        res.json({ success: true, settings });
+        Promise.resolve()
+            .then(async () => {
+                await checkClamAV(settings);
+                await startShield(settings);
+                await manageClamd(settings);
+                await manageStartup(settings);
+                await scheduleDefenderEnforcement(false);
+                scheduleNextUpdate();
+            })
+            .catch(e => console.error("Failed to apply settings side effects:", e));
+    });
+
+    app.post("/api/accept-eula", async (req, res) => {
+        settings = { ...settings, eulaAccepted: true };
+        await saveConfig(settings);
         res.json({ success: true, settings });
     });
 
@@ -1933,37 +1998,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.get("/api/quarantine", async (req, res) => {
         try {
-            const files = await fs.readdir(settings.quarantineDir);
-            const qMap = await getQuarantineMap();
-            console.log("Quarantine files:", files);
-            console.log("Quarantine map:", qMap);
-            
-            const items = await Promise.all(files.map(async file => {
-                const stat = await fs.stat(path.join(settings.quarantineDir, file));
-                
-                // ClamAV might append '.001' or similar for dupes. We try to match basename or fallback
-                // Easiest is exact match, or stripping .001 maybe. Let's just lookup exactly initially.
-                let meta = qMap[file];
-                // if not found, check if it ends with .xxx numbers
-                if (!meta) {
-                    const baseMatch = file.match(/^(.*?)(?:\.\d{3})?$/);
-                    if (baseMatch && qMap[baseMatch[1]]) {
-                        meta = qMap[baseMatch[1]];
-                    }
-                }
-                
-                return {
-                    id: file,
-                    fileName: file,
-                    threatName: meta ? meta.threatName : "Unknown Threat",
-                    originalPath: meta ? meta.originalPath : "Unknown",
-                    size: stat.size,
-                    date: stat.mtime
-                };
-            }));
-            
-            console.log("Quarantine items returned:", items);
-            res.json(items);
+            res.json(await getQuarantineItems(settings.quarantineDir));
         } catch (e: any) {
             console.error("Error reading quarantine dir:", e);
             res.status(500).json({ error: e.message, items: [] });

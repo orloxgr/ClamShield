@@ -24,7 +24,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 function SetupWizard({ status, onComplete }: { status: any, onComplete: () => void }) {
-  const [eulaAccepted, setEulaAccepted] = useState(() => localStorage.getItem("clamshield_eula") === "true");
+  const [eulaAccepted, setEulaAccepted] = useState(Boolean(status?.settings?.eulaAccepted));
   const [installing, setInstalling] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
@@ -32,10 +32,23 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
   const needsEngine = !status.hasEngine && !status.isSimulated;
   const needsDb = !status.hasDb && !status.isSimulated;
 
+  useEffect(() => {
+    const storedAcceptance = localStorage.getItem("clamshield_eula") === "true";
+    if (status?.settings?.eulaAccepted || storedAcceptance) {
+      setEulaAccepted(true);
+      if (!status?.settings?.eulaAccepted && storedAcceptance) {
+        fetch("/api/accept-eula", { method: "POST" }).then(onComplete).catch(() => {});
+      }
+    } else {
+      setEulaAccepted(false);
+    }
+  }, [status?.settings?.eulaAccepted]);
+
   if (eulaAccepted && !needsEngine && !needsDb) return null;
 
-  const acceptEula = () => {
+  const acceptEula = async () => {
     localStorage.setItem("clamshield_eula", "true");
+    await fetch("/api/accept-eula", { method: "POST" });
     setEulaAccepted(true);
     if (!needsEngine && !needsDb) {
       onComplete();

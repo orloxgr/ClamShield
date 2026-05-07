@@ -27,6 +27,12 @@ export default function ShieldSettings() {
     updateSettings({ ...settings, [key]: !settings[key] });
   };
 
+  const updateNumberSetting = (key: string, rawValue: string, fallback: number, min: number, max: number) => {
+    const parsed = Number(rawValue);
+    const nextValue = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+    updateSettings({ ...settings, [key]: nextValue });
+  };
+
   const handleAddFolder = async () => {
     try {
       const res = await fetch("/api/select-folder");
@@ -175,7 +181,7 @@ export default function ShieldSettings() {
                 min={0}
                 max={20}
                 value={settings.shieldDepth ?? 1}
-                onChange={e => updateSettings({ ...settings, shieldDepth: parseInt(e.target.value) })}
+                onChange={e => updateNumberSetting("shieldDepth", e.target.value, 1, 0, 20)}
                 className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </label>
@@ -189,7 +195,7 @@ export default function ShieldSettings() {
                 min={1}
                 max={4}
                 value={settings.shieldMaxConcurrentScans ?? 1}
-                onChange={e => updateSettings({ ...settings, shieldMaxConcurrentScans: parseInt(e.target.value) })}
+                onChange={e => updateNumberSetting("shieldMaxConcurrentScans", e.target.value, 1, 1, 4)}
                 className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </label>
