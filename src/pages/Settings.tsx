@@ -3,12 +3,30 @@ import { Save, Folder, Shield, Sliders, ShieldAlert, Heart } from "lucide-react"
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
+  const [defenderStatus, setDefenderStatus] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
+    fetch("/api/defender-status").then(r => r.json()).then(d => setDefenderStatus(d)).catch(() => {});
   }, []);
+
+  const refreshDefenderStatus = async () => {
+    try {
+      const res = await fetch("/api/defender-status");
+      const data = await res.json();
+      setDefenderStatus(data);
+      return data;
+    } catch {
+      return null;
+    }
+  };
+
+  const defenderResultMessage = (data: any, fallback: string) => {
+    if (data?.success || data?.Success) return data.Message || fallback;
+    return data?.Message || data?.error || "Windows 10/11 blocked the Defender change. Check Tamper Protection or policy.";
+  };
 
   const saveSettings = async () => {
     setSaving(true);
@@ -78,7 +96,7 @@ export default function SettingsPage() {
             <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
               <div>
                 <span className="text-slate-200 font-medium block">Automatically keep Defender paused</span>
-                <span className="text-slate-500 text-xs">Runs once on startup and then re-applies at the interval below if Windows turns it back on.</span>
+                <span className="text-slate-500 text-xs">Runs once on startup, verifies the result, and re-applies at the interval below if Windows turns it back on.</span>
               </div>
               <input
                 type="checkbox"
@@ -103,20 +121,35 @@ export default function SettingsPage() {
             <div className="flex items-start gap-2 bg-slate-800/50 p-3 rounded-lg border border-indigo-500/20 text-indigo-200/80 text-xs">
               <ShieldAlert className="w-4 h-4 shrink-0 text-indigo-400 mt-0.5" />
               <p>
-                <strong>Note:</strong> Because ClamShield is an open-source tool and not officially certified by Microsoft's ELAM (Early Launch Anti-Malware) program, Windows may occasionally prompt you to re-enable Windows Defender. The automatic registration via WMI on newer versions of Windows defaults to read-only for uncertified products. You can safely dismiss Windows Security warnings if you intend to use ClamShield.
+                <strong>Note:</strong> Windows 10/11 Tamper Protection or local policy can block third-party apps from pausing Microsoft Defender. ClamShield will try the supported PowerShell preferences and then verify the actual Defender state.
               </p>
             </div>
+            {defenderStatus?.Supported !== false && (
+              <div className="grid sm:grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <span className="text-slate-500 block mb-1">Defender real-time protection</span>
+                  <span className={defenderStatus?.RealTimeProtectionEnabled === false ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+                    {defenderStatus?.RealTimeProtectionEnabled === false ? "Paused" : "Active or unknown"}
+                  </span>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <span className="text-slate-500 block mb-1">Tamper Protection</span>
+                  <span className={defenderStatus?.IsTamperProtected ? "text-amber-400 font-medium" : "text-slate-300 font-medium"}>
+                    {defenderStatus?.IsTamperProtected === null || defenderStatus?.IsTamperProtected === undefined
+                      ? "Unknown"
+                      : defenderStatus.IsTamperProtected ? "On" : "Off"}
+                  </span>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-3 pt-2">
               <button
                 onClick={async () => {
                   try {
                     const res = await fetch("/api/alert-defender", { method: "POST" });
                     const data = await res.json();
-                    if (data.success) {
-                      setMsg("Windows Defender alerted successfully.");
-                    } else {
-                      setMsg("Failed to alert Windows Defender: " + (data.error || "Unknown error"));
-                    }
+                    setMsg(defenderResultMessage(data, "Windows Defender paused successfully."));
+                    await refreshDefenderStatus();
                   } catch (e: any) {
                     setMsg("Error: " + e.message);
                   }
@@ -130,29 +163,23 @@ export default function SettingsPage() {
                    try {
                     const res = await fetch("/api/stop-defender", { method: "POST" });
                     const data = await res.json();
-                    if (data.success) {
-                      setMsg("Windows Defender Real-Time Protection paused!");
-                    } else {
-                      setMsg("Failed to disable Windows Defender: " + (data.error || "Unknown error"));
-                    }
+                    setMsg(defenderResultMessage(data, "Windows Defender Real-Time Protection paused."));
+                    await refreshDefenderStatus();
                   } catch (e: any) {
                     setMsg("Error: " + e.message);
                   }
                 }}
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium transition-colors text-sm"
               >
-                Force Stop Defender
+                Pause Defender
               </button>
               <button
                 onClick={async () => {
                    try {
                     const res = await fetch("/api/restore-defender", { method: "POST" });
                     const data = await res.json();
-                    if (data.success) {
-                      setMsg("Windows Defender real-time protection restored.");
-                    } else {
-                      setMsg("Failed to restore Windows Defender: " + (data.error || "Unknown error"));
-                    }
+                    setMsg(defenderResultMessage(data, "Windows Defender real-time protection restored."));
+                    await refreshDefenderStatus();
                   } catch (e: any) {
                     setMsg("Error: " + e.message);
                   }

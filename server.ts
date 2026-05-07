@@ -68,14 +68,70 @@ const apiCookieName = "clamshield_session";
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
-async function autoDisableDefender() {
-    if (process.platform === "win32") {
-        try {
-            const script = `
-Set-MpPreference -DisableRealtimeMonitoring $true
+async function runPowerShellJson(script: string) {
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    const { stdout, stderr } = await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
+    const output = `${stdout}\n${stderr}`;
+    const match = output.match(/CLAMSHIELD_JSON_START\s*([\s\S]*?)\s*CLAMSHIELD_JSON_END/);
+    if (!match) {
+        throw new Error((stderr || stdout || "PowerShell did not return JSON.").trim());
+    }
+    return JSON.parse(match[1]);
+}
+
+function defenderStatusScript() {
+    return `
+$ErrorActionPreference = 'Continue'
+$status = $null
+$prefs = $null
+$errorText = $null
+try { $status = Get-MpComputerStatus -ErrorAction Stop } catch { $errorText = $_.Exception.Message }
+try { $prefs = Get-MpPreference -ErrorAction Stop } catch {}
+$result = [ordered]@{
+    Supported = $true
+    Error = $errorText
+    AMServiceEnabled = if ($status) { $status.AMServiceEnabled } else { $null }
+    AntivirusEnabled = if ($status) { $status.AntivirusEnabled } else { $null }
+    RealTimeProtectionEnabled = if ($status) { $status.RealTimeProtectionEnabled } else { $null }
+    BehaviorMonitorEnabled = if ($status) { $status.BehaviorMonitorEnabled } else { $null }
+    IoavProtectionEnabled = if ($status) { $status.IoavProtectionEnabled } else { $null }
+    OnAccessProtectionEnabled = if ($status) { $status.OnAccessProtectionEnabled } else { $null }
+    IsTamperProtected = if ($status -and ($status.PSObject.Properties.Name -contains 'IsTamperProtected')) { $status.IsTamperProtected } else { $null }
+    DisableRealtimeMonitoring = if ($prefs) { $prefs.DisableRealtimeMonitoring } else { $null }
+    DisableBehaviorMonitoring = if ($prefs) { $prefs.DisableBehaviorMonitoring } else { $null }
+    DisableIOAVProtection = if ($prefs) { $prefs.DisableIOAVProtection } else { $null }
+    DisableScriptScanning = if ($prefs) { $prefs.DisableScriptScanning } else { $null }
+}
+'CLAMSHIELD_JSON_START'
+$result | ConvertTo-Json -Compress
+'CLAMSHIELD_JSON_END'
+`;
+}
+
+function defenderDisableScript() {
+    return `
+$ErrorActionPreference = 'Continue'
+$operations = [ordered]@{}
+function Set-ClamShieldMpPreference($Name, $Value) {
+    try {
+        $params = @{}
+        $params[$Name] = $Value
+        Set-MpPreference @params -ErrorAction Stop
+        $operations[$Name] = 'ok'
+    } catch {
+        $operations[$Name] = $_.Exception.Message
+    }
+}
+Set-ClamShieldMpPreference 'DisableRealtimeMonitoring' $true
+Set-ClamShieldMpPreference 'DisableBehaviorMonitoring' $true
+Set-ClamShieldMpPreference 'DisableIOAVProtection' $true
+Set-ClamShieldMpPreference 'DisableScriptScanning' $true
 try {
-    New-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue
-} catch {}
+    New-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+    $operations['SecurityAndMaintenanceNotifications'] = 'ok'
+} catch {
+    $operations['SecurityAndMaintenanceNotifications'] = $_.Exception.Message
+}
 try {
     $WMI = [wmiclass]"root\\SecurityCenter2:AntiVirusProduct"
     $New = $WMI.CreateInstance()
@@ -84,13 +140,119 @@ try {
     $New.pathToSignedProductExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $New.pathToSignedReportingExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $New.productState = 397568
-    $New.Put()
-} catch {}`;
-            const encoded = Buffer.from(script, "utf16le").toString("base64");
-            await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
-        } catch (e: any) {
-            // Silently ignore if not admin or error
+    $New.Put() | Out-Null
+    $operations['SecurityCenterRegistration'] = 'ok'
+} catch {
+    $operations['SecurityCenterRegistration'] = $_.Exception.Message
+}
+Start-Sleep -Milliseconds 800
+$status = $null
+$prefs = $null
+$errorText = $null
+try { $status = Get-MpComputerStatus -ErrorAction Stop } catch { $errorText = $_.Exception.Message }
+try { $prefs = Get-MpPreference -ErrorAction Stop } catch {}
+$realTimeEnabled = if ($status) { [bool]$status.RealTimeProtectionEnabled } else { $null }
+$success = ($realTimeEnabled -eq $false)
+$result = [ordered]@{
+    Supported = $true
+    Success = $success
+    Error = $errorText
+    Operations = $operations
+    RealTimeProtectionEnabled = $realTimeEnabled
+    BehaviorMonitorEnabled = if ($status) { $status.BehaviorMonitorEnabled } else { $null }
+    IoavProtectionEnabled = if ($status) { $status.IoavProtectionEnabled } else { $null }
+    OnAccessProtectionEnabled = if ($status) { $status.OnAccessProtectionEnabled } else { $null }
+    IsTamperProtected = if ($status -and ($status.PSObject.Properties.Name -contains 'IsTamperProtected')) { $status.IsTamperProtected } else { $null }
+    DisableRealtimeMonitoring = if ($prefs) { $prefs.DisableRealtimeMonitoring } else { $null }
+    DisableBehaviorMonitoring = if ($prefs) { $prefs.DisableBehaviorMonitoring } else { $null }
+    DisableIOAVProtection = if ($prefs) { $prefs.DisableIOAVProtection } else { $null }
+    DisableScriptScanning = if ($prefs) { $prefs.DisableScriptScanning } else { $null }
+    NeedsManualAction = (-not $success)
+    Message = if ($success) { 'Microsoft Defender real-time protection is paused.' } else { 'Microsoft Defender did not remain paused. Windows Tamper Protection, policy, or Security Center registration may be preventing programmatic disable.' }
+}
+'CLAMSHIELD_JSON_START'
+$result | ConvertTo-Json -Depth 5 -Compress
+'CLAMSHIELD_JSON_END'
+`;
+}
+
+function defenderRestoreScript() {
+    return `
+$ErrorActionPreference = 'Continue'
+$operations = [ordered]@{}
+function Set-ClamShieldMpPreference($Name, $Value) {
+    try {
+        $params = @{}
+        $params[$Name] = $Value
+        Set-MpPreference @params -ErrorAction Stop
+        $operations[$Name] = 'ok'
+    } catch {
+        $operations[$Name] = $_.Exception.Message
+    }
+}
+Set-ClamShieldMpPreference 'DisableRealtimeMonitoring' $false
+Set-ClamShieldMpPreference 'DisableBehaviorMonitoring' $false
+Set-ClamShieldMpPreference 'DisableIOAVProtection' $false
+Set-ClamShieldMpPreference 'DisableScriptScanning' $false
+try {
+    Remove-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Force -ErrorAction SilentlyContinue
+    $operations['SecurityAndMaintenanceNotifications'] = 'ok'
+} catch {
+    $operations['SecurityAndMaintenanceNotifications'] = $_.Exception.Message
+}
+Start-Sleep -Milliseconds 800
+$status = $null
+$prefs = $null
+$errorText = $null
+try { $status = Get-MpComputerStatus -ErrorAction Stop } catch { $errorText = $_.Exception.Message }
+try { $prefs = Get-MpPreference -ErrorAction Stop } catch {}
+$result = [ordered]@{
+    Supported = $true
+    Success = $true
+    Error = $errorText
+    Operations = $operations
+    RealTimeProtectionEnabled = if ($status) { $status.RealTimeProtectionEnabled } else { $null }
+    BehaviorMonitorEnabled = if ($status) { $status.BehaviorMonitorEnabled } else { $null }
+    IoavProtectionEnabled = if ($status) { $status.IoavProtectionEnabled } else { $null }
+    OnAccessProtectionEnabled = if ($status) { $status.OnAccessProtectionEnabled } else { $null }
+    IsTamperProtected = if ($status -and ($status.PSObject.Properties.Name -contains 'IsTamperProtected')) { $status.IsTamperProtected } else { $null }
+    DisableRealtimeMonitoring = if ($prefs) { $prefs.DisableRealtimeMonitoring } else { $null }
+    DisableBehaviorMonitoring = if ($prefs) { $prefs.DisableBehaviorMonitoring } else { $null }
+    DisableIOAVProtection = if ($prefs) { $prefs.DisableIOAVProtection } else { $null }
+    DisableScriptScanning = if ($prefs) { $prefs.DisableScriptScanning } else { $null }
+    Message = 'Microsoft Defender preferences were restored where Windows allowed it.'
+}
+'CLAMSHIELD_JSON_START'
+$result | ConvertTo-Json -Depth 5 -Compress
+'CLAMSHIELD_JSON_END'
+`;
+}
+
+async function getDefenderStatus() {
+    if (process.platform !== "win32") return { Supported: false, Error: "Only supported on Windows." };
+    return runPowerShellJson(defenderStatusScript());
+}
+
+async function requestDefenderPause() {
+    if (process.platform !== "win32") return { Supported: false, Success: false, Error: "Only supported on Windows." };
+    return runPowerShellJson(defenderDisableScript());
+}
+
+async function restoreDefenderPreferences() {
+    if (process.platform !== "win32") return { Supported: false, Success: false, Error: "Only supported on Windows." };
+    return runPowerShellJson(defenderRestoreScript());
+}
+
+async function autoDisableDefender() {
+    try {
+        const result = await requestDefenderPause();
+        if (!result.Success) {
+            console.warn("Defender pause was not fully applied:", result.Message || result.Error || result);
         }
+        return result;
+    } catch (e: any) {
+        console.warn("Defender pause failed:", e.message);
+        return { Supported: process.platform === "win32", Success: false, Error: e.message };
     }
 }
 
@@ -1225,71 +1387,38 @@ async function startServer() {
         }
     });
 
+    app.get("/api/defender-status", async (req, res) => {
+        try {
+            res.json(await getDefenderStatus());
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
     app.post("/api/alert-defender", async (req, res) => {
-        if (process.platform === "win32") {
-            try {
-                const script = `
-Set-MpPreference -DisableRealtimeMonitoring $true
-try {
-    New-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue
-} catch {}
-try {
-    $WMI = [wmiclass]"root\\SecurityCenter2:AntiVirusProduct"
-    $New = $WMI.CreateInstance()
-    $New.displayName = "ClamShield Antivirus"
-    $New.instanceGuid = "{F6DB11CF-FA62-4C3D-AA9F-44F4FD9D77AA}"
-    $New.pathToSignedProductExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $New.pathToSignedReportingExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $New.productState = 397568
-    $New.Put()
-} catch {
-    Write-Error $_.Exception.Message
-}
-`;
-                const encoded = Buffer.from(script, "utf16le").toString("base64");
-                const { stdout, stderr } = await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
-                
-                res.json({ success: true, logs: stdout + stderr });
-            } catch (e: any) {
-                res.status(500).json({ error: e.message });
-            }
-        } else {
-            res.status(400).json({ error: "Only supported on Windows." });
+        try {
+            const result = await requestDefenderPause();
+            res.status(result.Success ? 200 : 409).json({ success: result.Success, ...result });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
         }
     });
 
     app.post("/api/stop-defender", async (req, res) => {
-        if (process.platform === "win32") {
-            try {
-                const script = `Set-MpPreference -DisableRealtimeMonitoring $true`;
-                const encoded = Buffer.from(script, "utf16le").toString("base64");
-                const { stdout, stderr } = await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
-                res.json({ success: true, logs: stdout + stderr });
-            } catch (e: any) {
-                res.status(500).json({ error: e.message });
-            }
-        } else {
-            res.status(400).json({ error: "Only supported on Windows." });
+        try {
+            const result = await requestDefenderPause();
+            res.status(result.Success ? 200 : 409).json({ success: result.Success, ...result });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
         }
     });
 
     app.post("/api/restore-defender", async (req, res) => {
-        if (process.platform === "win32") {
-            try {
-                const script = `
-Set-MpPreference -DisableRealtimeMonitoring $false
-try {
-    Remove-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Force -ErrorAction SilentlyContinue
-} catch {}
-`;
-                const encoded = Buffer.from(script, "utf16le").toString("base64");
-                await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
-                res.json({ success: true });
-            } catch (e: any) {
-                res.status(500).json({ error: e.message });
-            }
-        } else {
-            res.status(400).json({ error: "Only supported on Windows." });
+        try {
+            const result = await restoreDefenderPreferences();
+            res.json({ success: result.Success, ...result });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
         }
     });
 

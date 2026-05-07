@@ -123,7 +123,7 @@ schtasks /query /tn ClamShield
 
 ClamShield wraps ClamAV and depends on ClamAV signatures for detection. It is not a machine-learning endpoint protection platform and does not claim to replace a full commercial EDR or managed antivirus suite.
 
-Some Windows Defender integration settings require administrator permissions. If enabled, ClamShield can keep Defender real-time monitoring paused to avoid running two real-time scanners at the same time.
+Some Windows Defender integration settings require administrator permissions. On Windows 10 and Windows 11, ClamShield can request that Defender real-time monitoring stays paused to avoid running two real-time scanners at the same time. Windows Tamper Protection, Group Policy, or Security Center registration rules can block that request, so ClamShield verifies and reports the actual Defender state after each attempt.
 
 ## License
 
