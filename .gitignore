@@ -1,6 +1,7 @@
 node_modules/
 dist/
-build/
+build/*
+!build/installer.nsh
 release/
 coverage/
 .DS_Store

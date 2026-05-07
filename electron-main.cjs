@@ -15,6 +15,21 @@ let isQuiting = false;
 let activeAlerts = new Map();
 let primaryDisplay;
 
+function getProgramDataDir() {
+  return process.platform === 'win32'
+    ? path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'ClamShield')
+    : path.join(__dirname, 'data', 'ClamShield');
+}
+
+function readAppSettings() {
+  try {
+    const settingsPath = path.join(getProgramDataDir(), 'settings.json');
+    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
 function pollThreats(port) {
   setInterval(() => {
     http.get(`http://127.0.0.1:${port}/api/pending-threats`, (res) => {
@@ -103,12 +118,13 @@ function getFreePort() {
   });
 }
 
-function createWindow(port) {
+function createWindow(port, startHidden = false) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     title: 'ClamShield',
     autoHideMenuBar: true,
+    show: !startHidden,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true
@@ -197,9 +213,11 @@ function startServer(port) {
 
 app.on('ready', async () => {
   const port = await getFreePort();
+  const settings = readAppSettings();
+  const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
   startServer(port);
-  createWindow(port);
   createTray();
+  createWindow(port, startHidden);
   pollThreats(port);
 });
 

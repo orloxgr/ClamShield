@@ -58,6 +58,7 @@ const defaultSettings = {
     shieldPollInterval: 1000,
     shieldStabilityThreshold: 2000,
     runOnStartup: true,
+    startMinimized: false,
     playSoundOnAlert: true,
     autoDisableDefender: true,
     defenderEnforceIntervalMinutes: 5
@@ -68,9 +69,39 @@ const apiCookieName = "clamshield_session";
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
+async function runPowerShellFile(script: string) {
+    const scriptPath = path.join(os.tmpdir(), `clamshield-${Date.now()}-${randomBytes(6).toString("hex")}.ps1`);
+    await fs.writeFile(scriptPath, script, "utf8");
+    try {
+        return await new Promise<{ stdout: string, stderr: string }>((resolve, reject) => {
+            const child = spawn("powershell", [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", scriptPath
+            ], {
+                windowsHide: true
+            });
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", data => stdout += data.toString());
+            child.stderr.on("data", data => stderr += data.toString());
+            child.on("error", reject);
+            child.on("close", code => {
+                if (code === 0) {
+                    resolve({ stdout, stderr });
+                } else {
+                    const message = (stderr || stdout || `PowerShell exited with code ${code}`).trim();
+                    reject(new Error(message));
+                }
+            });
+        });
+    } finally {
+        fs.unlink(scriptPath).catch(() => {});
+    }
+}
+
 async function runPowerShellJson(script: string) {
-    const encoded = Buffer.from(script, "utf16le").toString("base64");
-    const { stdout, stderr } = await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
+    const { stdout, stderr } = await runPowerShellFile(script);
     const output = `${stdout}\n${stderr}`;
     const match = output.match(/CLAMSHIELD_JSON_START\s*([\s\S]*?)\s*CLAMSHIELD_JSON_END/);
     if (!match) {
@@ -800,7 +831,8 @@ async function manageStartup(settings: any) {
         const taskName = "ClamShield";
 
         if (settings.runOnStartup) {
-            const schtasksCmd = `schtasks /create /tn "${taskName}" /tr "\\"${targetCommand}\\"" /sc onlogon /rl highest /f`;
+            const startupArgs = settings.startMinimized ? " --minimized" : "";
+            const schtasksCmd = `schtasks /create /tn "${taskName}" /tr "\\"${targetCommand}\\"${startupArgs}" /sc onlogon /rl highest /f`;
             await execAsync(schtasksCmd).catch(() => {});
         } else {
             await execAsync(`schtasks /delete /tn "${taskName}" /f`).catch(() => {});

@@ -87,6 +87,18 @@ export default function SettingsPage() {
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>
+            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Start Minimized to Tray</span>
+                <span className="text-slate-500 text-xs">Open ClamShield as a tray icon without showing the main window.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.startMinimized || false}
+                onChange={e => setSettings({...settings, startMinimized: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
 
             <h3 className="text-slate-200 font-medium pt-2 block">Windows Security</h3>
             <p className="text-sm text-slate-400">
