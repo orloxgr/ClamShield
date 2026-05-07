@@ -355,6 +355,18 @@ async function existingUniqueDirs(paths: string[]) {
     return result;
 }
 
+async function existingUniqueFiles(paths: string[]) {
+    const unique = dedupePaths(paths.filter(Boolean));
+    const result: string[] = [];
+    for (const filePath of unique) {
+        try {
+            const stat = await fs.stat(filePath);
+            if (stat.isFile()) result.push(filePath);
+        } catch {}
+    }
+    return result;
+}
+
 async function getWindowsKnownFolders() {
     if (process.platform !== "win32") {
         const homeDir = os.homedir();
@@ -520,6 +532,41 @@ async function getResolvedSystemPaths() {
     };
 }
 
+async function getRunningProcessImagePaths() {
+    if (process.platform !== "win32") return [];
+    const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$paths = Get-CimInstance Win32_Process |
+    Where-Object { $_.ExecutablePath -and (Test-Path -LiteralPath $_.ExecutablePath -PathType Leaf) } |
+    Select-Object -ExpandProperty ExecutablePath -Unique
+'CLAMSHIELD_JSON_START'
+@($paths) | ConvertTo-Json -Compress
+'CLAMSHIELD_JSON_END'
+`;
+    try {
+        const result = await runPowerShellJson(script);
+        return existingUniqueFiles(Array.isArray(result) ? result : [result].filter(Boolean));
+    } catch (e: any) {
+        console.warn("Failed to enumerate process executable paths:", e.message);
+        return [];
+    }
+}
+
+async function createScanFileList(paths: string[]) {
+    const listPath = path.join(os.tmpdir(), `clamshield-scan-list-${Date.now()}-${randomBytes(6).toString("hex")}.txt`);
+    await fs.writeFile(listPath, paths.join(os.EOL), "utf8");
+    return listPath;
+}
+
+const windowsLockedScanExclusions = [
+    String.raw`^[A-Z]:\\pagefile\.sys$`,
+    String.raw`^[A-Z]:\\swapfile\.sys$`,
+    String.raw`^[A-Z]:\\hiberfil\.sys$`,
+    String.raw`^[A-Z]:\\DumpStack\.log(?:\.tmp)?$`,
+    String.raw`^[A-Z]:\\System Volume Information(\\|$)`,
+    String.raw`^[A-Z]:\\\$Recycle\.Bin(\\|$)`
+];
+
 function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, target?: string) {
     const args = isClamd
         ? ["--config-file=" + scanSettings.clamdConf]
@@ -536,10 +583,19 @@ function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, ta
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
-        if (type === "memory") args.push("--memory");
+        if (process.platform === "win32" && type === "disk") {
+            windowsLockedScanExclusions.forEach(pattern => args.push(`--exclude=${pattern}`));
+        }
+        if (type === "memory") {
+            if (target && process.platform === "win32") {
+                args.push(`--file-list=${target}`);
+            } else {
+                args.push("--memory");
+            }
+        }
     }
 
-    if (target) args.push(target);
+    if (target && !(type === "memory" && process.platform === "win32")) args.push(target);
     return args;
 }
 
@@ -1673,23 +1729,51 @@ if ($dialog.ShowDialog() -eq 'OK') {
             return res.status(400).json({ error: "Failed to check virus database. Please update definitions." });
         }
 
+        let memoryFileListPath: string | null = null;
+        let memoryProcessCount = 0;
+        let scanTarget = effectiveTarget;
+        if (type === "memory" && process.platform === "win32") {
+            const processPaths = await getRunningProcessImagePaths();
+            memoryProcessCount = processPaths.length;
+            if (processPaths.length === 0) {
+                return res.status(400).json({ error: "No readable running process executable paths were found." });
+            }
+            memoryFileListPath = await createScanFileList(processPaths);
+            scanTarget = memoryFileListPath;
+        }
+
         let isClamd = false;
-        if (settings.offloadToMemory && settings.clamdscanPath) {
+        if (type !== "memory" && settings.offloadToMemory && settings.clamdscanPath) {
             try {
                 await fs.access(settings.clamdscanPath);
                 isClamd = true;
             } catch (e) {}
         }
         let exePath = isClamd ? settings.clamdscanPath : settings.clamscanPath;
-        let args = buildClamScanArgs(settings, isClamd, type, effectiveTarget);
+        let args = buildClamScanArgs(settings, isClamd, type, scanTarget);
         
         try {
             activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
+            if (type === "disk" && process.platform === "win32") {
+                appendJobLogs(jobId, [
+                    "Skipping Windows locked paging/system files that cannot be opened while Windows is running:",
+                    "C:\\pagefile.sys, C:\\swapfile.sys, C:\\hiberfil.sys, C:\\DumpStack.log.tmp"
+                ]);
+            }
+            if (type === "memory" && process.platform === "win32") {
+                appendJobLogs(jobId, [
+                    `Enumerated ${memoryProcessCount} running process executable image${memoryProcessCount === 1 ? "" : "s"}.`,
+                    "Scanning process image files with ClamAV..."
+                ]);
+            }
             const child = spawn(exePath, args);
             activeJobs[jobId].process = child;
             
             child.on("error", (err: any) => {
                 console.error("Failed to start manual scan process:", err.message);
+                    if (memoryFileListPath) {
+                        fs.unlink(memoryFileListPath).catch(() => {});
+                    }
                     if (activeJobs[jobId]) {
                         activeJobs[jobId].status = "error";
                         appendJobLogs(jobId, ["Process error: " + err.message]);
@@ -1767,14 +1851,17 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (quarantineMapChanged) {
                     await saveQuarantineMap(qMap);
                 }
+                if (memoryFileListPath) {
+                    await fs.unlink(memoryFileListPath).catch(() => {});
+                }
 
                 const isThreat = code === 1;
                 await addHistory({
                     type: `scan-${type}`,
-                    target: effectiveTarget || "C:\\",
+                    target: type === "memory" ? "Running process images" : (effectiveTarget || "C:\\"),
                     result: isThreat ? 1 : 0,
                     threatsFound,
-                    scannedFiles, 
+                    scannedFiles: type === "memory" && scannedFiles === 0 ? memoryProcessCount : scannedFiles, 
                     duration,
                     actionTaken: isThreat ? "Quarantined" : "None"
                 });
@@ -1799,6 +1886,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             child.on("error", (err) => {
                 if (!activeJobs[jobId]) return;
+                if (memoryFileListPath) {
+                    fs.unlink(memoryFileListPath).catch(() => {});
+                }
                 appendJobLogs(jobId, [`Error: ${err.message}`]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = -1;
@@ -1807,6 +1897,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
             
             res.json({ jobId, status: "started" });
         } catch (e: any) {
+            if (memoryFileListPath) {
+                await fs.unlink(memoryFileListPath).catch(() => {});
+            }
             res.status(500).json({ error: e.message });
         }
     });

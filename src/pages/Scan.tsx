@@ -54,7 +54,7 @@ export default function Scan() {
           { id: "disk", name: "Full Scan", desc: "Scan all local drives", icon: HardDrive },
           { id: "folder", name: "Folder Scan", desc: "Select specific directory", icon: FolderSearch },
           { id: "file", name: "File Scan", desc: "Select a specific file", icon: FileSearch },
-          { id: "memory", name: "Memory Scan", desc: "Scan active processes", icon: Cpu },
+          { id: "memory", name: "Process Scan", desc: "Scan running process images", icon: Cpu },
         ].map(btn => (
           <button
             key={btn.id}

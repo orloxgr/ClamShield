@@ -9,6 +9,7 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 - Automatic ClamAV engine download and setup on Windows.
 - One-click FreshClam signature updates.
 - Manual full system, folder, file, and memory scans.
+- Windows process scan checks executable images used by running processes.
 - Low-impact real-time shield for watched folders.
 - Automatic detection of custom Desktop, Documents, Downloads, and browser download folders.
 - Shield cache to avoid repeatedly scanning unchanged files.
@@ -28,6 +29,7 @@ ClamShield is built for low disk and CPU impact:
 - Shield depth is configurable. The default is shallow to avoid scanning entire profile trees.
 - Concurrent shield scans default to `1` to avoid disk saturation.
 - Terminal output is capped so long scans do not overload the UI.
+- Full disk scans skip Windows kernel-locked paging/system files such as `pagefile.sys`, `swapfile.sys`, and `DumpStack.log.tmp`, because they cannot be opened while Windows is running.
 
 Recommended defaults for most users:
 
