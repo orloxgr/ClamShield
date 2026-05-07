@@ -1,8 +1,10 @@
-import { ArchiveX, FolderOpen, Trash2 } from "lucide-react";
+import { ArchiveX, FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 
 export default function Quarantine() {
   const [items, setItems] = useState<any[]>([]);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
 
   const fetchItems = () => {
     fetch("/api/quarantine").then(r => r.json()).then(data => {
@@ -35,6 +37,27 @@ export default function Quarantine() {
     }
   };
 
+  const restoreAndAddException = async (item: any) => {
+    if (!confirm("Restore this file to its original location and add it to exceptions? Only do this if you trust the file.")) {
+      return;
+    }
+    setRestoringId(item.fileName);
+    setMessage("");
+    try {
+      const res = await fetch(`/api/quarantine/${encodeURIComponent(item.fileName)}/restore-exception`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Restore failed.");
+      }
+      setMessage(`Restored and added to exceptions: ${data.restoredPath}`);
+      fetchItems();
+    } catch (e: any) {
+      setMessage(e.message || "Restore failed.");
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
   return (
     <div className="p-8 max-w-5xl mx-auto space-y-8">
       <header className="flex items-start justify-between">
@@ -62,6 +85,12 @@ export default function Quarantine() {
         </div>
       </header>
 
+      {message && (
+        <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">
+          {message}
+        </div>
+      )}
+
       {items.length === 0 ? (
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 flex flex-col items-center justify-center text-center">
           <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mb-4">
@@ -78,6 +107,7 @@ export default function Quarantine() {
                 <th className="px-6 py-4 font-medium">Detection Name</th>
                 <th className="px-6 py-4 font-medium">Original Location</th>
                 <th className="px-6 py-4 font-medium">Date Caught</th>
+                <th className="px-6 py-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
@@ -86,6 +116,19 @@ export default function Quarantine() {
                   <td className="px-6 py-4 font-medium text-red-400">{item.threatName}</td>
                   <td className="px-6 py-4 text-slate-400 font-mono text-xs">{item.originalPath}</td>
                   <td className="px-6 py-4">{new Date(item.date).toLocaleString()}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => restoreAndAddException(item)}
+                        disabled={restoringId === item.fileName}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-200 rounded text-xs font-medium transition-colors border border-slate-700"
+                        title="Restore and add to exceptions"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        {restoringId === item.fileName ? "Restoring..." : "Restore + exception"}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

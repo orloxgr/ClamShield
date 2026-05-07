@@ -997,6 +997,55 @@ async function getQuarantineItems(quarantineDir: string) {
     }
 }
 
+async function restoreQuarantinedFileAndAddException(settings: any, fileName: string) {
+    const safeName = path.basename(fileName);
+    if (safeName !== fileName) {
+        throw new Error("Invalid quarantine item.");
+    }
+
+    const qMap = await getQuarantineMap();
+    const metadata = qMap[safeName];
+    const originalPath = metadata?.originalPath;
+    if (!originalPath || originalPath === "Unknown") {
+        throw new Error("Original file location is unknown.");
+    }
+
+    const quarantinePath = path.join(settings.quarantineDir, safeName);
+    await fs.access(quarantinePath);
+    if (existsSync(originalPath)) {
+        throw new Error("A file already exists at the original location. Restore manually from the quarantine folder.");
+    }
+
+    await fs.mkdir(path.dirname(originalPath), { recursive: true });
+    try {
+        await fs.rename(quarantinePath, originalPath);
+    } catch {
+        await fs.copyFile(quarantinePath, originalPath);
+        await fs.unlink(quarantinePath);
+    }
+
+    const exceptions = await getExceptions();
+    if (!exceptions.includes(originalPath)) {
+        exceptions.push(originalPath);
+        await saveExceptions(exceptions);
+    }
+
+    delete qMap[safeName];
+    await saveQuarantineMap(qMap);
+
+    await addHistory({
+        type: "quarantine-restore",
+        target: originalPath,
+        result: 0,
+        threatsFound: 0,
+        scannedFiles: 0,
+        duration: 0,
+        actionTaken: "Restored and added to exceptions"
+    });
+
+    return { restoredPath: originalPath };
+}
+
 async function addHistory(entry: any) {
     const historyPath = path.join(programDataDir, "history.json");
     const history = await getHistory();
@@ -2108,6 +2157,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
         } catch (e: any) {
             console.error("Error reading quarantine dir:", e);
             res.status(500).json({ error: e.message, items: [] });
+        }
+    });
+
+    app.post("/api/quarantine/:fileName/restore-exception", async (req, res) => {
+        try {
+            const result = await restoreQuarantinedFileAndAddException(settings, req.params.fileName);
+            res.json({ success: true, ...result });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e.message });
         }
     });
 
