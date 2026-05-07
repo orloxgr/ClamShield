@@ -262,74 +262,6 @@ function Sidebar({ status }: { status?: any }) {
   );
 }
 
-function ResultsReminderModal() {
-  const [summary, setSummary] = useState<{ count: number, latestTimestamp: number } | null>(null);
-  const [hidden, setHidden] = useState(false);
-
-  const fetchResultsSummary = () => {
-    fetch("/api/results").then(r => r.json()).then(data => {
-      if (!Array.isArray(data) || data.length === 0) {
-        setSummary(null);
-        return;
-      }
-      const latestTimestamp = Math.max(...data.map((item: any) => Number(item.timestamp) || 0));
-      const remindUntil = Number(localStorage.getItem("clamshield_results_remind_until") || "0");
-      const forgottenUntil = Number(localStorage.getItem("clamshield_results_forgotten_until") || "0");
-      const now = Date.now();
-      if (now < remindUntil || latestTimestamp <= forgottenUntil) {
-        setSummary(null);
-        return;
-      }
-      setSummary({ count: data.length, latestTimestamp });
-      setHidden(false);
-    }).catch(() => {});
-  };
-
-  useEffect(() => {
-    fetchResultsSummary();
-    const interval = setInterval(fetchResultsSummary, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (!summary || hidden) return null;
-
-  const remind = (ms: number) => {
-    localStorage.setItem("clamshield_results_remind_until", String(Date.now() + ms));
-    setHidden(true);
-  };
-
-  const forget = () => {
-    localStorage.setItem("clamshield_results_forgotten_until", String(summary.latestTimestamp));
-    setHidden(true);
-  };
-
-  return (
-    <div className="fixed bottom-6 left-72 z-[90] w-[420px] bg-slate-900 border border-amber-500/30 rounded-xl overflow-hidden shadow-2xl p-5 border-t-4 border-t-amber-500">
-      <div className="flex items-center gap-3 text-amber-400 mb-2">
-        <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-        <h2 className="font-bold text-sm">Undecided suspicious files</h2>
-      </div>
-      <p className="text-slate-300 text-sm mb-4">
-        You have undecided actions for suspicious files.
-      </p>
-      <div className="flex flex-wrap justify-end gap-2">
-        <button onClick={() => remind(10 * 60 * 1000)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium border border-slate-700">
-          Remind me in 10 minutes
-        </button>
-        <button onClick={() => remind(60 * 60 * 1000)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium border border-slate-700">
-          1 hour
-        </button>
-        <button onClick={forget} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium border border-slate-700">
-          Forget
-        </button>
-        <NavLink to="/results" className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-medium">
-          Open Results
-        </NavLink>
-      </div>
-    </div>
-  );
-}
-
 function PendingThreatsModal() {
   const [threats, setThreats] = useState<any[]>([]);
 
@@ -451,7 +383,6 @@ export default function App() {
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </main>
-            <ResultsReminderModal />
             <PendingThreatsModal />
           </div>
         </Router>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ClamShield Alert</title>
+  <title>ClamShield Results Reminder</title>
   <style>
     :root {
       color-scheme: dark;
@@ -21,7 +21,7 @@
       height: 100vh;
       overflow: hidden;
       background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
-      border: 1px solid rgba(239, 68, 68, 0.35);
+      border: 1px solid rgba(245, 158, 11, 0.35);
     }
 
     .wrap {
@@ -44,10 +44,10 @@
       border-radius: 999px;
       display: grid;
       place-items: center;
-      background: rgba(239, 68, 68, 0.16);
-      color: #f87171;
+      background: rgba(245, 158, 11, 0.16);
+      color: #fbbf24;
       font-weight: 800;
-      border: 1px solid rgba(239, 68, 68, 0.3);
+      border: 1px solid rgba(245, 158, 11, 0.3);
     }
 
     h1 {
@@ -60,67 +60,38 @@
     .sub {
       margin-top: 2px;
       font-size: 12px;
-      color: #fca5a5;
+      color: #fcd34d;
     }
 
     .details {
-      min-width: 0;
-      display: grid;
-      gap: 6px;
-      align-content: center;
-    }
-
-    .name {
+      color: #cbd5e1;
       font-size: 13px;
-      font-weight: 700;
-      color: #fb7185;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .path {
-      font-family: Consolas, "SFMono-Regular", monospace;
-      font-size: 11px;
-      line-height: 1.35;
-      color: #94a3b8;
-      overflow: hidden;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      word-break: break-all;
+      line-height: 1.45;
+      display: grid;
+      align-content: center;
     }
 
     .actions {
       display: flex;
       justify-content: flex-end;
       gap: 8px;
+      flex-wrap: wrap;
     }
 
     button {
       border: 1px solid transparent;
       border-radius: 7px;
-      padding: 8px 11px;
+      padding: 8px 10px;
       font-size: 12px;
       font-weight: 700;
       color: white;
       cursor: pointer;
     }
 
-    button:disabled {
-      opacity: 0.6;
-      cursor: default;
-    }
-
     .secondary {
       background: #1e293b;
       color: #cbd5e1;
       border-color: #334155;
-    }
-
-    .danger {
-      background: #dc2626;
-      border-color: #ef4444;
     }
 
     .warning {
@@ -134,37 +105,34 @@
     <section class="header">
       <div class="icon">!</div>
       <div>
-        <h1>Threat Detected</h1>
-        <div class="sub">ClamShield found a suspicious file</div>
+        <h1>Undecided suspicious files</h1>
+        <div id="count" class="sub"></div>
       </div>
     </section>
 
     <section class="details">
-      <div id="threatName" class="name"></div>
-      <div id="threatPath" class="path"></div>
+      You have undecided actions for suspicious files.
     </section>
 
     <section class="actions">
-      <button id="exceptionBtn" class="secondary" type="button">Add exception</button>
-      <button id="quarantineBtn" class="danger" type="button">Quarantine</button>
+      <button id="remind10" class="secondary" type="button">10 minutes</button>
+      <button id="remind60" class="secondary" type="button">1 hour</button>
+      <button id="forget" class="secondary" type="button">Forget</button>
+      <button id="open" class="warning" type="button">Open Results</button>
     </section>
   </main>
 
   <script>
     const params = new URLSearchParams(window.location.search);
-    const threatId = params.get("id") || "";
     const port = params.get("port") || window.location.port;
-    const name = params.get("name") || "Unknown threat";
-    const filePath = params.get("path") || "Unknown path";
-
-    document.getElementById("threatName").textContent = name;
-    document.getElementById("threatPath").textContent = filePath;
+    const count = params.get("count") || "0";
+    document.getElementById("count").textContent = `${count} item${count === "1" ? "" : "s"} waiting`;
 
     async function sendAction(action) {
       const buttons = document.querySelectorAll("button");
       buttons.forEach(button => button.disabled = true);
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
+        const response = await fetch(`http://127.0.0.1:${port}/api/results-reminder/action`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action })
@@ -176,8 +144,10 @@
       }
     }
 
-    document.getElementById("exceptionBtn").addEventListener("click", () => sendAction("exception"));
-    document.getElementById("quarantineBtn").addEventListener("click", () => sendAction("quarantine"));
+    document.getElementById("remind10").addEventListener("click", () => sendAction("remind-10"));
+    document.getElementById("remind60").addEventListener("click", () => sendAction("remind-60"));
+    document.getElementById("forget").addEventListener("click", () => sendAction("forget"));
+    document.getElementById("open").addEventListener("click", () => sendAction("open"));
   </script>
 </body>
 </html>

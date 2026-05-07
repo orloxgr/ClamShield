@@ -14,6 +14,7 @@ let tray = null;
 let isQuiting = false;
 let activeAlerts = new Map();
 let primaryDisplay;
+let resultsReminderWindow = null;
 
 function getProgramDataDir() {
   return process.platform === 'win32'
@@ -106,6 +107,56 @@ function createAlertWindow(threat, port, playSound) {
    const alertUrl = `http://127.0.0.1:${port}/alert.html?id=${encodeURIComponent(threat.id)}&name=${encodeURIComponent(threat.threatName)}&path=${encodeURIComponent(threat.originalPath)}&port=${port}&playSound=${playSound}`;
    
    alertWin.loadURL(alertUrl).catch(err => console.error("Failed to load alert HTML", err));
+}
+
+function pollResultsReminder(port) {
+  setInterval(() => {
+    if (resultsReminderWindow && !resultsReminderWindow.isDestroyed()) return;
+    http.get(`http://127.0.0.1:${port}/api/results-reminder`, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          const reminder = JSON.parse(data);
+          if (reminder && reminder.show) {
+            createResultsReminderWindow(reminder, port);
+          }
+        } catch (e) {}
+      });
+    }).on('error', () => {});
+  }, 30000);
+}
+
+function createResultsReminderWindow(reminder, port) {
+   const { screen } = require('electron');
+   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
+   const workArea = primaryDisplay.workArea;
+
+   resultsReminderWindow = new BrowserWindow({
+      width: 440,
+      height: 180,
+      x: workArea.x + workArea.width - 440 - 20,
+      y: workArea.y + workArea.height - 180 - 20,
+      frame: false,
+      transparent: false,
+      backgroundColor: '#0f172a',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      title: "ClamShield Results Reminder",
+      icon: path.join(__dirname, 'public/icon.png'),
+      webPreferences: {
+         nodeIntegration: false,
+         contextIsolation: true
+      }
+   });
+
+   resultsReminderWindow.on('closed', () => {
+      resultsReminderWindow = null;
+   });
+
+   const reminderUrl = `http://127.0.0.1:${port}/results-reminder.html?count=${encodeURIComponent(reminder.count || 0)}&port=${port}`;
+   resultsReminderWindow.loadURL(reminderUrl).catch(err => console.error("Failed to load results reminder HTML", err));
 }
 
 function getFreePort() {
@@ -219,6 +270,7 @@ app.on('ready', async () => {
   createTray();
   createWindow(port, startHidden);
   pollThreats(port);
+  pollResultsReminder(port);
 });
 
 app.on('window-all-closed', function () {

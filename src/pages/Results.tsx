@@ -11,7 +11,7 @@ export default function ResultsPage() {
     try {
       const res = await fetch("/api/results");
       const data = await res.json();
-      setItems(Array.isArray(data) ? data : []);
+      setItems(Array.isArray(data) ? data.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)) : []);
     } catch {
       setItems([]);
     }
@@ -49,12 +49,28 @@ export default function ResultsPage() {
       const res = await fetch("/api/results/quarantine-all", { method: "POST" });
       const data = await res.json();
       if (!res.ok && res.status !== 207) throw new Error(data.error || "Bulk quarantine failed.");
-      setMessage(data.errors?.length ? `Quarantined ${data.quarantinedCount}. ${data.errors.length} item(s) need manual action.` : `Quarantined ${data.quarantinedCount} item(s).`);
+      const missingCount = Array.isArray(data.errors) ? data.errors.filter((item: any) => String(item.error || "").includes("no longer available")).length : 0;
+      setMessage(data.errors?.length
+        ? `Quarantined ${data.quarantinedCount}. ${data.errors.length} item(s) could not be moved${missingCount ? `, ${missingCount} because the original file no longer exists` : ""}.`
+        : `Quarantined ${data.quarantinedCount} item(s).`);
       fetchItems();
     } catch (e: any) {
       setMessage(e.message || "Bulk quarantine failed.");
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  const clearMissing = async () => {
+    setMessage("");
+    try {
+      const res = await fetch("/api/results/clear-missing", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || "Cleanup failed.");
+      setMessage(`Removed ${data.removedCount} unavailable result item(s).`);
+      fetchItems();
+    } catch (e: any) {
+      setMessage(e.message || "Cleanup failed.");
     }
   };
 
@@ -66,14 +82,23 @@ export default function ResultsPage() {
           <p className="text-slate-400">Suspicious files waiting for your decision</p>
         </div>
         {items.length > 0 && (
-          <button
-            onClick={quarantineAll}
-            disabled={bulkBusy}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-          >
-            <Archive className="w-4 h-4" />
-            {bulkBusy ? "Quarantining..." : "Quarantine all"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={clearMissing}
+              disabled={bulkBusy}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700"
+            >
+              Clear unavailable
+            </button>
+            <button
+              onClick={quarantineAll}
+              disabled={bulkBusy}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+            >
+              <Archive className="w-4 h-4" />
+              {bulkBusy ? "Quarantining..." : "Quarantine all"}
+            </button>
+          </div>
         )}
       </header>
 

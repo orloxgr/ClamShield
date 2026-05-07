@@ -1055,17 +1055,35 @@ function getScanResultsPath() {
     return path.join(programDataDir, "scan_results.json");
 }
 
+function getResultsReminderPath() {
+    return path.join(programDataDir, "results_reminder.json");
+}
+
 async function getScanResults() {
     try {
         const data = JSON.parse(await fs.readFile(getScanResultsPath(), "utf8"));
-        return Array.isArray(data) ? data : [];
+        return Array.isArray(data)
+            ? data.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+            : [];
     } catch {
         return [];
     }
 }
 
 async function saveScanResults(results: any[]) {
-    await fs.writeFile(getScanResultsPath(), JSON.stringify(results, null, 2));
+    await fs.writeFile(getScanResultsPath(), JSON.stringify(results.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)), null, 2));
+}
+
+async function getResultsReminderState() {
+    try {
+        return JSON.parse(await fs.readFile(getResultsReminderPath(), "utf8"));
+    } catch {
+        return { remindUntil: 0, forgottenUntil: 0 };
+    }
+}
+
+async function saveResultsReminderState(state: any) {
+    await fs.writeFile(getResultsReminderPath(), JSON.stringify(state, null, 2));
 }
 
 async function addScanResult(result: any) {
@@ -1103,6 +1121,9 @@ async function removeScanResult(resultId: string) {
 }
 
 async function quarantineResultItem(settings: any, result: any) {
+    if (!result.originalPath || !existsSync(result.originalPath)) {
+        throw new Error("Original file is no longer available.");
+    }
     const qMap = await getQuarantineMap();
     const quarantined = await quarantineFile(result.originalPath, result.threatName || "Unknown Threat", settings.quarantineDir);
     qMap[quarantined.fileName] = quarantined.metadata;
@@ -2167,6 +2188,47 @@ if ($dialog.ShowDialog() -eq 'OK') {
         res.status(errors.length === 0 ? 200 : 207).json({ success: errors.length === 0, quarantinedCount, errors });
     });
 
+    app.post("/api/results/clear-missing", async (req, res) => {
+        const results = await getScanResults();
+        const remaining = results.filter((result: any) => result.originalPath && existsSync(result.originalPath));
+        const removedCount = results.length - remaining.length;
+        await saveScanResults(remaining);
+        res.json({ success: true, removedCount });
+    });
+
+    app.get("/api/results-reminder", async (req, res) => {
+        const results = await getScanResults();
+        if (results.length === 0) {
+            return res.json({ show: false, count: 0, latestTimestamp: 0 });
+        }
+        const latestTimestamp = Math.max(...results.map((item: any) => Number(item.timestamp || 0)));
+        const state = await getResultsReminderState();
+        const now = Date.now();
+        const show = now >= Number(state.remindUntil || 0) && latestTimestamp > Number(state.forgottenUntil || 0);
+        res.json({ show, count: results.length, latestTimestamp });
+    });
+
+    app.post("/api/results-reminder/action", async (req, res) => {
+        const action = req.body.action;
+        const results = await getScanResults();
+        const latestTimestamp = results.length ? Math.max(...results.map((item: any) => Number(item.timestamp || 0))) : 0;
+        const state = await getResultsReminderState();
+        if (action === "remind-10") {
+            state.remindUntil = Date.now() + 10 * 60 * 1000;
+        } else if (action === "remind-60") {
+            state.remindUntil = Date.now() + 60 * 60 * 1000;
+        } else if (action === "forget") {
+            state.forgottenUntil = latestTimestamp;
+            state.remindUntil = 0;
+        } else if (action === "open") {
+            state.remindUntil = Date.now() + 10 * 60 * 1000;
+        } else {
+            return res.status(400).json({ success: false, error: "Invalid reminder action." });
+        }
+        await saveResultsReminderState(state);
+        res.json({ success: true, openResults: action === "open" });
+    });
+
     app.post("/api/results/:id/action", async (req, res) => {
         try {
             const action = req.body.action;
@@ -2342,6 +2404,19 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.sendFile(alertPath);
         } else {
             res.status(404).send("Alert not found");
+        }
+    });
+
+    app.get('/results-reminder.html', (req, res) => {
+        const isProd = process.env.NODE_ENV === "production";
+        const reminderPath = isProd
+            ? path.join(runtimeDir, "..", "public", "results-reminder.html")
+            : path.join(runtimeDir, "public", "results-reminder.html");
+
+        if (existsSync(reminderPath)) {
+            res.sendFile(reminderPath);
+        } else {
+            res.status(404).send("Reminder not found");
         }
     });
 
