@@ -75,13 +75,38 @@ export default function SettingsPage() {
               Register ClamShield to alert Windows Defender that another antivirus software is installed. 
               This will disable Windows Defender's real-time protection to prevent conflicts, avoiding having 2 antivirus apps running at the same time.
             </p>
+            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Automatically keep Defender paused</span>
+                <span className="text-slate-500 text-xs">Runs once on startup and then re-applies at the interval below if Windows turns it back on.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.autoDisableDefender !== false}
+                onChange={e => setSettings({...settings, autoDisableDefender: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            {settings.autoDisableDefender !== false && (
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-slate-400 block w-1/3">Re-apply every minutes</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={settings.defenderEnforceIntervalMinutes || 5}
+                  onChange={e => setSettings({...settings, defenderEnforceIntervalMinutes: parseInt(e.target.value)})}
+                  className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            )}
             <div className="flex items-start gap-2 bg-slate-800/50 p-3 rounded-lg border border-indigo-500/20 text-indigo-200/80 text-xs">
               <ShieldAlert className="w-4 h-4 shrink-0 text-indigo-400 mt-0.5" />
               <p>
                 <strong>Note:</strong> Because ClamShield is an open-source tool and not officially certified by Microsoft's ELAM (Early Launch Anti-Malware) program, Windows may occasionally prompt you to re-enable Windows Defender. The automatic registration via WMI on newer versions of Windows defaults to read-only for uncertified products. You can safely dismiss Windows Security warnings if you intend to use ClamShield.
               </p>
             </div>
-            <div className="flex items-center gap-3 pt-2">
+            <div className="flex flex-wrap items-center gap-3 pt-2">
               <button
                 onClick={async () => {
                   try {
@@ -98,7 +123,25 @@ export default function SettingsPage() {
                 }}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors text-sm"
               >
-                Alert Windows Defender
+                Register w/ Windows Security
+              </button>
+              <button
+                onClick={async () => {
+                   try {
+                    const res = await fetch("/api/stop-defender", { method: "POST" });
+                    const data = await res.json();
+                    if (data.success) {
+                      setMsg("Windows Defender Real-Time Protection paused!");
+                    } else {
+                      setMsg("Failed to disable Windows Defender: " + (data.error || "Unknown error"));
+                    }
+                  } catch (e: any) {
+                    setMsg("Error: " + e.message);
+                  }
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium transition-colors text-sm"
+              >
+                Force Stop Defender
               </button>
               <button
                 onClick={async () => {
@@ -119,6 +162,29 @@ export default function SettingsPage() {
                 Restore Defender
               </button>
             </div>
+          </div>
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between font-medium text-slate-200">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-indigo-400" />
+              Notifications & Alerts
+            </div>
+          </div>
+          <div className="p-6 space-y-4">
+            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Play Sound on Threat Found</span>
+                <span className="text-slate-500 text-xs">Play a system beep sound when a threat is detected.</span>
+              </div>
+              <input 
+                type="checkbox" 
+                checked={settings.playSoundOnAlert || false} 
+                onChange={e => setSettings({...settings, playSoundOnAlert: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
           </div>
         </section>
 
@@ -162,6 +228,28 @@ export default function SettingsPage() {
               </label>
             ))}
             <div className="flex items-center justify-between border-t border-slate-800 pt-4">
+              <label className="text-sm font-medium text-slate-400 block w-1/3">Shield Folder Depth</label>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                value={settings.shieldDepth ?? 1}
+                onChange={e => setSettings({...settings, shieldDepth: parseInt(e.target.value)})}
+                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-400 block w-1/3">Concurrent Shield Scans</label>
+              <input
+                type="number"
+                min={1}
+                max={4}
+                value={settings.shieldMaxConcurrentScans ?? 1}
+                onChange={e => setSettings({...settings, shieldMaxConcurrentScans: parseInt(e.target.value)})}
+                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-slate-400 block w-1/3">Polling Interval (ms)</label>
               <input 
                 type="number"
@@ -224,15 +312,18 @@ export default function SettingsPage() {
               </div>
             )}
             
-            <label className="flex items-center justify-between cursor-pointer py-2">
-              <span className="text-slate-300 capitalize text-sm mb-1 block">Auto-Quarantine Threats</span>
-              <input 
-                type="checkbox" 
-                checked={settings.autoQuarantine} 
-                onChange={e => setSettings({...settings, autoQuarantine: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
+            <div className="flex items-center justify-between py-2">
+              <span className="text-slate-300 capitalize text-sm mb-1 block">When virus found</span>
+              <select
+                value={settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "warn")}
+                onChange={e => setSettings({...settings, actionOnDetection: e.target.value, autoQuarantine: e.target.value === "quarantine"})}
+                className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="quarantine">Auto Quarantine</option>
+                <option value="ask">Ask Me</option>
+                <option value="warn">Warn Only</option>
+              </select>
+            </div>
 
             <div className="flex items-center justify-between border-t border-slate-800 pt-4">
               <label className="text-sm font-medium text-slate-400 block w-1/3">Max File Size (MB)</label>

@@ -4,7 +4,7 @@
  */
 
 import { BrowserRouter as Router, Routes, Route, NavLink } from "react-router-dom";
-import { Shield, Search, Activity, Archive, RefreshCw, History, Settings, Loader2, Download, AlertTriangle } from "lucide-react";
+import { Shield, Search, Activity, Archive, RefreshCw, History, Settings, Loader2, Download, AlertTriangle, ShieldCheck } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Scan from "./pages/Scan";
 import ShieldSettings from "./pages/ShieldSettings";
@@ -12,6 +12,7 @@ import Quarantine from "./pages/Quarantine";
 import Updates from "./pages/Updates";
 import HistoryPage from "./pages/History";
 import SettingsPage from "./pages/Settings";
+import ExceptionsPage from "./pages/Exceptions";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { ScanProvider, useScan } from "./context/ScanContext";
@@ -153,6 +154,7 @@ function Sidebar({ status }: { status?: any }) {
     { name: "Dashboard", path: "/", icon: Activity },
     { name: "Scan", path: "/scan", icon: Search },
     { name: "Shield", path: "/shield", icon: Shield },
+    { name: "Exceptions", path: "/exceptions", icon: ShieldCheck },
     { name: "Quarantine", path: "/quarantine", icon: Archive },
     { name: "Updates", path: "/updates", icon: RefreshCw },
     { name: "History", path: "/history", icon: History },
@@ -189,12 +191,95 @@ function Sidebar({ status }: { status?: any }) {
           </NavLink>
         ))}
       </nav>
-      <div className="p-4 border-t border-slate-800 text-xs text-slate-500 flex justify-between items-center">
-        <span>Powered by ClamAV®</span>
-        <span className="bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[10px]">
-          v{status?.appVersion || "1.0.1"}
-        </span>
+      <div className="p-4 border-t border-slate-800 text-xs text-slate-500 flex flex-col gap-1">
+        <div className="flex justify-between items-center">
+          <span>Powered by ClamAV®</span>
+          <span className="bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[10px]">
+            v{status?.appVersion || "1.0.14"}
+          </span>
+        </div>
+        <span className="text-slate-600 block mt-1">Made by Byron Iniotakis</span>
       </div>
+    </div>
+  );
+}
+
+function PendingThreatsModal() {
+  const [threats, setThreats] = useState<any[]>([]);
+
+  const fetchThreats = () => {
+    fetch("/api/pending-threats").then(r => r.json()).then(data => {
+      if (Array.isArray(data)) {
+        if (data.length > threats.length && Notification.permission !== 'denied') {
+          // Request permission and show notification for new threats
+          if (Notification.permission === 'granted') {
+             new Notification('ClamShield Alert', {
+                body: `Threat detected: ${data[data.length-1].threatName}\nFile: ${data[data.length-1].originalPath}`,
+                icon: '/icon.png'
+             });
+          } else {
+             Notification.requestPermission().then(perm => {
+                 if(perm === 'granted') {
+                    new Notification('ClamShield Alert', {
+                        body: `Threat detected: ${data[data.length-1].threatName}\nFile: ${data[data.length-1].originalPath}`
+                     });
+                 }
+             });
+          }
+        }
+        setThreats(data);
+      }
+    }).catch(e => console.error("Error fetching pending threats:", e));
+  };
+
+  useEffect(() => {
+    fetchThreats();
+    const interval = setInterval(fetchThreats, 2000);
+    return () => clearInterval(interval);
+  }, [threats.length]);
+
+  if (threats.length === 0) return null;
+
+  const handleAction = async (id: string, action: string) => {
+    try {
+      await fetch(`/api/pending-threats/${id}/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action })
+      });
+      fetchThreats();
+    } catch (e) {
+      console.error("Failed to handle threat:", e);
+    }
+  };
+
+  return (
+    <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-4 w-[400px]">
+      {threats.map((t, idx) => (
+        <div key={t.id || idx} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl p-5 border-t-4 border-t-red-500 animate-in slide-in-from-bottom-5">
+          <div className="flex items-center gap-3 text-red-500 mb-2">
+            <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+            <h2 className="font-bold text-sm">Threat Detected</h2>
+          </div>
+          <p className="text-red-400 font-medium mb-1 truncate text-sm" title={t.threatName}>{t.threatName}</p>
+          <p className="text-slate-400 font-mono text-xs break-all mb-4 truncate" title={t.originalPath}>{t.originalPath}</p>
+          
+          <div className="flex justify-end gap-2">
+            <button 
+             onClick={() => handleAction(t.id, "exception")}
+             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium transition-colors border border-slate-700"
+            >
+              Add to exceptions
+            </button>
+            <button 
+             onClick={() => handleAction(t.id, "quarantine")}
+             className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors border border-red-600"
+            >
+              Quarantine
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -225,6 +310,7 @@ export default function App() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/scan" element={<Scan />} />
               <Route path="/shield" element={<ShieldSettings />} />
+              <Route path="/exceptions" element={<ExceptionsPage />} />
               <Route path="/quarantine" element={<Quarantine />} />
               <Route path="/updates" element={<Updates />} />
               <Route path="/history" element={<HistoryPage />} />

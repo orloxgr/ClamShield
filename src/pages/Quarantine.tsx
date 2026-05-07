@@ -1,19 +1,38 @@
-import { ArchiveX, FolderOpen } from "lucide-react";
+import { ArchiveX, FolderOpen, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 
 export default function Quarantine() {
   const [items, setItems] = useState<any[]>([]);
 
-  useEffect(() => {
+  const fetchItems = () => {
     fetch("/api/quarantine").then(r => r.json()).then(data => {
-      if (Array.isArray(data)) setItems(data);
-      else if (data && Array.isArray(data.items)) setItems(data.items);
-      else setItems([]);
+      let fetchedItems = [];
+      if (Array.isArray(data)) fetchedItems = data;
+      else if (data && Array.isArray(data.items)) fetchedItems = data.items;
+      
+      // Sort newest first
+      fetchedItems.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setItems(fetchedItems);
     }).catch(() => setItems([]));
+  };
+
+  useEffect(() => {
+    fetchItems();
   }, []);
 
   const openQuarantine = async () => {
     await fetch("/api/open-quarantine");
+  };
+
+  const emptyQuarantine = async () => {
+    if (confirm("Are you sure you want to empty the quarantine? This will permanently delete the files.")) {
+      try {
+        await fetch("/api/empty-quarantine", { method: "POST" });
+        fetchItems();
+      } catch (e) {
+        console.error("Failed to empty quarantine", e);
+      }
+    }
   };
 
   return (
@@ -23,13 +42,24 @@ export default function Quarantine() {
           <h1 className="text-3xl font-bold text-white mb-2">Quarantine</h1>
           <p className="text-slate-400">Isolated threats that cannot harm your system</p>
         </div>
-        <button 
-          onClick={openQuarantine}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
-        >
-          <FolderOpen className="w-4 h-4" />
-          <span>Open Folder</span>
-        </button>
+        <div className="flex items-center gap-3">
+          {items.length > 0 && (
+            <button 
+              onClick={emptyQuarantine}
+              className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors border border-red-500/20"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>Empty Quarantine</span>
+            </button>
+          )}
+          <button 
+            onClick={openQuarantine}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
+          >
+            <FolderOpen className="w-4 h-4" />
+            <span>Open Folder</span>
+          </button>
+        </div>
       </header>
 
       {items.length === 0 ? (

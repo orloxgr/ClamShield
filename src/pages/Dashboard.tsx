@@ -107,8 +107,14 @@ export default function Dashboard() {
               </span>
             </div>
             {status.isSimulated && (
-              <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-md text-amber-400 text-xs text-center">
-                Running in Simulated Mode (ClamAV not detected on path)
+              <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-md text-amber-400 text-xs text-center flex flex-col gap-2">
+                <span>Running in Simulated Mode (ClamAV not detected on path)</span>
+                <button 
+                  onClick={() => fetch('/api/simulate-threat', { method: 'POST' })}
+                  className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded border border-amber-500/30 transition-colors"
+                >
+                  Trigger Test Threat Modal
+                </button>
               </div>
             )}
           </div>

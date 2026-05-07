@@ -12,6 +12,11 @@ interface ScanContextType {
 }
 
 const ScanContext = createContext<ScanContextType | null>(null);
+const MAX_TERMINAL_LINES = 800;
+
+function appendOutput(previous: string[], next: string[]) {
+  return [...previous, ...next].slice(-MAX_TERMINAL_LINES);
+}
 
 export function ScanProvider({ children }: { children: React.ReactNode }) {
   const [scanState, setScanState] = useState<ScanState>("idle");
@@ -36,20 +41,20 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         throw new Error(data.error || "An unknown error occurred");
       }
 
-      setOutput(prev => [...prev, `Job created with ID: ${data.jobId}`]);
+      setOutput(prev => appendOutput(prev, [`Job created with ID: ${data.jobId}`]));
       setJobId(data.jobId);
       setIsSimulated(!!data.simulated);
 
       if (data.simulated) {
-        setOutput(prev => [...prev, "Running in simulation mode. Wait 3 seconds..."]);
+        setOutput(prev => appendOutput(prev, ["Running in simulation mode. Wait 3 seconds..."]));
         setTimeout(() => {
-          setOutput(prev => [...prev, "Scan complete. Simulated results saved.", "----------- SCAN SUMMARY -----------", "Known viruses: 12345", "Engine version: Simulated", `Target: ${target || type}`, "Scanned directories: 50", "Scanned files: 1240", "Infected files: 0"]);
+          setOutput(prev => appendOutput(prev, ["Scan complete. Simulated results saved.", "----------- SCAN SUMMARY -----------", "Known viruses: 12345", "Engine version: Simulated", `Target: ${target || type}`, "Scanned directories: 50", "Scanned files: 1240", "Infected files: 0"]));
           setScanState("done");
           setJobId(null);
         }, 3000);
       }
     } catch (e: any) {
-      setOutput(prev => [...prev, `Error: ${e.message}`]);
+      setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
       setScanState("done");
       setJobId(null);
     }
@@ -64,7 +69,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
       }
     }
     setScanState("done");
-    setOutput(prev => [...prev, "Scan cancelled by user."]);
+    setOutput(prev => appendOutput(prev, ["Scan cancelled by user."]));
     setJobId(null);
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -87,7 +92,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
           if (res.ok) {
             const data = await res.json();
             if (data.logs && data.logs.length > 0) {
-              setOutput(prev => [...prev, ...data.logs]);
+              setOutput(prev => appendOutput(prev, data.logs));
             }
             if (data.status === "done") {
               setScanState("done");

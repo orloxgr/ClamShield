@@ -1,13 +1,16 @@
 {
-  "name": "react-example",
+  "name": "clamshield",
+  "description": "ClamShield - Windows GUI for ClamAV",
+  "author": "Byron Iniotakis",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.28",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
     "desktop": "electron .",
     "build": "vite build && esbuild server.ts --platform=node --packages=external --bundle --outfile=dist/server.cjs",
+    "prebuild:exe": "node scripts/prepare-release.cjs",
     "build:exe": "npm run build && electron-builder",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
@@ -18,11 +21,19 @@
     "appId": "com.clamshield.app",
     "productName": "ClamShield",
     "directories": {
-      "output": "release"
+      "output": "release/${version}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "license": "LICENSE",
+      "perMachine": true,
+      "include": "build/installer.nsh"
     },
     "win": {
       "target": "nsis",
-      "icon": "public/icon.png"
+      "icon": "public/favicon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "linux": {
       "target": [

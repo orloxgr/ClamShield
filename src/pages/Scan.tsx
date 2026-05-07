@@ -10,8 +10,12 @@ export default function Scan() {
       try {
         const res = await fetch("/api/select-folder");
         const data = await res.json();
-        if (res.ok && data.path) {
-          startScan(type, data.path);
+        let selectedPath = data.path;
+        if (!selectedPath) {
+            selectedPath = window.prompt("[Simulated] Select a folder path manually:", "C:\\TestPath");
+        }
+        if (selectedPath) {
+          startScan(type, selectedPath);
         }
       } catch (e) {
         console.error("Failed to select folder:", e);
@@ -22,8 +26,12 @@ export default function Scan() {
       try {
         const res = await fetch("/api/select-file");
         const data = await res.json();
-        if (res.ok && data.path) {
-          startScan(type, data.path);
+        let selectedPath = data.path;
+        if (!selectedPath) {
+            selectedPath = window.prompt("[Simulated] Select a file path manually:", "C:\\TestPath\\testfile.exe");
+        }
+        if (selectedPath) {
+          startScan(type, selectedPath);
         }
       } catch (e) {
         console.error("Failed to select file:", e);

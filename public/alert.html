@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClamShield Alert</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+
+    .wrap {
+      height: 100%;
+      padding: 18px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: rgba(239, 68, 68, 0.16);
+      color: #f87171;
+      font-weight: 800;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      color: #f8fafc;
+    }
+
+    .sub {
+      margin-top: 2px;
+      font-size: 12px;
+      color: #fca5a5;
+    }
+
+    .details {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+      align-content: center;
+    }
+
+    .name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #fb7185;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .path {
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #94a3b8;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      word-break: break-all;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    button {
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 8px 11px;
+      font-size: 12px;
+      font-weight: 700;
+      color: white;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    .secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border-color: #334155;
+    }
+
+    .danger {
+      background: #dc2626;
+      border-color: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="header">
+      <div class="icon">!</div>
+      <div>
+        <h1>Threat Detected</h1>
+        <div class="sub">ClamShield found a suspicious file</div>
+      </div>
+    </section>
+
+    <section class="details">
+      <div id="threatName" class="name"></div>
+      <div id="threatPath" class="path"></div>
+    </section>
+
+    <section class="actions">
+      <button id="ignoreBtn" class="secondary" type="button">Ignore</button>
+      <button id="exceptionBtn" class="secondary" type="button">Add exception</button>
+      <button id="quarantineBtn" class="danger" type="button">Quarantine</button>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const threatId = params.get("id") || "";
+    const port = params.get("port") || window.location.port;
+    const name = params.get("name") || "Unknown threat";
+    const filePath = params.get("path") || "Unknown path";
+
+    document.getElementById("threatName").textContent = name;
+    document.getElementById("threatPath").textContent = filePath;
+
+    async function sendAction(action) {
+      const buttons = document.querySelectorAll("button");
+      buttons.forEach(button => button.disabled = true);
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action })
+        });
+        if (!response.ok) throw new Error("Action failed");
+        window.close();
+      } catch {
+        buttons.forEach(button => button.disabled = false);
+      }
+    }
+
+    document.getElementById("ignoreBtn").addEventListener("click", () => sendAction("ignore"));
+    document.getElementById("exceptionBtn").addEventListener("click", () => sendAction("exception"));
+    document.getElementById("quarantineBtn").addEventListener("click", () => sendAction("quarantine"));
+  </script>
+</body>
+</html>

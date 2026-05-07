@@ -1,111 +1,135 @@
-# ClamShield
+# ClamShield - Windows GUI for ClamAV
 
-ClamShield is a modern, Electron-based graphical user interface (GUI) for the ClamAV® antivirus engine. It simplifies the installation, updating, and scanning processes of ClamAV for desktop users while offering a clean, user-friendly Dashboard.
+ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine. It is designed for advanced users who want configurable, low-impact protection powered by ClamAV, with direct control over scans, signature updates, real-time monitoring, exclusions, and quarantine.
 
-![ClamShield Screenshot](public/icon.png) <!-- Note: Replace with actual screenshot later -->
+> Public beta: ClamShield is intended for users who understand basic security hygiene and want a transparent ClamAV-based tool. It should not be presented as a commercial antivirus replacement.
 
-## Features
+## Highlights
 
-- **Automated Engine Management**: Automatically downloads and installs the ClamAV engine (for Windows out-of-the-box, or utilizes existing on Linux/macOS).
-- **One-Click Updates**: Updates the ClamAV virus signatures (Freshclam) directly from the GUI.
-- **Multiple Scan Types**: Supports Full Scan, Folder Scan, File Scan, and Memory Scan.
-- **Real-time Terminal Output**: Watch the ClamAV scan progress in real-time.
-- **Quarantine Management**: View and safely manage quarantined threats.
-- **Support Us**: Directly support development and third-party databases.
+- Automatic ClamAV engine download and setup on Windows.
+- One-click FreshClam signature updates.
+- Manual full system, folder, file, and memory scans.
+- Low-impact real-time shield for watched folders.
+- Shield cache to avoid repeatedly scanning unchanged files.
+- User-controlled shield depth and concurrent scan count.
+- Quarantine management and threat action prompts.
+- Exceptions list for trusted files and folders.
+- Tray app with background monitoring and threat popup alerts.
+- Clean NSIS installer and uninstaller.
 
-## Technology Stack
+## Performance Model
 
-- React 18 + Vite
-- Tailwind CSS
-- Electron
-- ClamAV CLI (`clamscan`, `freshclam`)
+ClamShield is built for low disk and CPU impact:
 
----
+- The real-time shield does not scan existing files on startup.
+- Existing files are indexed only after the user manually runs a full, folder, or file scan.
+- Files are skipped by the shield if size and modification time have not changed since the last clean scan.
+- Shield depth is configurable. The default is shallow to avoid scanning entire profile trees.
+- Concurrent shield scans default to `1` to avoid disk saturation.
+- Terminal output is capped so long scans do not overload the UI.
 
-## How to Build & Release (GitHub)
+Recommended defaults for most users:
 
-If you want to create a release of ClamShield on GitHub for others to download, follow these step-by-step instructions:
+- Shield depth: `1`
+- Concurrent shield scans: `1`
+- Max file size: `50 MB`
+- Scan archives: enabled only if you accept the extra scan cost
 
-### Prerequisites
+## Installation
 
-Make sure you have Node.js and NPM installed on your machine.
+Download the latest installer from the GitHub Releases page:
 
-### Step 1: Clone the repository
-
-```bash
-git clone https://github.com/your-username/clamshield.git
-cd clamshield
+```text
+ClamShield Setup x.y.z.exe
 ```
 
-### Step 2: Install Dependencies
+Run the installer as administrator. On first launch, ClamShield can download and configure the Windows ClamAV engine and then download the latest virus definitions.
 
-```bash
+## Uninstall Behavior
+
+The Windows uninstaller is configured to clean up ClamShield state:
+
+- closes `ClamShield.exe`
+- removes the scheduled startup task
+- removes legacy startup registry entry if present
+- restores Windows Defender real-time monitoring
+- removes the Windows Security notification override used by ClamShield
+- removes `C:\ProgramData\ClamShield`
+
+`C:\ProgramData\ClamShield` contains the downloaded engine, signature databases, settings, logs, quarantine metadata, and shield cache.
+
+## Development
+
+Requirements:
+
+- Node.js
+- npm
+- Windows for the packaged `.exe` build
+
+Install dependencies:
+
+```powershell
 npm install
 ```
 
-### Step 3: Build the interface
+Run the TypeScript check:
 
-Compile the React frontend so it's ready for Electron.
+```powershell
+npm run lint
+```
 
-```bash
+Build the frontend and bundled backend:
+
+```powershell
 npm run build
 ```
 
-*Note: In `package.json`, you also have `# build:server` (or `tsx server.ts`) which runs the backend operations.*
+Create the Windows installer:
 
-### Step 4: Package the Application
-
-To package the application into a `.exe` (on Windows) or an AppImage/deb (on Linux), you can use `electron-builder`. Since `electron-builder` might not be already installed:
-
-```bash
-npm install --save-dev electron-builder
+```powershell
+npm run build:exe
 ```
 
-Update your `package.json` to include an `electron-builder` configuration if you haven't. Example snippet to add:
+Release artifacts are written to a versioned directory:
 
-```json
-"build": {
-  "appId": "com.clamshield.app",
-  "productName": "ClamShield",
-  "directories": {
-    "output": "release"
-  },
-  "win": {
-    "target": "nsis",
-    "icon": "public/icon.png"
-  },
-  "linux": {
-    "target": ["AppImage", "deb"],
-    "icon": "public/icon.png"
-  }
-},
-"scripts": {
-  ...
-  "dist": "npm run build && npx electron-builder"
-}
+```text
+release/<version>/ClamShield Setup <version>.exe
 ```
 
-Then run the packaging command:
+The `release/` and `dist/` folders are build outputs and should not be committed to Git.
 
-```bash
-npm run dist
+## Release Checklist
+
+Before publishing a release:
+
+1. Bump the version in `package.json` and `package-lock.json`.
+2. Run `npm install`.
+3. Run `npm run lint`.
+4. Run `npm run build:exe`.
+5. Install the generated `.exe` on a clean Windows test machine or VM.
+6. Install the ClamAV engine from the app.
+7. Update signatures.
+8. Test the EICAR sample detection flow.
+9. Test real-time shield with depth `1` and concurrent scans `1`.
+10. Uninstall and verify cleanup:
+
+```powershell
+Test-Path "$env:ProgramData\ClamShield"
+schtasks /query /tn ClamShield
 ```
 
-### Step 5: Create a GitHub Release
+## Security Notes
 
-1. Go to your GitHub repository in your web browser.
-2. On the right side of the main page, click on **Releases**, then click **Draft a new release**.
-3. Choose a tag or create a new one (e.g., `v1.0.1`).
-4. Give your release a title (e.g., `ClamShield v1.0.1`).
-5. Write a description of what is new in this release.
-6. Drag and drop the installer files (e.g., `ClamShield Setup 1.0.1.exe`) generated in the `release/` folder from Step 4 into the **"Attach binaries by dropping them here"** section.
-7. Click **Publish release**.
+ClamShield wraps ClamAV and depends on ClamAV signatures for detection. It is not a machine-learning endpoint protection platform and does not claim to replace a full commercial EDR or managed antivirus suite.
+
+Some Windows Defender integration settings require administrator permissions. If enabled, ClamShield can keep Defender real-time monitoring paused to avoid running two real-time scanners at the same time.
 
 ## License
 
-This software is released under the **GNU General Public License v2 (GPL-2.0)**.
-ClamAV is a registered trademark of Cisco Systems, Inc.
+This project is released under the GNU General Public License v2.0.
+
+ClamAV is a trademark of Cisco Systems, Inc. ClamShield is an independent GUI application and is not affiliated with Cisco.
 
 ## Support
 
-If you like ClamShield, consider supporting its development via the in-app "Settings -> Support Us" page!
+If you like ClamShield, you can support development from the in-app Settings page.

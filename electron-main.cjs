@@ -1,17 +1,113 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, fork } = require('child_process');
 const fs = require('fs');
+const net = require('net');
+
+const http = require('http');
+
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow;
 let serverProcess;
 let tray = null;
 let isQuiting = false;
+let activeAlerts = new Map();
+let primaryDisplay;
 
-function createWindow() {
+function pollThreats(port) {
+  setInterval(() => {
+    http.get(`http://127.0.0.1:${port}/api/pending-threats`, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          const threats = JSON.parse(data);
+          if (Array.isArray(threats)) {
+            threats.forEach(threat => {
+               if (!activeAlerts.has(threat.id)) {
+                  activeAlerts.set(threat.id, true); // Placeholder to avoid double triggers
+                  http.get(`http://127.0.0.1:${port}/api/status`, (setRes) => {
+                     let setData = '';
+                     setRes.on('data', c => setData += c);
+                     setRes.on('end', () => {
+                        let playSound = false;
+                        try {
+                           const s = JSON.parse(setData);
+                           playSound = s.settings.playSoundOnAlert !== false; // Default to true if undefined
+                           if (s.settings.shieldShowPopup === false) {
+                              activeAlerts.delete(threat.id);
+                              return;
+                           }
+                        } catch(e) {}
+                        createAlertWindow(threat, port, playSound);
+                     });
+                  }).on('error', () => {
+                     createAlertWindow(threat, port, true);
+                  });
+               }
+            });
+          }
+        } catch (e) {}
+      });
+    }).on('error', () => {});
+  }, 2000);
+}
+
+function createAlertWindow(threat, port, playSound) {
+   const { screen, shell } = require('electron');
+   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
+   const workArea = primaryDisplay.workArea;
+   
+   if (playSound) shell.beep();
+
+   const offset = (activeAlerts.size - 1) * 200; 
+
+   const alertWin = new BrowserWindow({
+      width: 420,
+      height: 180,
+      x: workArea.x + workArea.width - 420 - 20,
+      y: workArea.y + workArea.height - 180 - 20 - offset,
+      frame: false,
+      transparent: false,
+      backgroundColor: '#0f172a',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      title: "ClamShield Alert",
+      icon: path.join(__dirname, 'public/icon.png'),
+      webPreferences: {
+         nodeIntegration: false,
+         contextIsolation: true
+      }
+   });
+   
+   activeAlerts.set(threat.id, alertWin);
+
+   alertWin.on('closed', () => {
+      activeAlerts.delete(threat.id);
+   });
+   
+   const alertUrl = `http://127.0.0.1:${port}/alert.html?id=${encodeURIComponent(threat.id)}&name=${encodeURIComponent(threat.threatName)}&path=${encodeURIComponent(threat.originalPath)}&port=${port}&playSound=${playSound}`;
+   
+   alertWin.loadURL(alertUrl).catch(err => console.error("Failed to load alert HTML", err));
+}
+
+function getFreePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.listen(0, () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+function createWindow(port) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: 'ClamShield',
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -22,7 +118,7 @@ function createWindow() {
 
   // Wait a moment for server to start, then load
   const loadURL = () => {
-    mainWindow.loadURL('http://127.0.0.1:3000').catch(() => {
+    mainWindow.loadURL(`http://127.0.0.1:${port}`).catch(() => {
       setTimeout(loadURL, 500); // Retry until server is up
     });
   };
@@ -43,8 +139,8 @@ function createWindow() {
 }
 
 function createTray() {
-  const iconPath = path.join(__dirname, 'public/icon.png');
-  // Fallback to empty nativeImage if icon is missing to avoid crashing
+  const iconExt = process.platform === 'win32' ? 'favicon.ico' : 'icon.png';
+  const iconPath = path.join(__dirname, `public/${iconExt}`);
   const trayIcon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   
   tray = new Tray(trayIcon);
@@ -57,7 +153,7 @@ function createTray() {
       } 
     }
   ]);
-  tray.setToolTip('ClamShield Antivirus');
+  tray.setToolTip('ClamShield - Windows GUI for ClamAV');
   tray.setContextMenu(contextMenu);
   
   tray.on('click', () => {
@@ -67,34 +163,44 @@ function createTray() {
   });
 }
 
-function startServer() {
+function startServer(port) {
 
   const serverPath = path.join(__dirname, 'dist/server.cjs');
   const serverDevPath = path.join(__dirname, 'server.ts');
 
-  if (fs.existsSync(serverPath)) {
-    // Production build (avoids shell escaping issues with spaces in paths)
-    serverProcess = spawn('node', [serverPath], {
-      cwd: __dirname,
-      env: { ...process.env, PORT: '3000', NODE_ENV: 'production' }
-    });
-  } else {
-    // Fallback to dev server
-    serverProcess = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['tsx', `"${serverDevPath}"`], {
-      cwd: __dirname,
-      env: { ...process.env, PORT: '3000' },
-      shell: true
-    });
-  }
+  try {
+    if (fs.existsSync(serverPath)) {
+      // Production build (run directly in main process)
+      process.env.PORT = port.toString();
+      process.env.NODE_ENV = 'production';
+      require(serverPath);
+      serverProcess = { kill: () => {} }; // dummy object to maintain compatibility
+    } else {
+      // Fallback to dev server
+      serverProcess = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['tsx', `"${serverDevPath}"`], {
+        cwd: __dirname,
+        env: { ...process.env, PORT: port.toString() },
+        shell: true
+      });
+    }
 
-  serverProcess.stdout.on('data', (data) => console.log(`Server: ${data}`));
-  serverProcess.stderr.on('data', (data) => console.error(`Server Error: ${data}`));
+    if (serverProcess && serverProcess.stdout && typeof serverProcess.stdout.on === 'function') {
+      serverProcess.stdout.on('data', (data) => console.log(`Server: ${data}`));
+    }
+    if (serverProcess && serverProcess.stderr && typeof serverProcess.stderr.on === 'function') {
+      serverProcess.stderr.on('data', (data) => console.error(`Server Error: ${data}`));
+    }
+  } catch (err) {
+    console.error("Failed to start server:", err);
+  }
 }
 
-app.on('ready', () => {
-  startServer();
-  createWindow();
+app.on('ready', async () => {
+  const port = await getFreePort();
+  startServer(port);
+  createWindow(port);
   createTray();
+  pollThreats(port);
 });
 
 app.on('window-all-closed', function () {
@@ -106,7 +212,8 @@ app.on('window-all-closed', function () {
 
 app.on('activate', function () {
   if (mainWindow === null) {
-    createWindow();
+    // Note: getFreePort should ideally be reused, but here we just pass the existing process.env.PORT
+    createWindow(process.env.PORT || 3000);
   }
 });
 

@@ -1,6 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { RefreshCw, Database, Loader2 } from "lucide-react";
 
+const MAX_TERMINAL_LINES = 800;
+
+function appendOutput(previous: string[], next: string[]) {
+  return [...previous, ...next].slice(-MAX_TERMINAL_LINES);
+}
+
 export default function Updates() {
   const [updateState, setUpdateState] = useState<"idle" | "running" | "done">("idle");
   const [output, setOutput] = useState<string[]>([]);
@@ -23,15 +29,15 @@ export default function Updates() {
       setIsSimulated(!!data.simulated);
       
       if (data.simulated) {
-        setOutput(prev => [...prev, "Running in simulation mode...", "Checking for database updates..."]);
+        setOutput(prev => appendOutput(prev, ["Running in simulation mode...", "Checking for database updates..."]));
         setTimeout(() => {
-          setOutput(prev => [...prev, "main.cvd is up to date (version: 62, sigs: XXXXXX, f-level: 90)", "daily.cvd is up to date", "bytecode.cvd is up to date", "Database updated successfully."]);
+          setOutput(prev => appendOutput(prev, ["main.cvd is up to date (version: 62, sigs: XXXXXX, f-level: 90)", "daily.cvd is up to date", "bytecode.cvd is up to date", "Database updated successfully."]));
           setUpdateState("done");
           setJobId(null);
         }, 2500);
       }
     } catch (e: any) {
-      setOutput(prev => [...prev, `Error: ${e.message}`]);
+      setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
       setUpdateState("done");
       setJobId(null);
     }
@@ -45,7 +51,7 @@ export default function Updates() {
           if (res.ok) {
             const data = await res.json();
             if (data.logs && data.logs.length > 0) {
-              setOutput(prev => [...prev, ...data.logs]);
+              setOutput(prev => appendOutput(prev, data.logs));
             }
             if (data.status === "done") {
               setUpdateState("done");

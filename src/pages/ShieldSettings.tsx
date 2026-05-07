@@ -132,6 +132,43 @@ export default function ShieldSettings() {
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
+            <SlidersHorizontal className="w-5 h-5 text-indigo-400" />
+            Performance
+          </div>
+          <div className="p-4 space-y-4">
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Folder depth</span>
+                <span className="text-xs text-slate-500">How many levels below watched folders the shield monitors</span>
+              </div>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                value={settings.shieldDepth ?? 1}
+                onChange={e => updateSettings({ ...settings, shieldDepth: parseInt(e.target.value) })}
+                className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Concurrent scans</span>
+                <span className="text-xs text-slate-500">Keep this at 1 for lowest disk impact</span>
+              </div>
+              <input
+                type="number"
+                min={1}
+                max={4}
+                value={settings.shieldMaxConcurrentScans ?? 1}
+                onChange={e => updateSettings({ ...settings, shieldMaxConcurrentScans: parseInt(e.target.value) })}
+                className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
             <Bell className="w-5 h-5 text-indigo-400" />
             Notifications
           </div>
