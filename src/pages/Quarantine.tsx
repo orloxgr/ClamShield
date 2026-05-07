@@ -1,11 +1,8 @@
-import { ArchiveX, FolderOpen, Send, Trash2 } from "lucide-react";
+import { ArchiveX, FolderOpen, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 
 export default function Quarantine() {
   const [items, setItems] = useState<any[]>([]);
-  const [submittingId, setSubmittingId] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
-  const [fallbackUrl, setFallbackUrl] = useState("");
 
   const fetchItems = () => {
     fetch("/api/quarantine").then(r => r.json()).then(data => {
@@ -38,32 +35,6 @@ export default function Quarantine() {
     }
   };
 
-  const submitSample = async (item: any) => {
-    if (!confirm("Submit this quarantined file to ClamAV for false-positive review? The file contents will be uploaded to ClamAV/Cisco Talos.")) {
-      return;
-    }
-    setSubmittingId(item.fileName);
-    setMessage("");
-    setFallbackUrl("");
-    try {
-      const res = await fetch(`/api/quarantine/${encodeURIComponent(item.fileName)}/submit`, { method: "POST" });
-      const data = await res.json();
-      if (data.fallbackUrl) {
-        setFallbackUrl(data.fallbackUrl);
-        setMessage(data.error || "ClamSubmit could not submit automatically. Use the official web form as a fallback.");
-        return;
-      }
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Submit failed.");
-      }
-      setMessage(data.stdout || data.stderr || "Sample submitted successfully.");
-    } catch (e: any) {
-      setMessage(e.message || "Submit failed.");
-    } finally {
-      setSubmittingId(null);
-    }
-  };
-
   return (
     <div className="p-8 max-w-5xl mx-auto space-y-8">
       <header className="flex items-start justify-between">
@@ -91,24 +62,6 @@ export default function Quarantine() {
         </div>
       </header>
 
-      {message && (
-        <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <span>{message}</span>
-            {fallbackUrl && (
-              <a
-                href={fallbackUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center justify-center px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium transition-colors"
-              >
-                Open ClamAV form
-              </a>
-            )}
-          </div>
-        </div>
-      )}
-
       {items.length === 0 ? (
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 flex flex-col items-center justify-center text-center">
           <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mb-4">
@@ -125,7 +78,6 @@ export default function Quarantine() {
                 <th className="px-6 py-4 font-medium">Detection Name</th>
                 <th className="px-6 py-4 font-medium">Original Location</th>
                 <th className="px-6 py-4 font-medium">Date Caught</th>
-                <th className="px-6 py-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
@@ -134,19 +86,6 @@ export default function Quarantine() {
                   <td className="px-6 py-4 font-medium text-red-400">{item.threatName}</td>
                   <td className="px-6 py-4 text-slate-400 font-mono text-xs">{item.originalPath}</td>
                   <td className="px-6 py-4">{new Date(item.date).toLocaleString()}</td>
-                  <td className="px-6 py-4">
-                    <div className="flex justify-end">
-                      <button
-                        onClick={() => submitSample(item)}
-                        disabled={submittingId === item.fileName}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-colors"
-                        title="Submit false-positive sample to ClamAV"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        {submittingId === item.fileName ? "Submitting..." : "Submit"}
-                      </button>
-                    </div>
-                  </td>
                 </tr>
               ))}
             </tbody>

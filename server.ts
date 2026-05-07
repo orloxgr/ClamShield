@@ -32,9 +32,6 @@ const defaultSettings = {
     clamdPath: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamd.exe") : "/usr/sbin/clamd",
     clamdscanPath: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamdscan.exe") : "/usr/bin/clamdscan",
     clamdConf: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamd.conf") : "/etc/clamav/clamd.conf",
-    clamsubmitPath: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamsubmit.exe") : "/usr/bin/clamsubmit",
-    clamsubmitSenderName: "",
-    clamsubmitEmail: "",
     databaseDir: path.join(programDataDir, "db"),
     quarantineDir: path.join(programDataDir, "quarantine"),
     logsDir: path.join(programDataDir, "logs"),
@@ -70,7 +67,6 @@ const defaultSettings = {
 
 const apiSessionToken = randomBytes(32).toString("hex");
 const apiCookieName = "clamshield_session";
-const clamavFalsePositiveReportUrl = "https://www.clamav.net/reports/fp";
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -830,7 +826,6 @@ async function checkClamAV(settings: any) {
                 settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
                 settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
                 settings.clamdscanPath = path.join(settings.clamavDir, "clamdscan.exe");
-                settings.clamsubmitPath = path.join(settings.clamavDir, "clamsubmit.exe");
                 settings.freshclamConf = path.join(settings.clamavDir, "freshclam.conf");
                 settings.clamdConf = path.join(settings.clamavDir, "clamd.conf");
                 await saveConfig(settings);
@@ -1000,68 +995,6 @@ async function getQuarantineItems(quarantineDir: string) {
     } catch {
         return [];
     }
-}
-
-async function submitQuarantinedSample(settings: any, fileName: string) {
-    const safeName = path.basename(fileName);
-    if (safeName !== fileName) {
-        throw new Error("Invalid quarantine item.");
-    }
-
-    const samplePath = path.join(settings.quarantineDir, safeName);
-    await fs.access(samplePath);
-
-    const qMap = await getQuarantineMap();
-    const metadata = qMap[safeName] || {};
-    const threatName = metadata.threatName || "Unknown";
-    const senderName = String(settings.clamsubmitSenderName || "").trim();
-    const email = String(settings.clamsubmitEmail || "").trim();
-    const clamsubmitPath = String(settings.clamsubmitPath || "").trim();
-
-    if (!clamsubmitPath) {
-        throw new Error("clamsubmit path is not configured.");
-    }
-    await fs.access(clamsubmitPath);
-    if (!senderName || !email) {
-        throw new Error("Set ClamSubmit sender name and email in Settings first.");
-    }
-    if (!threatName || threatName === "Unknown") {
-        throw new Error("Cannot submit without a detection name.");
-    }
-
-    const args = ["-p", samplePath, "-V", threatName, "-N", senderName, "-e", email];
-    return await new Promise<{ stdout: string, stderr: string }>((resolve, reject) => {
-        let stdout = "";
-        let stderr = "";
-        let settled = false;
-        const child = spawn(clamsubmitPath, args, { windowsHide: true });
-        const timeout = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            child.kill();
-            reject(new Error("clamsubmit timed out."));
-        }, 120000);
-
-        child.stdout.on("data", data => stdout += data.toString());
-        child.stderr.on("data", data => stderr += data.toString());
-        child.on("error", error => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            reject(error);
-        });
-        child.on("close", code => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            const output = { stdout: stdout.trim(), stderr: stderr.trim() };
-            if (code === 0) {
-                resolve(output);
-            } else {
-                reject(new Error(output.stderr || output.stdout || `clamsubmit exited with code ${code}`));
-            }
-        });
-    });
 }
 
 async function addHistory(entry: any) {
@@ -1506,7 +1439,6 @@ async function startServer() {
             settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
             settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
             settings.clamdscanPath = path.join(settings.clamavDir, "clamdscan.exe");
-            settings.clamsubmitPath = path.join(settings.clamavDir, "clamsubmit.exe");
             settings.freshclamConf = confPath;
             settings.clamdConf = clamdConfPath;
             
@@ -2176,23 +2108,6 @@ if ($dialog.ShowDialog() -eq 'OK') {
         } catch (e: any) {
             console.error("Error reading quarantine dir:", e);
             res.status(500).json({ error: e.message, items: [] });
-        }
-    });
-
-    app.post("/api/quarantine/:fileName/submit", async (req, res) => {
-        try {
-            const result = await submitQuarantinedSample(settings, req.params.fileName);
-            res.json({ success: true, ...result });
-        } catch (e: any) {
-            const message = e.message || "Submit failed.";
-            if (/authenticity token element not found/i.test(message)) {
-                return res.status(409).json({
-                    success: false,
-                    error: "ClamSubmit could not read ClamAV's web form token. Use the official false-positive web form as a fallback.",
-                    fallbackUrl: clamavFalsePositiveReportUrl
-                });
-            }
-            res.status(400).json({ success: false, error: message });
         }
     });
 
