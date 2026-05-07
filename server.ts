@@ -324,6 +324,16 @@ function normalizePositiveNumber(value: any, fallback: number, min: number, max:
     return Math.min(max, Math.max(min, parsed));
 }
 
+function formatDuration(totalSeconds: number) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -1174,7 +1184,7 @@ async function startServer() {
     await manageStartup(settings);
     cachedIsAdmin = await checkIsAdmin();
 
-    const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any }> = {};
+    const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number }> = {};
     let pendingThreats: any[] = [];
     let shieldScanCache = await loadShieldScanCache();
     let shieldCacheSaveTimer: NodeJS.Timeout | null = null;
@@ -1189,6 +1199,7 @@ async function startServer() {
         const job = activeJobs[jobId];
         if (!job || lines.length === 0) return;
         job.logs.push(...lines);
+        job.lastOutputAt = Date.now();
         if (job.logs.length > 1000) job.logs.splice(0, job.logs.length - 1000);
         const analysisLines = lines.filter(line =>
             line.includes(" FOUND") ||
@@ -1201,6 +1212,29 @@ async function startServer() {
             job.analysisLogs.push(...analysisLines);
             if (job.analysisLogs.length > 5000) job.analysisLogs.splice(0, job.analysisLogs.length - 5000);
         }
+    };
+
+    const createScanHeartbeat = (jobId: string, label: string) => {
+        const startedAt = Date.now();
+        let lastHeartbeatAt = 0;
+        const timer = setInterval(() => {
+            const job = activeJobs[jobId];
+            if (!job || job.status !== "running") {
+                clearInterval(timer);
+                return;
+            }
+            const now = Date.now();
+            if (now - lastHeartbeatAt < 5000) return;
+            lastHeartbeatAt = now;
+            const elapsedSeconds = Math.floor((now - startedAt) / 1000);
+            const lastOutputAt = job.lastOutputAt || startedAt;
+            const quietSeconds = Math.floor((now - lastOutputAt) / 1000);
+            appendJobLogs(jobId, [
+                `${label} still running... elapsed ${formatDuration(elapsedSeconds)}, last output ${quietSeconds}s ago`
+            ]);
+        }, 5000);
+        timer.unref?.();
+        return timer;
     };
 
     let shieldWatcher: any = null;
@@ -1306,12 +1340,20 @@ async function startServer() {
 
             const jobId = "shield-" + Date.now() + Math.random().toString(36).substring(7);
             activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
+            appendJobLogs(jobId, [
+                `Shield scan queued: ${filePath}`,
+                `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
+                `Executable: ${exePath}`,
+                `Arguments: ${args.join(" ")}`
+            ]);
             
             try {
+                const heartbeat = createScanHeartbeat(jobId, "Shield scan");
                 const child = spawn(exePath, args);
                 activeJobs[jobId].process = child;
                 
                 child.on("error", (err: any) => {
+                    clearInterval(heartbeat);
                     console.error("Failed to start shield scan process:", err.message);
                     if (activeJobs[jobId]) {
                         activeJobs[jobId].status = "error";
@@ -1330,6 +1372,7 @@ async function startServer() {
                 });
 
                 child.on("close", async (code) => {
+                    clearInterval(heartbeat);
                     if (!activeJobs[jobId]) return;
                     let threatsFound = 0;
                     let scannedFiles = 0;
@@ -1403,6 +1446,7 @@ async function startServer() {
                     }
 
                     const isThreat = code === 1 || threatsFound > 0;
+                    appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
                     if (isThreat) {
                         console.log(`Shield: Threat found in ${filePath}`);
                     }
@@ -1913,10 +1957,18 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     "Scanning process image files with ClamAV..."
                 ]);
             }
+            appendJobLogs(jobId, [
+                `Scan target: ${type === "memory" ? "Running process images" : (effectiveTarget || scanTarget || "Default target")}`,
+                `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
+                `Executable: ${exePath}`,
+                `Arguments: ${args.join(" ")}`
+            ]);
+            const heartbeat = createScanHeartbeat(jobId, "Scan");
             const child = spawn(exePath, args);
             activeJobs[jobId].process = child;
             
             child.on("error", (err: any) => {
+                clearInterval(heartbeat);
                 console.error("Failed to start manual scan process:", err.message);
                     if (memoryFileListPath) {
                         fs.unlink(memoryFileListPath).catch(() => {});
@@ -1938,6 +1990,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 });
             
             child.on("close", async (code) => {
+                clearInterval(heartbeat);
                 if (!activeJobs[jobId]) return;
                 
                 let scannedFiles = 0;
@@ -2006,6 +2059,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
 
                 const isThreat = code === 1 || threatsFound > 0;
+                appendJobLogs(jobId, [`Scan finished with exit code ${code ?? "unknown"}.`]);
                 await addHistory({
                     type: `scan-${type}`,
                     target: type === "memory" ? "Running process images" : (effectiveTarget || "C:\\"),
@@ -2035,6 +2089,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             });
 
             child.on("error", (err) => {
+                clearInterval(heartbeat);
                 if (!activeJobs[jobId]) return;
                 if (memoryFileListPath) {
                     fs.unlink(memoryFileListPath).catch(() => {});
