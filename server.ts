@@ -70,6 +70,7 @@ const defaultSettings = {
 
 const apiSessionToken = randomBytes(32).toString("hex");
 const apiCookieName = "clamshield_session";
+const clamavFalsePositiveReportUrl = "https://www.clamav.net/reports/fp";
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -974,7 +975,7 @@ async function getQuarantineItems(quarantineDir: string) {
     try {
         const files = await fs.readdir(quarantineDir);
         const qMap = await getQuarantineMap();
-        return Promise.all(files.map(async file => {
+        const items = await Promise.all(files.map(async file => {
             const stat = await fs.stat(path.join(quarantineDir, file));
             let meta = qMap[file];
             if (!meta) {
@@ -983,6 +984,7 @@ async function getQuarantineItems(quarantineDir: string) {
                     meta = qMap[baseMatch[1]];
                 }
             }
+            const timestamp = Number(meta?.timestamp) || stat.mtimeMs;
 
             return {
                 id: file,
@@ -990,9 +992,11 @@ async function getQuarantineItems(quarantineDir: string) {
                 threatName: meta ? meta.threatName : "Unknown Threat",
                 originalPath: meta ? meta.originalPath : "Unknown",
                 size: stat.size,
-                date: stat.mtime
+                timestamp,
+                date: new Date(timestamp).toISOString()
             };
         }));
+        return items.sort((a, b) => b.timestamp - a.timestamp);
     } catch {
         return [];
     }
@@ -2180,7 +2184,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const result = await submitQuarantinedSample(settings, req.params.fileName);
             res.json({ success: true, ...result });
         } catch (e: any) {
-            res.status(400).json({ success: false, error: e.message });
+            const message = e.message || "Submit failed.";
+            if (/authenticity token element not found/i.test(message)) {
+                return res.status(409).json({
+                    success: false,
+                    error: "ClamSubmit could not read ClamAV's web form token. Use the official false-positive web form as a fallback.",
+                    fallbackUrl: clamavFalsePositiveReportUrl
+                });
+            }
+            res.status(400).json({ success: false, error: message });
         }
     });
 

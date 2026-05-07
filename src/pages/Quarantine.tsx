@@ -5,6 +5,7 @@ export default function Quarantine() {
   const [items, setItems] = useState<any[]>([]);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [fallbackUrl, setFallbackUrl] = useState("");
 
   const fetchItems = () => {
     fetch("/api/quarantine").then(r => r.json()).then(data => {
@@ -13,7 +14,7 @@ export default function Quarantine() {
       else if (data && Array.isArray(data.items)) fetchedItems = data.items;
       
       // Sort newest first
-      fetchedItems.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      fetchedItems.sort((a: any, b: any) => (Number(b.timestamp) || new Date(b.date).getTime()) - (Number(a.timestamp) || new Date(a.date).getTime()));
       setItems(fetchedItems);
     }).catch(() => setItems([]));
   };
@@ -43,9 +44,15 @@ export default function Quarantine() {
     }
     setSubmittingId(item.fileName);
     setMessage("");
+    setFallbackUrl("");
     try {
       const res = await fetch(`/api/quarantine/${encodeURIComponent(item.fileName)}/submit`, { method: "POST" });
       const data = await res.json();
+      if (data.fallbackUrl) {
+        setFallbackUrl(data.fallbackUrl);
+        setMessage(data.error || "ClamSubmit could not submit automatically. Use the official web form as a fallback.");
+        return;
+      }
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Submit failed.");
       }
@@ -86,7 +93,19 @@ export default function Quarantine() {
 
       {message && (
         <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">
-          {message}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <span>{message}</span>
+            {fallbackUrl && (
+              <a
+                href={fallbackUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium transition-colors"
+              >
+                Open ClamAV form
+              </a>
+            )}
+          </div>
         </div>
       )}
 
