@@ -6,12 +6,14 @@ import os from "os";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import { createHash, randomBytes } from "crypto";
+import { createRequire } from "module";
 import axios from "axios";
 import unzipper from "unzipper";
 import chokidar from "chokidar";
 
 const runtimeFileName = typeof __filename === "string" ? __filename : path.resolve(process.argv[1] || ".");
 const runtimeDir = typeof __dirname === "string" ? __dirname : path.dirname(runtimeFileName);
+const nodeRequire = createRequire(import.meta.url);
 
 const execAsync = promisify(exec);
 
@@ -725,16 +727,31 @@ function getShieldCachePath() {
     return path.join(programDataDir, "shield_scan_cache.json");
 }
 
+function getShieldCacheDbPath() {
+    return path.join(programDataDir, "shield_scan_cache.sqlite");
+}
+
 function normalizeCachePath(filePath: string) {
     return path.resolve(filePath).toLowerCase();
 }
 
-async function loadShieldScanCache(): Promise<ShieldScanCache> {
+interface ShieldScanCacheStore {
+    type: "sqlite" | "json";
+    get(normalizedPath: string): ShieldCacheEntry | undefined;
+    set(normalizedPath: string, entry: ShieldCacheEntry): void;
+    delete(normalizedPath: string): void;
+    clear(): void;
+    count(): number;
+    compact?(): void;
+}
+
+async function loadLegacyShieldScanCache(): Promise<ShieldScanCache> {
     const cachePath = getShieldCachePath();
     try {
         const stat = await fs.stat(cachePath);
         if (stat.size > 50 * 1024 * 1024) {
             console.warn("Shield scan cache is too large; starting with a fresh cache.");
+            await saveLegacyShieldScanCache({ version: 1, files: {} }).catch(() => {});
             return { version: 1, files: {} };
         }
         const data = await fs.readFile(cachePath, "utf8");
@@ -746,8 +763,141 @@ async function loadShieldScanCache(): Promise<ShieldScanCache> {
     return { version: 1, files: {} };
 }
 
-async function saveShieldScanCache(cache: ShieldScanCache) {
+async function saveLegacyShieldScanCache(cache: ShieldScanCache) {
     await fs.writeFile(getShieldCachePath(), JSON.stringify(cache));
+}
+
+class JsonShieldScanCacheStore implements ShieldScanCacheStore {
+    type: "json" = "json";
+    private cache: ShieldScanCache;
+
+    constructor(cache: ShieldScanCache) {
+        this.cache = cache;
+    }
+
+    get(normalizedPath: string) {
+        return this.cache.files[normalizedPath];
+    }
+
+    set(normalizedPath: string, entry: ShieldCacheEntry) {
+        this.cache.files[normalizedPath] = entry;
+        saveLegacyShieldScanCache(this.cache).catch(e => console.error("Failed to save shield JSON cache:", e));
+    }
+
+    delete(normalizedPath: string) {
+        delete this.cache.files[normalizedPath];
+        saveLegacyShieldScanCache(this.cache).catch(e => console.error("Failed to save shield JSON cache:", e));
+    }
+
+    clear() {
+        this.cache = { version: 1, files: {} };
+        saveLegacyShieldScanCache(this.cache).catch(e => console.error("Failed to save shield JSON cache:", e));
+    }
+
+    count() {
+        return Object.keys(this.cache.files).length;
+    }
+}
+
+class SqliteShieldScanCacheStore implements ShieldScanCacheStore {
+    type: "sqlite" = "sqlite";
+    private db: any;
+    private getStmt: any;
+    private setStmt: any;
+    private deleteStmt: any;
+    private countStmt: any;
+
+    constructor(dbPath: string) {
+        const { DatabaseSync } = nodeRequire("node:sqlite");
+        this.db = new DatabaseSync(dbPath);
+        this.db.exec(`
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            CREATE TABLE IF NOT EXISTS shield_scan_cache (
+                path TEXT PRIMARY KEY,
+                size INTEGER NOT NULL,
+                mtime_ms INTEGER NOT NULL,
+                scanned_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_shield_scan_cache_scanned_at ON shield_scan_cache(scanned_at);
+        `);
+        this.getStmt = this.db.prepare("SELECT size, mtime_ms as mtimeMs, scanned_at as scannedAt FROM shield_scan_cache WHERE path = ?");
+        this.setStmt = this.db.prepare(`
+            INSERT INTO shield_scan_cache(path, size, mtime_ms, scanned_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                size = excluded.size,
+                mtime_ms = excluded.mtime_ms,
+                scanned_at = excluded.scanned_at
+        `);
+        this.deleteStmt = this.db.prepare("DELETE FROM shield_scan_cache WHERE path = ?");
+        this.countStmt = this.db.prepare("SELECT COUNT(*) as count FROM shield_scan_cache");
+    }
+
+    get(normalizedPath: string) {
+        const row = this.getStmt.get(normalizedPath);
+        if (!row) return undefined;
+        return {
+            size: Number(row.size),
+            mtimeMs: Number(row.mtimeMs),
+            scannedAt: Number(row.scannedAt)
+        };
+    }
+
+    set(normalizedPath: string, entry: ShieldCacheEntry) {
+        this.setStmt.run(normalizedPath, entry.size, entry.mtimeMs, entry.scannedAt);
+    }
+
+    delete(normalizedPath: string) {
+        this.deleteStmt.run(normalizedPath);
+    }
+
+    clear() {
+        this.db.exec("DELETE FROM shield_scan_cache; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+    }
+
+    count() {
+        const row = this.countStmt.get();
+        return Number(row?.count || 0);
+    }
+
+    compact() {
+        this.db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+    }
+
+    importLegacy(cache: ShieldScanCache) {
+        const entries = Object.entries(cache.files || {});
+        if (entries.length === 0) return 0;
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            for (const [normalizedPath, entry] of entries) {
+                if (!entry || typeof entry.size !== "number" || typeof entry.mtimeMs !== "number") continue;
+                this.set(normalizedPath, entry);
+            }
+            this.db.exec("COMMIT");
+        } catch (e) {
+            this.db.exec("ROLLBACK");
+            throw e;
+        }
+        return entries.length;
+    }
+}
+
+async function loadShieldScanCacheStore(): Promise<ShieldScanCacheStore> {
+    try {
+        const store = new SqliteShieldScanCacheStore(getShieldCacheDbPath());
+        const legacyCache = await loadLegacyShieldScanCache();
+        const legacyCount = Object.keys(legacyCache.files).length;
+        if (legacyCount > 0) {
+            const importedCount = store.importLegacy(legacyCache);
+            await saveLegacyShieldScanCache({ version: 1, files: {} });
+            console.log(`Migrated ${importedCount} shield cache entries to SQLite.`);
+        }
+        return store;
+    } catch (e) {
+        console.warn("SQLite shield cache unavailable; using JSON fallback.", e);
+        return new JsonShieldScanCacheStore(await loadLegacyShieldScanCache());
+    }
 }
 
 async function getFileFingerprint(filePath: string): Promise<ShieldCacheEntry | null> {
@@ -808,16 +958,17 @@ async function* walkFiles(rootPath: string): AsyncGenerator<string> {
     }
 }
 
-async function addTargetToShieldCache(cache: ShieldScanCache, targetPath: string, onProgress?: (count: number) => void) {
+async function addTargetToShieldCache(cache: ShieldScanCacheStore, targetPath: string, onProgress?: (count: number) => void) {
     let count = 0;
     for await (const filePath of walkFiles(targetPath)) {
         const fingerprint = await getFileFingerprint(filePath);
         if (!fingerprint) continue;
-        cache.files[normalizeCachePath(filePath)] = fingerprint;
+        cache.set(normalizeCachePath(filePath), fingerprint);
         count++;
         if (count % 5000 === 0) onProgress?.(count);
         if (count % 200 === 0) await sleep(1);
     }
+    cache.compact?.();
     onProgress?.(count);
     return count;
 }
@@ -1283,15 +1434,8 @@ async function startServer() {
 
     const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number }> = {};
     let pendingThreats: any[] = [];
-    let shieldScanCache = await loadShieldScanCache();
-    let shieldCacheSaveTimer: NodeJS.Timeout | null = null;
-    const scheduleShieldCacheSave = () => {
-        if (shieldCacheSaveTimer) clearTimeout(shieldCacheSaveTimer);
-        shieldCacheSaveTimer = setTimeout(() => {
-            saveShieldScanCache(shieldScanCache).catch(e => console.error("Failed to save shield scan cache:", e));
-            shieldCacheSaveTimer = null;
-        }, 15000);
-    };
+    const shieldScanCache = await loadShieldScanCacheStore();
+    console.log(`Shield cache backend: ${shieldScanCache.type}`);
     const appendJobLogs = (jobId: string, lines: string[]) => {
         const job = activeJobs[jobId];
         if (!job || lines.length === 0) return;
@@ -1418,14 +1562,13 @@ async function startServer() {
             filesBeingScanned.add(normalizedPath);
             console.log(`Shield: File ${reason === "add" ? "detected" : "changed"} -> ${filePath}`);
             const fingerprint = await getFileFingerprint(filePath);
-            if (!fingerprint || cacheEntryMatches(fingerprint, shieldScanCache.files[normalizedPath]) || isSimulated) {
+            if (!fingerprint || cacheEntryMatches(fingerprint, shieldScanCache.get(normalizedPath)) || isSimulated) {
                 filesBeingScanned.delete(normalizedPath);
                 return;
             }
             const maxFileSizeBytes = normalizePositiveNumber(currentSettings.maxFileSize, 50, 1, 4096) * 1024 * 1024;
             if (fingerprint.size > maxFileSizeBytes) {
-                shieldScanCache.files[normalizedPath] = fingerprint;
-                scheduleShieldCacheSave();
+                shieldScanCache.set(normalizedPath, fingerprint);
                 filesBeingScanned.delete(normalizedPath);
                 return;
             }
@@ -1555,11 +1698,9 @@ async function startServer() {
 
                     const latestFingerprint = await getFileFingerprint(filePath);
                     if (latestFingerprint) {
-                        shieldScanCache.files[normalizedPath] = latestFingerprint;
-                        scheduleShieldCacheSave();
+                        shieldScanCache.set(normalizedPath, latestFingerprint);
                     } else {
-                        delete shieldScanCache.files[normalizedPath];
-                        scheduleShieldCacheSave();
+                        shieldScanCache.delete(normalizedPath);
                     }
                     
                     await addHistory({
@@ -1645,7 +1786,8 @@ async function startServer() {
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
                 quarantineCount: quarantineItems.length,
-                shieldCacheCount: Object.keys(shieldScanCache.files).length
+                shieldCacheCount: shieldScanCache.count(),
+                shieldCacheBackend: shieldScanCache.type
             }
         });
     });
@@ -1823,12 +1965,7 @@ async function startServer() {
     });
 
     app.post("/api/shield-cache/clear", async (req, res) => {
-        shieldScanCache = { version: 1, files: {} };
-        if (shieldCacheSaveTimer) {
-            clearTimeout(shieldCacheSaveTimer);
-            shieldCacheSaveTimer = null;
-        }
-        await saveShieldScanCache(shieldScanCache);
+        shieldScanCache.clear();
         res.json({ success: true, shieldCacheCount: 0 });
     });
 
@@ -2189,7 +2326,6 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, (count) => {
                             appendJobLogs(jobId, [`Shield cache indexed: ${count} files`]);
                         });
-                        await saveShieldScanCache(shieldScanCache);
                         appendJobLogs(jobId, [`Shield cache updated: ${cachedCount} files indexed`]);
                     } catch (e: any) {
                         appendJobLogs(jobId, [`Shield cache update failed: ${e.message}`]);
