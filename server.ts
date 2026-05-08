@@ -138,6 +138,8 @@ const defaultSettings = {
     shieldDepth: 1,
     shieldPollInterval: 1000,
     shieldStabilityThreshold: 2000,
+    shieldLowImpactMode: true,
+    shieldProcessPriority: "belowNormal",
     runOnStartup: true,
     startMinimized: false,
     eulaAccepted: false,
@@ -363,8 +365,31 @@ async function getDefenderStatus() {
     return runPowerShellJson(defenderStatusScript());
 }
 
+function defenderTamperProtectedResult(status: any) {
+    return {
+        Supported: true,
+        Success: false,
+        SideBySideMode: true,
+        NeedsManualAction: true,
+        IsTamperProtected: true,
+        RealTimeProtectionEnabled: status?.RealTimeProtectionEnabled ?? null,
+        BehaviorMonitorEnabled: status?.BehaviorMonitorEnabled ?? null,
+        IoavProtectionEnabled: status?.IoavProtectionEnabled ?? null,
+        OnAccessProtectionEnabled: status?.OnAccessProtectionEnabled ?? null,
+        DisableRealtimeMonitoring: status?.DisableRealtimeMonitoring ?? null,
+        DisableBehaviorMonitoring: status?.DisableBehaviorMonitoring ?? null,
+        DisableIOAVProtection: status?.DisableIOAVProtection ?? null,
+        DisableScriptScanning: status?.DisableScriptScanning ?? null,
+        Message: "Windows Tamper Protection is ON. Defender cannot be paused automatically. ClamShield will keep running side-by-side."
+    };
+}
+
 async function requestDefenderPause() {
     if (process.platform !== "win32") return { Supported: false, Success: false, Error: "Only supported on Windows." };
+    const status = await getDefenderStatus();
+    if (status?.IsTamperProtected === true) {
+        return defenderTamperProtectedResult(status);
+    }
     return runPowerShellJson(defenderDisableScript());
 }
 
@@ -373,10 +398,26 @@ async function restoreDefenderPreferences() {
     return runPowerShellJson(defenderRestoreScript());
 }
 
+async function openWindowsSecurity() {
+    if (process.platform !== "win32") return { success: false, error: "Only supported on Windows." };
+    const targets = ["windowsdefender:", "ms-settings:windowsdefender"];
+    for (const target of targets) {
+        try {
+            spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", "Start-Process", target], {
+                detached: true,
+                stdio: "ignore",
+                windowsHide: true
+            }).unref();
+            return { success: true, target };
+        } catch {}
+    }
+    return { success: false, error: "Windows Security could not be opened." };
+}
+
 async function autoDisableDefender() {
     try {
         const result = await requestDefenderPause();
-        if (!result.Success) {
+        if (!result.Success && !result.SideBySideMode) {
             console.warn("Defender pause was not fully applied:", result.Message || result.Error || result);
         }
         return result;
@@ -418,6 +459,56 @@ function formatDuration(totalSeconds: number) {
 
 function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function normalizeWindowsPriority(value: any, fallback = "BelowNormal") {
+    const normalized = String(value || fallback).toLowerCase();
+    const priorityMap: Record<string, string> = {
+        idle: "Idle",
+        belownormal: "BelowNormal",
+        "below-normal": "BelowNormal",
+        below_normal: "BelowNormal",
+        normal: "Normal"
+    };
+    return priorityMap[normalized] || fallback;
+}
+
+async function setWindowsProcessPriority(pid: any, priority: any) {
+    if (process.platform !== "win32") return;
+    const normalizedPid = Number(pid);
+    if (!Number.isInteger(normalizedPid) || normalizedPid <= 0) return;
+
+    const priorityClass = normalizeWindowsPriority(priority);
+    const script = [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        `$p = Get-Process -Id ${normalizedPid} -ErrorAction SilentlyContinue`,
+        `if ($p) { $p.PriorityClass = '${priorityClass}' }`
+    ].join("\n");
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+            if (!settled) {
+                settled = true;
+                resolve();
+            }
+        };
+        const child = spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded], { windowsHide: true });
+        child.on("error", done);
+        child.on("close", done);
+    });
+}
+
+function applyShieldLowImpactPriority(child: any, settings: any, label: string) {
+    if (settings?.shieldLowImpactMode === false) return;
+    const priorityClass = normalizeWindowsPriority(settings?.shieldProcessPriority, "BelowNormal");
+    void setWindowsProcessPriority(child?.pid, priorityClass)
+        .then(() => {
+            if (process.platform === "win32" && child?.pid) {
+                console.log(`Shield low impact mode: ${label} PID ${child.pid} priority set to ${priorityClass}.`);
+            }
+        })
+        .catch((err: any) => console.warn(`Shield low impact mode could not set ${label} priority:`, err?.message || err));
 }
 
 async function isDirectory(dirPath: string) {
@@ -1529,6 +1620,7 @@ async function manageClamd(settings: any) {
                 await ensureClamdConfExclusions(settings);
                 
                 clamdProcess = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf]);
+                applyShieldLowImpactPriority(clamdProcess, settings, "clamd");
                 clamdProcess.on("error", (err: any) => {
                     console.error("Failed to start clamd:", err.message);
                     clamdProcess = null;
@@ -1539,6 +1631,17 @@ async function manageClamd(settings: any) {
                 });
             } catch (e: any) {
                 console.error("Failed to start clamd:", e.message);
+            }
+        } else {
+            if (settings.shieldLowImpactMode === false) {
+                void setWindowsProcessPriority(clamdProcess?.pid, "Normal")
+                    .then(() => {
+                        if (process.platform === "win32" && clamdProcess?.pid) {
+                            console.log(`Shield low impact mode: clamd PID ${clamdProcess.pid} priority restored to Normal.`);
+                        }
+                    });
+            } else {
+                applyShieldLowImpactPriority(clamdProcess, settings, "clamd");
             }
         }
     } else {
@@ -2377,6 +2480,7 @@ async function startServer() {
             appendJobLogs(jobId, [
                 `Shield scan queued: ${filePath}`,
                 `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
+                `Low impact mode: ${currentSettings.shieldLowImpactMode === false ? "off" : normalizeWindowsPriority(currentSettings.shieldProcessPriority, "BelowNormal") + " CPU priority"}`,
                 `Executable: ${exePath}`,
                 `Arguments: ${args.join(" ")}`
             ]);
@@ -2385,6 +2489,10 @@ async function startServer() {
                 const heartbeat = createScanHeartbeat(jobId, "Shield scan");
                 const child = spawn(exePath, args);
                 activeJobs[jobId].process = child;
+                applyShieldLowImpactPriority(child, currentSettings, isClamd ? "clamdscan" : "clamscan");
+                if (isClamd && clamdProcess) {
+                    applyShieldLowImpactPriority(clamdProcess, currentSettings, "clamd");
+                }
                 
                 child.on("error", (err: any) => {
                     clearInterval(heartbeat);
@@ -2914,6 +3022,15 @@ async function startServer() {
             res.json({ success: result.Success, ...result });
         } catch (e: any) {
             res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/open-windows-security", async (req, res) => {
+        try {
+            const result = await openWindowsSecurity();
+            res.status(result.success ? 200 : 500).json(result);
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e.message });
         }
     });
 

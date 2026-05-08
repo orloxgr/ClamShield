@@ -25,7 +25,18 @@ export default function SettingsPage() {
 
   const defenderResultMessage = (data: any, fallback: string) => {
     if (data?.success || data?.Success) return data.Message || fallback;
+    if (data?.SideBySideMode) return data.Message || "Windows Tamper Protection is ON. ClamShield will keep running side-by-side.";
     return data?.Message || data?.error || "Windows 10/11 blocked the Defender change. Check Tamper Protection or policy.";
+  };
+
+  const openWindowsSecurity = async () => {
+    try {
+      const res = await fetch("/api/open-windows-security", { method: "POST" });
+      const data = await res.json();
+      setMsg(data.success ? "Windows Security opened." : data.error || "Windows Security could not be opened.");
+    } catch (e: any) {
+      setMsg("Error: " + e.message);
+    }
   };
 
   const updateNumberSetting = (key: string, rawValue: string, fallback: number, min: number, max: number) => {
@@ -109,7 +120,7 @@ export default function SettingsPage() {
             <h3 className="text-slate-200 font-medium pt-2 block">Windows Security</h3>
             <p className="text-sm text-slate-400">
               Register ClamShield to alert Windows Defender that another antivirus software is installed. 
-              This will disable Windows Defender's real-time protection to prevent conflicts, avoiding having 2 antivirus apps running at the same time.
+              If Windows allows it, this pauses Defender real-time protection to avoid duplicate scanning. If Tamper Protection is on, ClamShield runs side-by-side and shows a manual action state.
             </p>
             <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
               <div>
@@ -139,11 +150,11 @@ export default function SettingsPage() {
             <div className="flex items-start gap-2 bg-slate-800/50 p-3 rounded-lg border border-indigo-500/20 text-indigo-200/80 text-xs">
               <ShieldAlert className="w-4 h-4 shrink-0 text-indigo-400 mt-0.5" />
               <p>
-                <strong>Note:</strong> Windows 10/11 Tamper Protection or local policy can block third-party apps from pausing Microsoft Defender. ClamShield will try the supported PowerShell preferences and then verify the actual Defender state.
+                <strong>Note:</strong> Windows 10/11 Tamper Protection blocks third-party apps from pausing Microsoft Defender. When it is on, ClamShield avoids repeated pause attempts and keeps protecting in side-by-side mode.
               </p>
             </div>
             {defenderStatus?.Supported !== false && (
-              <div className="grid sm:grid-cols-2 gap-3 text-xs">
+              <div className="grid sm:grid-cols-3 gap-3 text-xs">
                 <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
                   <span className="text-slate-500 block mb-1">Defender real-time protection</span>
                   <span className={defenderStatus?.RealTimeProtectionEnabled === false ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
@@ -156,6 +167,12 @@ export default function SettingsPage() {
                     {defenderStatus?.IsTamperProtected === null || defenderStatus?.IsTamperProtected === undefined
                       ? "Unknown"
                       : defenderStatus.IsTamperProtected ? "On" : "Off"}
+                  </span>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <span className="text-slate-500 block mb-1">ClamShield mode</span>
+                  <span className={defenderStatus?.IsTamperProtected ? "text-amber-400 font-medium" : "text-emerald-400 font-medium"}>
+                    {defenderStatus?.IsTamperProtected ? "Side-by-side" : "Can pause Defender"}
                   </span>
                 </div>
               </div>
@@ -190,6 +207,12 @@ export default function SettingsPage() {
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium transition-colors text-sm"
               >
                 Pause Defender
+              </button>
+              <button
+                onClick={openWindowsSecurity}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors text-sm"
+              >
+                Open Windows Security
               </button>
               <button
                 onClick={async () => {
@@ -321,6 +344,18 @@ export default function SettingsPage() {
                 type="checkbox"
                 checked={settings.autoDetectBrowserDownloads !== false}
                 onChange={e => setSettings({...settings, autoDetectBrowserDownloads: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer py-2">
+              <div>
+                <span className="text-slate-300 block text-sm">Low impact Shield scans</span>
+                <span className="text-xs text-slate-500">Runs real-time ClamAV scans below normal CPU priority to reduce foreground slowdowns.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.shieldLowImpactMode !== false}
+                onChange={e => setSettings({...settings, shieldLowImpactMode: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>

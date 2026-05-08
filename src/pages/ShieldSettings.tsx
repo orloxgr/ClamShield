@@ -193,6 +193,18 @@ export default function ShieldSettings() {
           <div className="p-4 space-y-4">
             <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
+                <span className="text-slate-300 block">Low impact Shield scans</span>
+                <span className="text-xs text-slate-500">Runs ClamAV Shield scans with below-normal Windows CPU priority so foreground apps stay responsive.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.shieldLowImpactMode !== false}
+                onChange={() => toggle("shieldLowImpactMode")}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
                 <span className="text-slate-300 block">Folder depth</span>
                 <span className="text-xs text-slate-500">How many levels below watched folders the shield monitors</span>
               </div>
