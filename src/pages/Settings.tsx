@@ -33,7 +33,7 @@ export default function SettingsPage() {
     try {
       const res = await fetch("/api/open-windows-security", { method: "POST" });
       const data = await res.json();
-      setMsg(data.success ? "Windows Security opened." : data.error || "Windows Security could not be opened.");
+      setMsg(data.success ? "Windows Security virus protection settings opened." : data.error || "Windows Security could not be opened.");
     } catch (e: any) {
       setMsg("Error: " + e.message);
     }
@@ -212,7 +212,7 @@ export default function SettingsPage() {
                 onClick={openWindowsSecurity}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors text-sm"
               >
-                Open Windows Security
+                Open Defender Settings
               </button>
               <button
                 onClick={async () => {

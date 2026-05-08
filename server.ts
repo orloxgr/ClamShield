@@ -401,6 +401,8 @@ async function restoreDefenderPreferences() {
 async function openWindowsSecurity() {
     if (process.platform !== "win32") return { success: false, error: "Only supported on Windows." };
     const attempts = [
+        { command: "explorer.exe", args: ["windowsdefender://threatsettings/"] },
+        { command: "cmd.exe", args: ["/c", "start", "", "windowsdefender://threatsettings/"] },
         { command: "explorer.exe", args: ["windowsdefender:"] },
         { command: "explorer.exe", args: ["ms-settings:windowsdefender"] },
         { command: "cmd.exe", args: ["/c", "start", "", "windowsdefender:"] },
