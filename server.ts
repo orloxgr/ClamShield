@@ -863,6 +863,26 @@ function buildClamFileListArgs(scanSettings: any, isClamd: boolean, listPath: st
     return args;
 }
 
+function parseClamOutputPath(line: string) {
+    const match = line.match(/^(.+?):\s+(.+)$/);
+    return match ? match[1] : "";
+}
+
+function isNoisyClamFileLine(line: string) {
+    return /:\s+(OK|Empty file|Symbolic link|Excluded|File path check failure|Can't get file status|Can't open file or directory)(?:\.| ERROR)?$/i.test(line) ||
+        /^WARNING: File path check failure for:/i.test(line);
+}
+
+function isImportantClamOutputLine(line: string) {
+    if (!line) return false;
+    if (line.includes(" FOUND")) return true;
+    if (/^-{3,}\s*SCAN SUMMARY\s*-{3,}$/i.test(line)) return true;
+    if (/^(Known viruses|Engine version|Scanned directories|Scanned files|Infected files|Total errors|Time|Start Date|End Date):/i.test(line)) return true;
+    if (/^(ERROR|LibClamAV Error|Process error):/i.test(line)) return true;
+    if (line.includes(" ERROR") && !isNoisyClamFileLine(line)) return true;
+    return false;
+}
+
 async function hashFile(filePath: string) {
     const hash = createHash("sha256");
     await new Promise<void>((resolve, reject) => {
@@ -3169,15 +3189,27 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 const code = await new Promise<number>((resolve) => {
                     const child = spawn(exePath, args);
                     activeJobs[jobId].process = child;
+                    let lastCurrentFileUpdateAt = 0;
+                    const handleEngineLines = (lines: string[]) => {
+                        chunkLines.push(...lines);
+                        const visibleLines = lines.filter(isImportantClamOutputLine);
+                        if (visibleLines.length) appendJobLogs(jobId, visibleLines);
+                        const now = Date.now();
+                        if (now - lastCurrentFileUpdateAt > 250) {
+                            const latestPath = [...lines].reverse().map(parseClamOutputPath).find(Boolean);
+                            if (latestPath) {
+                                lastCurrentFileUpdateAt = now;
+                                saveJobProgress(jobId, { currentFile: latestPath });
+                            }
+                        }
+                    };
                     child.stdout.on("data", data => {
                         const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
-                        chunkLines.push(...lines);
-                        appendJobLogs(jobId, lines);
+                        handleEngineLines(lines);
                     });
                     child.stderr.on("data", data => {
                         const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
-                        chunkLines.push(...lines);
-                        appendJobLogs(jobId, lines);
+                        handleEngineLines(lines);
                     });
                     child.on("error", error => {
                         appendJobLogs(jobId, [`Process error: ${error.message}`]);
@@ -3188,9 +3220,25 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 await fs.unlink(listPath).catch(() => {});
                 if (activeJobs[jobId]?.process) activeJobs[jobId].process = null;
 
+                let suppressedCleanLines = 0;
+                let suppressedFileWarningLines = 0;
                 for (const line of chunkLines) {
                     if (line.includes(" FOUND")) await handleFoundLine(line);
-                    else if (line.includes(" ERROR") || line.startsWith("WARNING:")) errorsFound++;
+                    else if (isNoisyClamFileLine(line)) {
+                        if (line.includes(" ERROR") || line.startsWith("WARNING:")) {
+                            errorsFound++;
+                            suppressedFileWarningLines++;
+                        } else {
+                            suppressedCleanLines++;
+                        }
+                    } else if (line.includes(" ERROR") || line.startsWith("WARNING:")) {
+                        errorsFound++;
+                    }
+                }
+                if (suppressedCleanLines > 0 || suppressedFileWarningLines > 0) {
+                    appendJobLogs(jobId, [
+                        `Batch ${i + 1}/${chunks.length}: ${suppressedCleanLines} clean file line${suppressedCleanLines === 1 ? "" : "s"} hidden, ${suppressedFileWarningLines} file warning${suppressedFileWarningLines === 1 ? "" : "s"} counted.`
+                    ]);
                 }
                 scannedFiles += chunk.length;
                 saveJobProgress(jobId, {
