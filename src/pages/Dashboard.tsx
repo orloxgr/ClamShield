@@ -100,6 +100,20 @@ export default function Dashboard() {
               <span className="text-slate-500">Platform</span>
               <span className="font-medium text-slate-200">{status.platform}</span>
             </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
+              <span className="text-slate-500">YARA Engine</span>
+              <span className={status.hasYaraEngine ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+                {status.hasYaraEngine ? "Installed" : "Not installed"}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
+              <span className="text-slate-500">YARA Rules</span>
+              <span className={status.hasYaraRules ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+                {status.hasYaraRules
+                  ? `${status.stats.yaraRuleset || "core"} · ${status.stats.yaraRuleCount || 0} rules`
+                  : "Missing"}
+              </span>
+            </div>
             <div className="flex justify-between items-center py-2">
               <span className="text-slate-500">Privileges</span>
               <span className={status.isAdmin ? "text-emerald-400" : "text-amber-400"}>

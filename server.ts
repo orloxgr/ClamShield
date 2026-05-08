@@ -748,17 +748,17 @@ const yaraForgePackages: Record<string, { label: string, url: string, fileName: 
     core: {
         label: "Core",
         url: "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip",
-        fileName: "yara-forge-rules-core.yar"
+        fileName: "yara-rules-core.yar"
     },
     extended: {
         label: "Extended",
         url: "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-extended.zip",
-        fileName: "yara-forge-rules-extended.yar"
+        fileName: "yara-rules-extended.yar"
     },
     full: {
         label: "Full",
         url: "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip",
-        fileName: "yara-forge-rules-full.yar"
+        fileName: "yara-rules-full.yar"
     }
 };
 
@@ -819,6 +819,21 @@ async function findFileByName(rootPath: string, fileName: string): Promise<strin
     return null;
 }
 
+async function findLargestYaraFile(rootPath: string): Promise<string | null> {
+    let best: { filePath: string, size: number } | null = null;
+    for await (const filePath of walkFiles(rootPath)) {
+        const ext = path.extname(filePath).toLowerCase();
+        if (ext !== ".yar" && ext !== ".yara") continue;
+        try {
+            const stat = await fs.stat(filePath);
+            if (!best || stat.size > best.size) {
+                best = { filePath, size: stat.size };
+            }
+        } catch {}
+    }
+    return best?.filePath || null;
+}
+
 async function countYaraRules(filePath: string) {
     try {
         const content = await fs.readFile(filePath, "utf8");
@@ -830,6 +845,7 @@ async function countYaraRules(filePath: string) {
 
 async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
     if (settings.yaraPath && existsSync(settings.yaraPath)) {
+        log?.(`YARA engine found: ${settings.yaraPath}`);
         return settings.yaraPath;
     }
     if (process.platform !== "win32") {
@@ -889,7 +905,7 @@ async function updateYaraForgeRules(settings: any, log?: (message: string) => vo
     await extractZip(zipPath, settings.yaraRulesDir || yaraForgeRulesDir);
 
     const expected = await findFileByName(settings.yaraRulesDir || yaraForgeRulesDir, pack.fileName);
-    const anyRulesFile = expected || await findFileByName(settings.yaraRulesDir || yaraForgeRulesDir, `yara-forge-rules-${ruleset}.yar`);
+    const anyRulesFile = expected || await findLargestYaraFile(settings.yaraRulesDir || yaraForgeRulesDir);
     if (!anyRulesFile) {
         throw new Error(`YARA Forge ${pack.label} package did not contain a .yar rules file.`);
     }
