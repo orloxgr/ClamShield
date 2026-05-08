@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, SlidersHorizontal, Bell, Plus, X } from "lucide-react";
+import { Bell, Plus, RotateCcw, SlidersHorizontal, X } from "lucide-react";
 
 export default function ShieldSettings() {
   const [settings, setSettings] = useState<any>(null);
   const [systemPaths, setSystemPaths] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
@@ -55,6 +56,19 @@ export default function ShieldSettings() {
     updateSettings({ ...settings, customWatchedFolders: folders.filter((p: string) => p !== pathToRemove) });
   };
 
+  const forgetScannedFiles = async () => {
+    if (!confirm("Forget the real-time shield scanned-file cache? Existing files will be treated as unknown again when they change or are scanned.")) return;
+    setMessage("");
+    try {
+      const res = await fetch("/api/shield-cache/clear", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || "Failed to clear cache.");
+      setMessage("Scanned file cache cleared.");
+    } catch (e: any) {
+      setMessage(e.message || "Failed to clear cache.");
+    }
+  };
+
   if (!settings) return <div className="p-8">Loading...</div>;
 
   const defaultFolders = [
@@ -83,6 +97,12 @@ export default function ShieldSettings() {
           </button>
         </div>
       </header>
+
+      {message && (
+        <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">
+          {message}
+        </div>
+      )}
 
       <div className={`space-y-6 ${!settings.shieldEnabled && 'opacity-50 pointer-events-none'}`}>
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -199,6 +219,47 @@ export default function ShieldSettings() {
                 className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </label>
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Polling interval</span>
+                <span className="text-xs text-slate-500">How often ClamShield checks whether a changing file has become stable. Lower values react sooner but wake the disk/CPU more often.</span>
+              </div>
+              <input
+                type="number"
+                min={100}
+                max={60000}
+                value={settings.shieldPollInterval || 1000}
+                onChange={e => updateNumberSetting("shieldPollInterval", e.target.value, 1000, 100, 60000)}
+                className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Stability threshold</span>
+                <span className="text-xs text-slate-500">How long a file must stop changing before Shield scans it. Higher values are better for many simultaneous downloads and large files.</span>
+              </div>
+              <input
+                type="number"
+                min={100}
+                max={120000}
+                value={settings.shieldStabilityThreshold || 2000}
+                onChange={e => updateNumberSetting("shieldStabilityThreshold", e.target.value, 2000, 100, 120000)}
+                className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </label>
+            <div className="flex items-center justify-between p-2 border-t border-slate-800 pt-4">
+              <div>
+                <span className="text-slate-300 block">Forget scanned file cache</span>
+                <span className="text-xs text-slate-500">Clears only the Shield cache of already-scanned file fingerprints. It does not delete Results, Quarantine, Exceptions, or History.</span>
+              </div>
+              <button
+                onClick={forgetScannedFiles}
+                className="inline-flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 text-sm"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Forget
+              </button>
+            </div>
           </div>
         </section>
 

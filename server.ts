@@ -1287,11 +1287,10 @@ async function startServer() {
 
         const processShieldQueue = () => {
             while (activeShieldScans < maxShieldScans && pendingShieldScans.size > 0) {
-                const next = pendingShieldScans.entries().next().value as [string, { filePath: string, reason: "add" | "change" }];
+                const next = Array.from(pendingShieldScans.entries()).find(([normalizedPath]) => !filesBeingScanned.has(normalizedPath)) as [string, { filePath: string, reason: "add" | "change" }] | undefined;
                 if (!next) return;
                 const [normalizedPath, item] = next;
                 pendingShieldScans.delete(normalizedPath);
-                if (filesBeingScanned.has(normalizedPath)) continue;
 
                 activeShieldScans++;
                 scanShieldFile(item.filePath, item.reason)
@@ -1305,7 +1304,6 @@ async function startServer() {
 
         const enqueueShieldFile = (filePath: string, reason: "add" | "change") => {
             const normalizedPath = path.resolve(filePath).toLowerCase();
-            if (filesBeingScanned.has(normalizedPath)) return;
             pendingShieldScans.set(normalizedPath, { filePath, reason });
             processShieldQueue();
         };
@@ -1717,6 +1715,16 @@ async function startServer() {
                 scheduleNextUpdate();
             })
             .catch(e => console.error("Failed to apply settings side effects:", e));
+    });
+
+    app.post("/api/shield-cache/clear", async (req, res) => {
+        shieldScanCache = { version: 1, files: {} };
+        if (shieldCacheSaveTimer) {
+            clearTimeout(shieldCacheSaveTimer);
+            shieldCacheSaveTimer = null;
+        }
+        await saveShieldScanCache(shieldScanCache);
+        res.json({ success: true, shieldCacheCount: 0 });
     });
 
     app.post("/api/accept-eula", async (req, res) => {

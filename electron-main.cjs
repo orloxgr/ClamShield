@@ -71,11 +71,9 @@ function pollThreats(port) {
 }
 
 function createAlertWindow(threat, port, playSound) {
-   const { screen, shell } = require('electron');
+   const { screen } = require('electron');
    if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
    const workArea = primaryDisplay.workArea;
-   
-   if (playSound) shell.beep();
 
    const alertWidth = 460;
    const alertHeight = 190;

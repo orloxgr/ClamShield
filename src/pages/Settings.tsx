@@ -307,7 +307,10 @@ export default function SettingsPage() {
               />
             </div>
             <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">Polling Interval (ms)</label>
+              <label className="text-sm font-medium text-slate-400 block w-1/3">
+                Polling Interval (ms)
+                <span className="block text-xs font-normal text-slate-500 mt-1">How often Shield checks if a changing file is stable. Lower is faster but costs more CPU/disk wakeups.</span>
+              </label>
               <input 
                 type="number"
                 value={settings.shieldPollInterval || 1000}
@@ -316,7 +319,10 @@ export default function SettingsPage() {
               />
             </div>
             <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">Stability Threshold (ms)</label>
+              <label className="text-sm font-medium text-slate-400 block w-1/3">
+                Stability Threshold (ms)
+                <span className="block text-xs font-normal text-slate-500 mt-1">How long a file must stop changing before scan. Higher is safer for many downloads and large files.</span>
+              </label>
               <input 
                 type="number"
                 value={settings.shieldStabilityThreshold || 2000}

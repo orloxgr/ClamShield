@@ -132,6 +132,7 @@
 </head>
 <body>
   <main class="wrap">
+    <audio id="alertSound" src="/alert.wav" preload="auto"></audio>
     <section class="header">
       <div class="icon">!</div>
       <div>
@@ -158,9 +159,15 @@
     const port = params.get("port") || window.location.port;
     const name = params.get("name") || "Unknown threat";
     const filePath = params.get("path") || "Unknown path";
+    const playSound = params.get("playSound") !== "false";
 
     document.getElementById("threatName").textContent = name;
     document.getElementById("threatPath").textContent = filePath;
+    if (playSound) {
+      const audio = document.getElementById("alertSound");
+      audio.volume = 0.55;
+      audio.play().catch(() => {});
+    }
 
     async function sendAction(action) {
       const buttons = document.querySelectorAll("button");
