@@ -122,6 +122,7 @@ export default function ResultsPage() {
               <tr>
                 <th className="px-6 py-4 font-medium">Detection</th>
                 <th className="px-6 py-4 font-medium">File</th>
+                <th className="px-6 py-4 font-medium">Engine</th>
                 <th className="px-6 py-4 font-medium">Source</th>
                 <th className="px-6 py-4 font-medium">Date</th>
                 <th className="px-6 py-4 font-medium text-right">Actions</th>
@@ -137,6 +138,12 @@ export default function ResultsPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-slate-400 font-mono text-xs break-all">{item.originalPath}</td>
+                  <td className="px-6 py-4 text-slate-400">
+                    <div className="flex flex-col gap-1">
+                      <span>{item.engine || "ClamAV"}</span>
+                      {item.yaraRuleset && <span className="text-xs text-slate-500 capitalize">{item.yaraRuleset}</span>}
+                    </div>
+                  </td>
                   <td className="px-6 py-4 text-slate-400 capitalize">{item.source || "scan"}</td>
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-1">

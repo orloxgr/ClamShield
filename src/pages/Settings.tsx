@@ -279,7 +279,7 @@ export default function SettingsPage() {
             ClamAV Paths
           </div>
           <div className="p-6 space-y-4">
-            {['clamavDir', 'clamscanPath', 'freshclamPath', 'freshclamConf', 'clamdPath', 'clamdscanPath', 'clamdConf', 'databaseDir', 'quarantineDir', 'logsDir'].map((key) => (
+            {['clamavDir', 'clamscanPath', 'freshclamPath', 'freshclamConf', 'clamdPath', 'clamdscanPath', 'clamdConf', 'yaraDir', 'yaraPath', 'yaraRulesDir', 'yaraCustomRulesDir', 'yaraCacheDir', 'databaseDir', 'quarantineDir', 'logsDir'].map((key) => (
               <div key={key}>
                 <label className="block text-sm font-medium text-slate-400 mb-1 capitalize">
                   {key.replace(/([A-Z])/g, ' $1').trim()}
@@ -426,6 +426,76 @@ export default function SettingsPage() {
                 <option value="quarantine">Quarantine</option>
               </select>
             </div>
+
+            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Enable YARA scanning</span>
+                <span className="text-slate-500 text-xs">Runs YARA Forge rules as a second detection layer. Core is enabled by default for low false positives.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.yaraEnabled !== false}
+                onChange={e => setSettings({...settings, yaraEnabled: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+
+            {settings.yaraEnabled !== false && (
+              <>
+                <div className="flex items-center justify-between py-2">
+                  <div className="w-1/2 pr-4">
+                    <span className="text-slate-300 text-sm mb-1 block">YARA Forge ruleset</span>
+                    <span className="text-xs text-slate-500">Core is fastest and safest. Extended is balanced. Full is widest and heavier.</span>
+                  </div>
+                  <select
+                    value={settings.yaraRuleset || "core"}
+                    onChange={e => setSettings({...settings, yaraRuleset: e.target.value})}
+                    className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="core">Core</option>
+                    <option value="extended">Extended</option>
+                    <option value="full">Full</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center justify-between cursor-pointer py-2">
+                  <div>
+                    <span className="text-slate-300 block text-sm">Auto-update YARA rules weekly</span>
+                    <span className="text-xs text-slate-500">Checks YARA Forge once per week when ClamShield is running.</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.yaraAutoUpdateEnabled !== false}
+                    onChange={e => setSettings({...settings, yaraAutoUpdateEnabled: e.target.checked})}
+                    className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                  />
+                </label>
+
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-400 block w-1/3">YARA timeout seconds</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={settings.yaraTimeoutSeconds || 15}
+                    onChange={e => updateNumberSetting("yaraTimeoutSeconds", e.target.value, 15, 1, 3600)}
+                    className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-400 block w-1/3">YARA max file size (MB)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={4096}
+                    value={settings.yaraMaxFileSize || 50}
+                    onChange={e => updateNumberSetting("yaraMaxFileSize", e.target.value, 50, 1, 4096)}
+                    className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </>
+            )}
 
             <div className="flex items-center justify-between py-2">
               <span className="text-slate-300 text-sm mb-1 block">Real-time shield detections</span>

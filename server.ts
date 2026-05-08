@@ -25,6 +25,10 @@ const programDataDir = process.platform === "win32"
 
 const engineBaseDir = path.join(programDataDir, "engine");
 const defaultLogsDir = path.join(programDataDir, "logs");
+const yaraBaseDir = path.join(programDataDir, "yara");
+const yaraForgeRulesDir = path.join(yaraBaseDir, "rules", "forge");
+const yaraCustomRulesDir = path.join(yaraBaseDir, "rules", "custom");
+const yaraCacheDir = path.join(yaraBaseDir, "cache");
 let debugLoggingEnabled = false;
 let currentLogsDir = defaultLogsDir;
 
@@ -91,6 +95,11 @@ const defaultSettings = {
     clamdPath: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamd.exe") : "/usr/sbin/clamd",
     clamdscanPath: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamdscan.exe") : "/usr/bin/clamdscan",
     clamdConf: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamd.conf") : "/etc/clamav/clamd.conf",
+    yaraDir: process.platform === "win32" ? path.join(engineBaseDir, "yara") : "/usr/bin",
+    yaraPath: process.platform === "win32" ? path.join(engineBaseDir, "yara", "yara64.exe") : "/usr/bin/yara",
+    yaraRulesDir: yaraForgeRulesDir,
+    yaraCustomRulesDir,
+    yaraCacheDir,
     databaseDir: path.join(programDataDir, "db"),
     quarantineDir: path.join(programDataDir, "quarantine"),
     logsDir: defaultLogsDir,
@@ -100,6 +109,12 @@ const defaultSettings = {
     autoQuarantine: false,
     autoUpdateEnabled: true,
     updateIntervalHours: 24,
+    yaraEnabled: true,
+    yaraRuleset: "core",
+    yaraAutoUpdateEnabled: true,
+    yaraUpdateIntervalHours: 168,
+    yaraTimeoutSeconds: 15,
+    yaraMaxFileSize: 50,
     offloadToMemory: false,
     maxFileSize: 50, // MB
     scanArchives: true,
@@ -639,6 +654,50 @@ const windowsLockedScanExclusions = [
     String.raw`^[A-Z]:\\\$Recycle\.Bin(\\|$)`
 ];
 
+function escapeRegex(value: string) {
+    return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function pathToClamExcludePattern(folderPath: string) {
+    const normalized = path.resolve(folderPath).replace(/[\\/]+$/, "");
+    return `^${escapeRegex(normalized)}(?:[\\\\/]|$)`;
+}
+
+function buildClamdConfContent(settings: any) {
+    const lines = [
+        `DatabaseDirectory ${settings.databaseDir}`,
+        "TCPAddr 127.0.0.1",
+        "TCPSocket 3310",
+        `LogFile ${path.join(settings.logsDir, "clamd.log")}`
+    ];
+    [settings.yaraCacheDir, settings.yaraRulesDir, settings.yaraCustomRulesDir]
+        .filter(Boolean)
+        .forEach((folderPath: string) => lines.push(`ExcludePath ${pathToClamExcludePattern(folderPath)}`));
+    return `${lines.join("\n")}\n`;
+}
+
+async function ensureClamdConfExclusions(settings: any) {
+    if (!settings.clamdConf) return;
+    try {
+        let content = "";
+        try {
+            content = await fs.readFile(settings.clamdConf, "utf8");
+        } catch {
+            await fs.writeFile(settings.clamdConf, buildClamdConfContent(settings));
+            return;
+        }
+        const missing = [settings.yaraCacheDir, settings.yaraRulesDir, settings.yaraCustomRulesDir]
+            .filter(Boolean)
+            .map((folderPath: string) => `ExcludePath ${pathToClamExcludePattern(folderPath)}`)
+            .filter((line: string) => !content.includes(line));
+        if (missing.length > 0) {
+            await fs.appendFile(settings.clamdConf, `\n${missing.join("\n")}\n`);
+        }
+    } catch (e) {
+        console.warn("Failed to ensure clamd YARA exclusions:", e);
+    }
+}
+
 function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, target?: string) {
     const args = isClamd
         ? ["--config-file=" + scanSettings.clamdConf]
@@ -655,6 +714,9 @@ function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, ta
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
+        if (scanSettings.yaraCacheDir) args.push(`--exclude=${pathToClamExcludePattern(scanSettings.yaraCacheDir)}`);
+        if (scanSettings.yaraRulesDir) args.push(`--exclude=${pathToClamExcludePattern(scanSettings.yaraRulesDir)}`);
+        if (scanSettings.yaraCustomRulesDir) args.push(`--exclude=${pathToClamExcludePattern(scanSettings.yaraCustomRulesDir)}`);
         if (process.platform === "win32" && type === "disk") {
             windowsLockedScanExclusions.forEach(pattern => args.push(`--exclude=${pattern}`));
         }
@@ -680,6 +742,170 @@ async function hashFile(filePath: string) {
         stream.on("end", resolve);
     });
     return hash.digest("hex");
+}
+
+const yaraForgePackages: Record<string, { label: string, url: string, fileName: string }> = {
+    core: {
+        label: "Core",
+        url: "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip",
+        fileName: "yara-forge-rules-core.yar"
+    },
+    extended: {
+        label: "Extended",
+        url: "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-extended.zip",
+        fileName: "yara-forge-rules-extended.yar"
+    },
+    full: {
+        label: "Full",
+        url: "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip",
+        fileName: "yara-forge-rules-full.yar"
+    }
+};
+
+function normalizeYaraRuleset(value: any) {
+    return Object.prototype.hasOwnProperty.call(yaraForgePackages, value) ? value : "core";
+}
+
+function getYaraRulesFile(settings: any) {
+    const ruleset = normalizeYaraRuleset(settings.yaraRuleset);
+    return path.join(settings.yaraRulesDir || yaraForgeRulesDir, yaraForgePackages[ruleset].fileName);
+}
+
+async function downloadToFile(url: string, destination: string, onProgress?: (message: string) => void) {
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    const response = await axios({
+        url,
+        method: "GET",
+        responseType: "stream",
+        headers: { "User-Agent": "ClamShield" }
+    });
+    const total = Number(response.headers["content-length"] || 0);
+    let downloaded = 0;
+    let lastProgress = 0;
+    response.data.on("data", (chunk: Buffer) => {
+        downloaded += chunk.length;
+        if (total > 0) {
+            const percent = Math.floor((downloaded / total) * 100);
+            if (percent >= lastProgress + 10) {
+                lastProgress = percent;
+                onProgress?.(`Downloaded ${percent}%`);
+            }
+        }
+    });
+    const writer = createWriteStream(destination);
+    response.data.pipe(writer);
+    await new Promise<void>((resolve, reject) => {
+        writer.on("finish", resolve);
+        writer.on("error", reject);
+        response.data.on("error", reject);
+    });
+}
+
+async function extractZip(zipPath: string, destination: string) {
+    await fs.mkdir(destination, { recursive: true });
+    const extractStream = createReadStream(zipPath).pipe(unzipper.Extract({ path: destination }));
+    await new Promise<void>((resolve, reject) => {
+        extractStream.on("close", resolve);
+        extractStream.on("error", reject);
+    });
+}
+
+async function findFileByName(rootPath: string, fileName: string): Promise<string | null> {
+    for await (const filePath of walkFiles(rootPath)) {
+        if (path.basename(filePath).toLowerCase() === fileName.toLowerCase()) {
+            return filePath;
+        }
+    }
+    return null;
+}
+
+async function countYaraRules(filePath: string) {
+    try {
+        const content = await fs.readFile(filePath, "utf8");
+        return (content.match(/^\s*(?:private\s+|global\s+)*rule\s+[A-Za-z0-9_]+/gm) || []).length;
+    } catch {
+        return 0;
+    }
+}
+
+async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
+    if (settings.yaraPath && existsSync(settings.yaraPath)) {
+        return settings.yaraPath;
+    }
+    if (process.platform !== "win32") {
+        throw new Error("YARA engine was not found. Install YARA and set the yaraPath setting.");
+    }
+
+    log?.("Finding latest YARA Windows release...");
+    const releaseRes = await axios.get("https://api.github.com/repos/VirusTotal/yara/releases/latest", {
+        headers: { "User-Agent": "ClamShield" }
+    });
+    const asset = releaseRes.data.assets.find((item: any) =>
+        item.name.toLowerCase().includes("win64") &&
+        item.name.toLowerCase().endsWith(".zip")
+    );
+    if (!asset) {
+        throw new Error("Could not find a Windows x64 YARA release asset.");
+    }
+
+    await fs.mkdir(settings.yaraDir || path.dirname(settings.yaraPath), { recursive: true });
+    const zipPath = path.join(settings.yaraCacheDir || yaraCacheDir, asset.name);
+    log?.(`Downloading ${asset.name}...`);
+    await downloadToFile(asset.browser_download_url, zipPath, log);
+
+    const tempDir = path.join(settings.yaraCacheDir || yaraCacheDir, `engine-${Date.now()}`);
+    await fs.rm(tempDir, { recursive: true, force: true });
+    await extractZip(zipPath, tempDir);
+    const yaraExe = await findFileByName(tempDir, "yara64.exe") || await findFileByName(tempDir, "yara.exe");
+    const yaracExe = await findFileByName(tempDir, "yarac64.exe") || await findFileByName(tempDir, "yarac.exe");
+    if (!yaraExe) {
+        throw new Error("Downloaded YARA package did not contain yara64.exe.");
+    }
+
+    const finalYaraPath = path.join(settings.yaraDir || path.dirname(settings.yaraPath), "yara64.exe");
+    await fs.copyFile(yaraExe, finalYaraPath);
+    if (yaracExe) {
+        await fs.copyFile(yaracExe, path.join(settings.yaraDir || path.dirname(settings.yaraPath), "yarac64.exe"));
+    }
+    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.unlink(zipPath).catch(() => {});
+    settings.yaraPath = finalYaraPath;
+    log?.(`YARA engine ready: ${finalYaraPath}`);
+    return finalYaraPath;
+}
+
+async function updateYaraForgeRules(settings: any, log?: (message: string) => void) {
+    const ruleset = normalizeYaraRuleset(settings.yaraRuleset);
+    const pack = yaraForgePackages[ruleset];
+    await ensureYaraEngine(settings, log);
+
+    await fs.mkdir(settings.yaraCacheDir || yaraCacheDir, { recursive: true });
+    await fs.rm(settings.yaraRulesDir || yaraForgeRulesDir, { recursive: true, force: true });
+    await fs.mkdir(settings.yaraRulesDir || yaraForgeRulesDir, { recursive: true });
+
+    const zipPath = path.join(settings.yaraCacheDir || yaraCacheDir, `yara-forge-rules-${ruleset}.zip`);
+    log?.(`Downloading YARA Forge ${pack.label} rules...`);
+    await downloadToFile(pack.url, zipPath, log);
+    await extractZip(zipPath, settings.yaraRulesDir || yaraForgeRulesDir);
+
+    const expected = await findFileByName(settings.yaraRulesDir || yaraForgeRulesDir, pack.fileName);
+    const anyRulesFile = expected || await findFileByName(settings.yaraRulesDir || yaraForgeRulesDir, `yara-forge-rules-${ruleset}.yar`);
+    if (!anyRulesFile) {
+        throw new Error(`YARA Forge ${pack.label} package did not contain a .yar rules file.`);
+    }
+
+    const finalRulesFile = getYaraRulesFile(settings);
+    if (path.resolve(anyRulesFile).toLowerCase() !== path.resolve(finalRulesFile).toLowerCase()) {
+        await fs.copyFile(anyRulesFile, finalRulesFile);
+    }
+    const ruleCount = await countYaraRules(finalRulesFile);
+    await fs.unlink(zipPath).catch(() => {});
+    settings.lastYaraUpdate = new Date().toISOString();
+    settings.lastYaraRuleset = ruleset;
+    settings.lastYaraRuleCount = ruleCount;
+    await saveConfig(settings);
+    log?.(`YARA Forge ${pack.label} rules ready (${ruleCount} rules).`);
+    return { ruleset, ruleCount, rulesFile: finalRulesFile };
 }
 
 async function quarantineFile(originalPath: string, threatName: string, quarantineDir: string) {
@@ -989,10 +1215,11 @@ async function manageClamd(settings: any) {
                 try {
                     await fs.access(settings.clamdConf);
                 } catch (e) {
-                    const clamdConfContent = `DatabaseDirectory ${settings.databaseDir}\nTCPAddr 127.0.0.1\nTCPSocket 3310\nLogFile ${path.join(settings.logsDir, 'clamd.log')}\n`;
+                    const clamdConfContent = buildClamdConfContent(settings);
                     await fs.writeFile(settings.clamdConf, clamdConfContent);
                     console.log("Created missing clamd.conf");
                 }
+                await ensureClamdConfExclusions(settings);
                 
                 clamdProcess = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf]);
                 clamdProcess.on("error", (err: any) => {
@@ -1070,10 +1297,11 @@ async function checkClamAV(settings: any) {
             try {
                 await fs.access(settings.clamdConf);
             } catch (e) {
-                const clamdConfContent = `DatabaseDirectory ${settings.databaseDir}\nTCPAddr 127.0.0.1\nTCPSocket 3310\nLogFile ${path.join(settings.logsDir, 'clamd.log')}\n`;
-                await fs.writeFile(settings.clamdConf, clamdConfContent).catch(console.error);
-                console.log("Created missing clamd.conf on startup");
-            }
+                    const clamdConfContent = buildClamdConfContent(settings);
+                    await fs.writeFile(settings.clamdConf, clamdConfContent).catch(console.error);
+                    console.log("Created missing clamd.conf on startup");
+                }
+                await ensureClamdConfExclusions(settings);
         }
     }
 }
@@ -1084,7 +1312,11 @@ async function ensureDirs(settings: any) {
         programDataDir,
         settings.databaseDir,
         settings.quarantineDir,
-        settings.logsDir
+        settings.logsDir,
+        settings.yaraDir,
+        settings.yaraRulesDir,
+        settings.yaraCustomRulesDir,
+        settings.yaraCacheDir
     ];
     for (const dir of dirs) {
         try {
@@ -1390,6 +1622,218 @@ async function addHistory(entry: any) {
     await fs.writeFile(historyPath, JSON.stringify(history, null, 2));
 }
 
+function isPathInside(childPath: string, parentPath: string) {
+    const child = path.resolve(childPath).toLowerCase();
+    const parent = path.resolve(parentPath).replace(/[\\/]+$/, "").toLowerCase();
+    return child === parent || child.startsWith(parent + path.sep.toLowerCase()) || child.startsWith(parent + "/");
+}
+
+function shouldSkipYaraTarget(settings: any, filePath: string, fingerprint: ShieldCacheEntry | null) {
+    if (!fingerprint) return true;
+    const maxBytes = normalizePositiveNumber(settings.yaraMaxFileSize, 50, 1, 4096) * 1024 * 1024;
+    if (fingerprint.size > maxBytes) return true;
+    const ownYaraPaths = [
+        settings.yaraDir,
+        settings.yaraRulesDir,
+        settings.yaraCustomRulesDir,
+        settings.yaraCacheDir
+    ].filter(Boolean);
+    return ownYaraPaths.some((ownPath: string) => isPathInside(filePath, ownPath));
+}
+
+async function createYaraTargetList(settings: any, targets: string[], onProgress?: (count: number) => void) {
+    const listPath = path.join(os.tmpdir(), `clamshield-yara-list-${Date.now()}-${randomBytes(6).toString("hex")}.txt`);
+    const writer = createWriteStream(listPath, { encoding: "utf8" });
+    let count = 0;
+    try {
+        for (const target of targets.filter(Boolean)) {
+            let stat;
+            try {
+                stat = await fs.stat(target);
+            } catch {
+                continue;
+            }
+            if (stat.isFile()) {
+                const fingerprint = await getFileFingerprint(target);
+                if (!shouldSkipYaraTarget(settings, target, fingerprint)) {
+                    writer.write(`${target}${os.EOL}`);
+                    count++;
+                }
+                continue;
+            }
+            if (!stat.isDirectory()) continue;
+            for await (const filePath of walkFiles(target)) {
+                const fingerprint = await getFileFingerprint(filePath);
+                if (shouldSkipYaraTarget(settings, filePath, fingerprint)) continue;
+                writer.write(`${filePath}${os.EOL}`);
+                count++;
+                if (count % 5000 === 0) onProgress?.(count);
+                if (count % 200 === 0) await sleep(1);
+            }
+        }
+    } finally {
+        await new Promise<void>((resolve, reject) => {
+            writer.end(() => resolve());
+            writer.on("error", reject);
+        });
+    }
+    onProgress?.(count);
+    return { listPath, count };
+}
+
+function parseYaraMatchLine(line: string) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.toLowerCase().startsWith("error:") || trimmed.includes(": error:")) return null;
+    const match = trimmed.match(/^([A-Za-z0-9_.@$-]+)(?:\s+\[[^\]]+\])?\s+(.+)$/);
+    if (!match) return null;
+    const originalPath = match[2].trim();
+    if (!originalPath || originalPath.startsWith("[")) return null;
+    return {
+        ruleName: match[1],
+        originalPath
+    };
+}
+
+async function handleYaraDetection(settings: any, detection: any, options: any) {
+    const exceptions = await getExceptions();
+    if (isExcluded(detection.originalPath, exceptions)) {
+        options.appendJobLogs(options.jobId, [`YARA ignored (Exception): ${detection.originalPath}`]);
+        return "Ignored";
+    }
+
+    const threatName = `YARA: ${detection.ruleNames.join(", ")}`;
+    if (options.action === "quarantine") {
+        try {
+            const quarantined = await quarantineFile(detection.originalPath, threatName, settings.quarantineDir);
+            const qMap = await getQuarantineMap();
+            qMap[quarantined.fileName] = quarantined.metadata;
+            await saveQuarantineMap(qMap);
+            options.appendJobLogs(options.jobId, [`YARA quarantined: ${detection.originalPath} -> ${quarantined.destPath}`]);
+            return "Quarantined";
+        } catch (e: any) {
+            options.appendJobLogs(options.jobId, [`YARA failed to quarantine ${detection.originalPath}: ${e.message}`]);
+            return "Quarantine Failed";
+        }
+    }
+
+    if (options.action === "ask" && Array.isArray(options.pendingThreats)) {
+        options.pendingThreats.push({
+            id: Date.now().toString() + Math.random().toString(36).substring(7),
+            originalPath: detection.originalPath,
+            threatName,
+            engine: "YARA",
+            timestamp: Date.now()
+        });
+        options.appendJobLogs(options.jobId, [`YARA match waiting for user action: ${detection.originalPath}`]);
+        return "Pending";
+    }
+
+    await addScanResult({
+        source: options.source,
+        scanType: options.scanType,
+        target: options.target,
+        originalPath: detection.originalPath,
+        threatName,
+        engine: "YARA",
+        yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset)
+    });
+    options.appendJobLogs(options.jobId, [`YARA match sent to Results: ${detection.originalPath}`]);
+    return "Sent to Results";
+}
+
+async function runYaraScanForTargets(settings: any, targets: string[], options: any) {
+    if (settings.yaraEnabled === false) return { matches: 0, actionTaken: "None" };
+    const job = options.activeJobs[options.jobId];
+    if (!job) return { matches: 0, actionTaken: "None" };
+
+    const rulesFile = getYaraRulesFile(settings);
+    if (!existsSync(rulesFile)) {
+        options.appendJobLogs(options.jobId, [
+            `YARA skipped: ${path.basename(rulesFile)} is missing. Use Updates -> Update YARA Rules.`
+        ]);
+        return { matches: 0, actionTaken: "None" };
+    }
+
+    let yaraPath: string;
+    try {
+        yaraPath = await ensureYaraEngine(settings, message => options.appendJobLogs(options.jobId, [`YARA: ${message}`]));
+    } catch (e: any) {
+        options.appendJobLogs(options.jobId, [`YARA skipped: ${e.message}`]);
+        return { matches: 0, actionTaken: "None" };
+    }
+
+    const { listPath, count } = await createYaraTargetList(settings, targets, (indexed) => {
+        options.appendJobLogs(options.jobId, [`YARA target list indexed: ${indexed} files`]);
+    });
+    if (count === 0) {
+        await fs.unlink(listPath).catch(() => {});
+        options.appendJobLogs(options.jobId, ["YARA skipped: no eligible files after exclusions and size limits."]);
+        return { matches: 0, actionTaken: "None" };
+    }
+
+    const maxBytes = normalizePositiveNumber(settings.yaraMaxFileSize, 50, 1, 4096) * 1024 * 1024;
+    const timeoutSeconds = normalizePositiveNumber(settings.yaraTimeoutSeconds, 15, 1, 3600);
+    const args = [
+        "--no-warnings",
+        "--fast-scan",
+        `--timeout=${timeoutSeconds}`,
+        `--skip-larger=${maxBytes}`,
+        "--scan-list",
+        rulesFile,
+        listPath
+    ];
+    options.appendJobLogs(options.jobId, [
+        `YARA ruleset: ${normalizeYaraRuleset(settings.yaraRuleset)} (${rulesFile})`,
+        `YARA executable: ${yaraPath}`,
+        `YARA arguments: ${args.join(" ")}`
+    ]);
+
+    const stdoutLines: string[] = [];
+    const child = spawn(yaraPath, args);
+    job.process = child;
+    const exitCode = await new Promise<number>((resolve) => {
+        child.stdout.on("data", data => {
+            const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
+            stdoutLines.push(...lines);
+            if (lines.length) options.appendJobLogs(options.jobId, lines.map((line: string) => `YARA: ${line}`));
+        });
+        child.stderr.on("data", data => {
+            const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
+            if (lines.length) options.appendJobLogs(options.jobId, lines.map((line: string) => `YARA: ${line}`));
+        });
+        child.on("error", error => {
+            options.appendJobLogs(options.jobId, [`YARA process error: ${error.message}`]);
+            resolve(-1);
+        });
+        child.on("close", code => resolve(code ?? 0));
+    });
+    await fs.unlink(listPath).catch(() => {});
+    if (job.process === child) job.process = null;
+
+    const detectionsByPath = new Map<string, { originalPath: string, ruleNames: Set<string> }>();
+    for (const line of stdoutLines) {
+        const match = parseYaraMatchLine(line);
+        if (!match) continue;
+        const normalizedPath = path.resolve(match.originalPath).toLowerCase();
+        if (!detectionsByPath.has(normalizedPath)) {
+            detectionsByPath.set(normalizedPath, { originalPath: match.originalPath, ruleNames: new Set() });
+        }
+        detectionsByPath.get(normalizedPath)!.ruleNames.add(match.ruleName);
+    }
+
+    let actionTaken = "None";
+    for (const detection of detectionsByPath.values()) {
+        const result = await handleYaraDetection(settings, {
+            originalPath: detection.originalPath,
+            ruleNames: Array.from(detection.ruleNames).slice(0, 8)
+        }, options);
+        if (result !== "Ignored") actionTaken = result;
+    }
+
+    options.appendJobLogs(options.jobId, [`YARA finished with exit code ${exitCode}. Matches: ${detectionsByPath.size}.`]);
+    return { matches: detectionsByPath.size, actionTaken };
+}
+
 async function startServer() {
     const app = express();
     app.use(express.json());
@@ -1690,6 +2134,21 @@ async function startServer() {
                         await saveQuarantineMap(qMap);
                     }
 
+                    const yaraResult = await runYaraScanForTargets(currentSettings, [filePath], {
+                        activeJobs,
+                        appendJobLogs,
+                        jobId,
+                        source: "shield",
+                        scanType: "shield",
+                        target: filePath,
+                        action: currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine" : "ask"),
+                        pendingThreats
+                    });
+                    if (yaraResult.matches > 0) {
+                        threatsFound += yaraResult.matches;
+                        actionTaken = yaraResult.actionTaken;
+                    }
+
                     const isThreat = code === 1 || threatsFound > 0;
                     appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
                     if (isThreat) {
@@ -1754,6 +2213,8 @@ async function startServer() {
 
         let hasEngine = false;
         let hasDb = false;
+        let hasYaraEngine = false;
+        let hasYaraRules = false;
         const quarantineItems = await getQuarantineItems(settings.quarantineDir);
         try {
             const entries = await fs.readdir(engineBaseDir, { withFileTypes: true });
@@ -1763,6 +2224,8 @@ async function startServer() {
             const dbFiles = await fs.readdir(settings.databaseDir);
             hasDb = dbFiles.some(f => f.endsWith('.cvd') || f.endsWith('.cld'));
         } catch { }
+        hasYaraEngine = Boolean(settings.yaraPath && existsSync(settings.yaraPath));
+        hasYaraRules = existsSync(getYaraRulesFile(settings));
 
         let pkgVersion = "1.0.14";
         try {
@@ -1780,8 +2243,13 @@ async function startServer() {
             settings,
             hasEngine,
             hasDb,
+            hasYaraEngine,
+            hasYaraRules,
             stats: {
                 engineVersion: isSimulated ? "ClamAV (Simulated)" : "ClamAV (Installed)",
+                yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset),
+                yaraRuleCount: settings.lastYaraRuleCount || 0,
+                lastYaraUpdate: settings.lastYaraUpdate || null,
                 lastScan: lastScan ? lastScan.date : null,
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
@@ -1860,7 +2328,7 @@ async function startServer() {
             const confContent = `DatabaseDirectory ${settings.databaseDir}\nUpdateLogFile ${path.join(settings.logsDir, 'freshclam.log')}\nDatabaseMirror database.clamav.net\n`;
             await fs.writeFile(confPath, confContent);
 
-            const clamdConfContent = `DatabaseDirectory ${settings.databaseDir}\nTCPAddr 127.0.0.1\nTCPSocket 3310\nLogFile ${path.join(settings.logsDir, 'clamd.log')}\n`;
+            const clamdConfContent = buildClamdConfContent(settings);
             await fs.writeFile(clamdConfPath, clamdConfContent);
             
             settings.clamavDir = path.join(engineBaseDir, finalClamDir);
@@ -1943,8 +2411,49 @@ async function startServer() {
         }, 60000); // Check every minute
     };
 
+    let yaraAutoUpdateTimer: NodeJS.Timeout | null = null;
+    const scheduleNextYaraUpdate = () => {
+        if (yaraAutoUpdateTimer) clearTimeout(yaraAutoUpdateTimer);
+        if (!settings.yaraEnabled || !settings.yaraAutoUpdateEnabled) return;
+
+        yaraAutoUpdateTimer = setTimeout(async () => {
+            try {
+                const history = await getHistory();
+                const lastUpdate = history.find((h: any) => h.type === "yara-update" && h.result === 0);
+                const intervalMs = normalizePositiveNumber(settings.yaraUpdateIntervalHours, 168, 1, 8760) * 60 * 60 * 1000;
+                const shouldUpdate = !lastUpdate || Date.now() - new Date(lastUpdate.date).getTime() > intervalMs;
+                if (shouldUpdate) {
+                    console.log("Triggering YARA Forge auto-update...");
+                    await updateYaraForgeRules(settings, message => console.log(`YARA auto-update: ${message}`));
+                    await addHistory({
+                        type: "yara-update",
+                        target: `YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)}`,
+                        result: 0,
+                        threatsFound: 0,
+                        scannedFiles: 0,
+                        duration: 1,
+                        actionTaken: "Updated"
+                    });
+                }
+            } catch (e: any) {
+                console.error("YARA auto-update failed:", e.message);
+                await addHistory({
+                    type: "yara-update",
+                    target: `YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)}`,
+                    result: 1,
+                    threatsFound: 0,
+                    scannedFiles: 0,
+                    duration: 1,
+                    actionTaken: "Failed"
+                });
+            }
+            scheduleNextYaraUpdate();
+        }, 60000);
+    };
+
     // Initial trigger
     scheduleNextUpdate();
+    scheduleNextYaraUpdate();
 
     app.post("/api/settings", async (req, res) => {
         settings = { ...settings, ...req.body };
@@ -1960,6 +2469,7 @@ async function startServer() {
                 await manageStartup(settings);
                 await scheduleDefenderEnforcement(false);
                 scheduleNextUpdate();
+                scheduleNextYaraUpdate();
             })
             .catch(e => console.error("Failed to apply settings side effects:", e));
     });
@@ -2172,10 +2682,12 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         let memoryFileListPath: string | null = null;
         let memoryProcessCount = 0;
+        let memoryYaraTargets: string[] = [];
         let scanTarget = effectiveTarget;
         if (type === "memory" && process.platform === "win32") {
             const processPaths = await getRunningProcessImagePaths();
             memoryProcessCount = processPaths.length;
+            memoryYaraTargets = processPaths;
             if (processPaths.length === 0) {
                 return res.status(400).json({ error: "No readable running process executable paths were found." });
             }
@@ -2306,6 +2818,23 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
                 if (memoryFileListPath) {
                     await fs.unlink(memoryFileListPath).catch(() => {});
+                }
+
+                const yaraTargets = type === "memory"
+                    ? memoryYaraTargets
+                    : (effectiveTarget ? [effectiveTarget] : []);
+                const yaraResult = await runYaraScanForTargets(settings, yaraTargets, {
+                    activeJobs,
+                    appendJobLogs,
+                    jobId,
+                    source: "manual",
+                    scanType: type,
+                    target: type === "memory" ? "Running process images" : (effectiveTarget || "C:\\"),
+                    action: settings.scanDetectionAction || "results"
+                });
+                if (yaraResult.matches > 0) {
+                    threatsFound += yaraResult.matches;
+                    actionTaken = yaraResult.actionTaken;
                 }
 
                 const isThreat = code === 1 || threatsFound > 0;
@@ -2456,6 +2985,49 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json({ jobId, status: "started" });
         } catch(e: any) {
             res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/update-yara", async (req, res) => {
+        const jobId = "yara-update-" + Date.now().toString();
+        activeJobs[jobId] = { status: "running", logs: [] };
+        res.json({ jobId, status: "started" });
+
+        const startedAt = Date.now();
+        try {
+            activeJobs[jobId].logs.push(`Updating YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)} rules...`);
+            const result = await updateYaraForgeRules(settings, message => {
+                if (activeJobs[jobId]) activeJobs[jobId].logs.push(message);
+            });
+            if (!activeJobs[jobId]) return;
+            activeJobs[jobId].logs.push(`YARA update complete: ${result.ruleCount} rules loaded.`);
+            activeJobs[jobId].status = "done";
+            activeJobs[jobId].result = 0;
+            await addHistory({
+                type: "yara-update",
+                target: `YARA Forge ${result.ruleset}`,
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: result.ruleCount,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Updated"
+            });
+        } catch (e: any) {
+            console.error("YARA update failed:", e.message);
+            if (activeJobs[jobId]) {
+                activeJobs[jobId].logs.push(`Error: ${e.message}`);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = 1;
+            }
+            await addHistory({
+                type: "yara-update",
+                target: `YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)}`,
+                result: 1,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Failed"
+            });
         }
     });
 
@@ -2642,7 +3214,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 scanType: "shield",
                 target: threat.originalPath,
                 originalPath: threat.originalPath,
-                threatName: threat.threatName
+                threatName: threat.threatName,
+                engine: threat.engine || (String(threat.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV"),
+                yaraRuleset: threat.engine === "YARA" ? normalizeYaraRuleset(settings.yaraRuleset) : undefined
             });
         }
         res.json({ success: true });
