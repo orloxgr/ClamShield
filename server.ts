@@ -115,6 +115,8 @@ const defaultSettings = {
     yaraUpdateIntervalHours: 168,
     yaraTimeoutSeconds: 15,
     yaraMaxFileSize: 50,
+    scanBatchSize: 250,
+    scanBatchDelayMs: 0,
     appUpdateCheckEnabled: true,
     appUpdateIntervalHours: 168,
     appSilentAutoInstall: false,
@@ -649,6 +651,99 @@ async function createScanFileList(paths: string[]) {
     return listPath;
 }
 
+class ScanSessionStore {
+    private db: any;
+    private upsertStmt: any;
+
+    constructor(dbPath: string) {
+        mkdirSync(path.dirname(dbPath), { recursive: true });
+        const { DatabaseSync } = nodeRequire("node:sqlite");
+        this.db = new DatabaseSync(dbPath);
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS scan_sessions (
+                job_id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                target TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                total_files INTEGER NOT NULL,
+                scanned_files INTEGER NOT NULL,
+                current_file TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                threats_found INTEGER NOT NULL,
+                errors_found INTEGER NOT NULL,
+                result INTEGER,
+                action_taken TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_scan_sessions_updated_at ON scan_sessions(updated_at);
+        `);
+        this.upsertStmt = this.db.prepare(`
+            INSERT INTO scan_sessions (
+                job_id, type, target, status, phase, total_files, scanned_files,
+                current_file, started_at, updated_at, completed_at, threats_found,
+                errors_found, result, action_taken
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                type = excluded.type,
+                target = excluded.target,
+                status = excluded.status,
+                phase = excluded.phase,
+                total_files = excluded.total_files,
+                scanned_files = excluded.scanned_files,
+                current_file = excluded.current_file,
+                updated_at = excluded.updated_at,
+                completed_at = excluded.completed_at,
+                threats_found = excluded.threats_found,
+                errors_found = excluded.errors_found,
+                result = excluded.result,
+                action_taken = excluded.action_taken
+        `);
+    }
+
+    save(progress: ScanProgress) {
+        this.upsertStmt.run(
+            progress.jobId,
+            progress.type,
+            progress.target,
+            progress.status,
+            progress.phase,
+            progress.totalFiles,
+            progress.scannedFiles,
+            progress.currentFile || "",
+            progress.startedAt,
+            progress.updatedAt,
+            progress.completedAt || null,
+            progress.threatsFound,
+            progress.errorsFound,
+            progress.result ?? null,
+            progress.actionTaken || "None"
+        );
+    }
+}
+
+function createInitialScanProgress(jobId: string, type: string, target: string): ScanProgress {
+    const now = Date.now();
+    return {
+        jobId,
+        type,
+        target,
+        status: "running",
+        phase: "Starting",
+        totalFiles: 0,
+        scannedFiles: 0,
+        currentFile: "",
+        startedAt: now,
+        updatedAt: now,
+        threatsFound: 0,
+        errorsFound: 0,
+        actionTaken: "None",
+        elapsedSeconds: 0,
+        quietSeconds: 0
+    };
+}
+
 const windowsLockedScanExclusions = [
     String.raw`^[A-Z]:\\pagefile\.sys$`,
     String.raw`^[A-Z]:\\swapfile\.sys$`,
@@ -667,6 +762,16 @@ function pathToClamExcludePattern(folderPath: string) {
     return `^${escapeRegex(normalized)}(?:[\\\\/]|$)`;
 }
 
+function getClamShieldScanExclusionPaths(settings: any) {
+    return [
+        settings.yaraCacheDir,
+        settings.yaraRulesDir,
+        settings.yaraCustomRulesDir,
+        settings.quarantineDir,
+        path.join(programDataDir, "updates")
+    ].filter(Boolean);
+}
+
 function buildClamdConfContent(settings: any) {
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
@@ -674,8 +779,7 @@ function buildClamdConfContent(settings: any) {
         "TCPSocket 3310",
         `LogFile ${path.join(settings.logsDir, "clamd.log")}`
     ];
-    [settings.yaraCacheDir, settings.yaraRulesDir, settings.yaraCustomRulesDir]
-        .filter(Boolean)
+    getClamShieldScanExclusionPaths(settings)
         .forEach((folderPath: string) => lines.push(`ExcludePath ${pathToClamExcludePattern(folderPath)}`));
     return `${lines.join("\n")}\n`;
 }
@@ -690,8 +794,7 @@ async function ensureClamdConfExclusions(settings: any) {
             await fs.writeFile(settings.clamdConf, buildClamdConfContent(settings));
             return;
         }
-        const missing = [settings.yaraCacheDir, settings.yaraRulesDir, settings.yaraCustomRulesDir]
-            .filter(Boolean)
+        const missing = getClamShieldScanExclusionPaths(settings)
             .map((folderPath: string) => `ExcludePath ${pathToClamExcludePattern(folderPath)}`)
             .filter((line: string) => !content.includes(line));
         if (missing.length > 0) {
@@ -718,9 +821,9 @@ function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, ta
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
-        if (scanSettings.yaraCacheDir) args.push(`--exclude=${pathToClamExcludePattern(scanSettings.yaraCacheDir)}`);
-        if (scanSettings.yaraRulesDir) args.push(`--exclude=${pathToClamExcludePattern(scanSettings.yaraRulesDir)}`);
-        if (scanSettings.yaraCustomRulesDir) args.push(`--exclude=${pathToClamExcludePattern(scanSettings.yaraCustomRulesDir)}`);
+        getClamShieldScanExclusionPaths(scanSettings).forEach((folderPath: string) => {
+            args.push(`--exclude=${pathToClamExcludePattern(folderPath)}`);
+        });
         if (process.platform === "win32" && type === "disk") {
             windowsLockedScanExclusions.forEach(pattern => args.push(`--exclude=${pattern}`));
         }
@@ -734,6 +837,29 @@ function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, ta
     }
 
     if (target && !(type === "memory" && process.platform === "win32")) args.push(target);
+    return args;
+}
+
+function buildClamFileListArgs(scanSettings: any, isClamd: boolean, listPath: string) {
+    const args = isClamd
+        ? ["--config-file=" + scanSettings.clamdConf]
+        : ["--database=" + scanSettings.databaseDir];
+
+    if (isClamd) {
+        args.push("--multiscan");
+    } else {
+        const maxFileSize = normalizePositiveNumber(scanSettings.maxFileSize, 50, 1, 4096);
+        args.push(`--max-filesize=${maxFileSize}M`);
+        args.push(`--max-scansize=${Math.max(maxFileSize, maxFileSize * 2)}M`);
+        args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
+        args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
+        args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
+        getClamShieldScanExclusionPaths(scanSettings).forEach((folderPath: string) => {
+            args.push(`--exclude=${pathToClamExcludePattern(folderPath)}`);
+        });
+    }
+
+    args.push(`--file-list=${listPath}`);
     return args;
 }
 
@@ -1036,6 +1162,26 @@ type ShieldCacheEntry = {
     scannedAt: number;
 };
 
+type ScanProgress = {
+    jobId: string;
+    type: string;
+    target: string;
+    status: string;
+    phase: string;
+    totalFiles: number;
+    scannedFiles: number;
+    currentFile: string;
+    startedAt: number;
+    updatedAt: number;
+    completedAt?: number;
+    threatsFound: number;
+    errorsFound: number;
+    result?: number;
+    actionTaken: string;
+    elapsedSeconds?: number;
+    quietSeconds?: number;
+};
+
 type ShieldScanCache = {
     version: number;
     files: Record<string, ShieldCacheEntry>;
@@ -1047,6 +1193,10 @@ function getShieldCachePath() {
 
 function getShieldCacheDbPath() {
     return path.join(programDataDir, "shield_scan_cache.sqlite");
+}
+
+function getScanSessionsDbPath() {
+    return path.join(programDataDir, "scan_sessions.sqlite");
 }
 
 function normalizeCachePath(filePath: string) {
@@ -1274,6 +1424,51 @@ async function* walkFiles(rootPath: string): AsyncGenerator<string> {
             else if (entry.isFile()) yield childPath;
         }
     }
+}
+
+function isWindowsLockedScanPath(filePath: string) {
+    if (process.platform !== "win32") return false;
+    return windowsLockedScanExclusions.some(pattern => new RegExp(pattern, "i").test(filePath));
+}
+
+function shouldSkipManualScanFile(settings: any, type: string, filePath: string) {
+    if (type === "disk" && isWindowsLockedScanPath(filePath)) return true;
+    return getClamShieldScanExclusionPaths(settings).some((excludedPath: string) => isPathInside(filePath, excludedPath));
+}
+
+async function enumerateScanTargets(settings: any, type: string, target: string) {
+    if (type === "memory" && process.platform === "win32") {
+        return getRunningProcessImagePaths();
+    }
+
+    const files: string[] = [];
+    let stat;
+    try {
+        stat = await fs.stat(target);
+    } catch {
+        return files;
+    }
+
+    if (stat.isFile()) {
+        if (!shouldSkipManualScanFile(settings, type, target)) files.push(target);
+        return files;
+    }
+
+    if (!stat.isDirectory()) return files;
+    for await (const filePath of walkFiles(target)) {
+        if (shouldSkipManualScanFile(settings, type, filePath)) continue;
+        files.push(filePath);
+        if (files.length % 5000 === 0) await sleep(1);
+    }
+    return files;
+}
+
+function chunkItems<T>(items: T[], chunkSize: number) {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += chunkSize) {
+        chunks.push(items.slice(i, i + chunkSize));
+    }
+    return chunks;
 }
 
 async function addTargetToShieldCache(cache: ShieldScanCacheStore, targetPath: string, onProgress?: (count: number) => void) {
@@ -1989,10 +2184,28 @@ async function startServer() {
     await manageStartup(settings);
     cachedIsAdmin = await checkIsAdmin();
 
-    const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number }> = {};
+    const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
+    const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number, progress?: ScanProgress }> = {};
     let pendingThreats: any[] = [];
     const shieldScanCache = await loadShieldScanCacheStore();
     console.log(`Shield cache backend: ${shieldScanCache.type}`);
+    const saveJobProgress = (jobId: string, patch: Partial<ScanProgress>) => {
+        const job = activeJobs[jobId];
+        if (!job?.progress) return;
+        job.progress = {
+            ...job.progress,
+            ...patch,
+            updatedAt: Date.now()
+        };
+        job.progress.elapsedSeconds = Math.floor((Date.now() - job.progress.startedAt) / 1000);
+        const lastOutputAt = job.lastOutputAt || job.progress.startedAt;
+        job.progress.quietSeconds = Math.floor((Date.now() - lastOutputAt) / 1000);
+        try {
+            scanSessions.save(job.progress);
+        } catch (e) {
+            console.warn("Failed to save scan progress:", e);
+        }
+    };
     const appendJobLogs = (jobId: string, lines: string[]) => {
         const job = activeJobs[jobId];
         if (!job || lines.length === 0) return;
@@ -2021,7 +2234,6 @@ async function startServer() {
 
     const createScanHeartbeat = (jobId: string, label: string) => {
         const startedAt = Date.now();
-        let lastHeartbeatAt = 0;
         const timer = setInterval(() => {
             const job = activeJobs[jobId];
             if (!job || job.status !== "running") {
@@ -2029,14 +2241,14 @@ async function startServer() {
                 return;
             }
             const now = Date.now();
-            if (now - lastHeartbeatAt < 5000) return;
-            lastHeartbeatAt = now;
             const elapsedSeconds = Math.floor((now - startedAt) / 1000);
             const lastOutputAt = job.lastOutputAt || startedAt;
             const quietSeconds = Math.floor((now - lastOutputAt) / 1000);
-            appendJobLogs(jobId, [
-                `${label} still running... elapsed ${formatDuration(elapsedSeconds)}, last output ${quietSeconds}s ago`
-            ]);
+            saveJobProgress(jobId, {
+                phase: job.progress?.phase || label,
+                elapsedSeconds,
+                quietSeconds
+            });
         }, 5000);
         timer.unref?.();
         return timer;
@@ -2772,6 +2984,304 @@ if ($dialog.ShowDialog() -eq 'OK') {
         const { target, type } = req.body;
         const effectiveTarget = resolveScanTarget(type, target);
         const jobId = Date.now().toString();
+        const scanTarget = type === "memory" ? "Running process images" : (effectiveTarget || "C:\\");
+
+        if (isSimulated) {
+            res.json({ jobId, status: "started", simulated: true });
+            activeJobs[jobId] = {
+                status: "running",
+                logs: ["Starting simulated scan..."],
+                progress: createInitialScanProgress(jobId, type, scanTarget)
+            };
+            saveJobProgress(jobId, { totalFiles: 1240, phase: "Simulated scan" });
+            setTimeout(async () => {
+                const isThreat = Math.random() < 0.5 && type !== "update";
+                let threatsFound = 0;
+                let actionTaken = "None";
+                if (isThreat) {
+                    threatsFound = 1;
+                    const filePath = path.join(effectiveTarget || "C:\\TestPath", "eicar.com.txt");
+                    await addScanResult({
+                        source: "manual",
+                        scanType: type,
+                        target: scanTarget,
+                        originalPath: filePath,
+                        threatName: "Eicar-Test-Signature (Simulated)"
+                    });
+                    appendJobLogs(jobId, [`Threat found, sent to Results: ${filePath}`]);
+                    actionTaken = "Sent to Results";
+                }
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = isThreat ? 1 : 0;
+                appendJobLogs(jobId, ["Scan completed."]);
+                saveJobProgress(jobId, {
+                    status: "done",
+                    phase: "Complete",
+                    scannedFiles: 1240,
+                    completedAt: Date.now(),
+                    threatsFound,
+                    result: isThreat ? 1 : 0,
+                    actionTaken
+                });
+                await addHistory({
+                    type: `scan-${type}`,
+                    target: scanTarget,
+                    result: isThreat ? 1 : 0,
+                    threatsFound,
+                    scannedFiles: 1240,
+                    duration: 3,
+                    actionTaken
+                });
+            }, 3000);
+            return;
+        }
+
+        try {
+            const dbFiles = await fs.readdir(settings.databaseDir);
+            const hasDb = dbFiles.some(f => f.endsWith(".cvd") || f.endsWith(".cld"));
+            if (!hasDb) {
+                return res.status(400).json({ error: "No virus database found. Please go to Updates and download virus definitions first." });
+            }
+        } catch {
+            return res.status(400).json({ error: "Failed to check virus database. Please update definitions." });
+        }
+
+        activeJobs[jobId] = {
+            status: "running",
+            logs: [],
+            analysisLogs: [],
+            progress: createInitialScanProgress(jobId, type, scanTarget)
+        };
+        res.json({ jobId, status: "started" });
+
+        Promise.resolve().then(async () => {
+            saveJobProgress(jobId, { phase: "Enumerating files" });
+            const scanFiles = await enumerateScanTargets(settings, type, scanTarget);
+            if (scanFiles.length === 0) {
+                appendJobLogs(jobId, ["No readable files found for this scan target."]);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = 0;
+                saveJobProgress(jobId, {
+                    status: "done",
+                    phase: "No readable files",
+                    completedAt: Date.now(),
+                    result: 0
+                });
+                return;
+            }
+
+            saveJobProgress(jobId, {
+                phase: "Queued",
+                totalFiles: scanFiles.length,
+                currentFile: scanFiles[0]
+            });
+
+            if (type === "disk" && process.platform === "win32") {
+                appendJobLogs(jobId, [
+                    "Skipping Windows locked paging/system files that cannot be opened while Windows is running:",
+                    "C:\\pagefile.sys, C:\\swapfile.sys, C:\\hiberfil.sys, C:\\DumpStack.log.tmp"
+                ]);
+            }
+            if (type === "memory" && process.platform === "win32") {
+                appendJobLogs(jobId, [
+                    `Enumerated ${scanFiles.length} running process executable image${scanFiles.length === 1 ? "" : "s"}.`,
+                    "Scanning process image files with ClamAV..."
+                ]);
+            }
+
+            let isClamd = false;
+            if (settings.offloadToMemory && settings.clamdscanPath) {
+                try {
+                    await fs.access(settings.clamdscanPath);
+                    isClamd = true;
+                } catch {}
+            }
+            const exePath = isClamd ? settings.clamdscanPath : settings.clamscanPath;
+            const chunkSize = Math.round(normalizePositiveNumber(settings.scanBatchSize, 250, 1, 5000));
+            const chunkDelayMs = Math.round(normalizePositiveNumber(settings.scanBatchDelayMs, 0, 0, 60000));
+            const chunks = chunkItems(scanFiles, chunkSize);
+            let scannedFiles = 0;
+            let threatsFound = 0;
+            let errorsFound = 0;
+            let actionTaken = "None";
+            const startedAt = Date.now();
+            const heartbeat = createScanHeartbeat(jobId, "Scan");
+            const exceptions = await getExceptions();
+
+            appendJobLogs(jobId, [
+                `Scan target: ${scanTarget}`,
+                `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
+                `Executable: ${exePath}`,
+                `Files queued: ${scanFiles.length}`,
+                `Batch size: ${chunkSize}`
+            ]);
+
+            const handleFoundLine = async (line: string) => {
+                const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
+                if (!match) return;
+                const originalPath = match[1];
+                if (isExcluded(originalPath, exceptions)) {
+                    appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
+                    return;
+                }
+                threatsFound++;
+                const threatName = match[2];
+                const action = settings.scanDetectionAction || "results";
+                if (action === "quarantine") {
+                    try {
+                        const quarantined = await quarantineFile(originalPath, threatName, settings.quarantineDir);
+                        const qMap = await getQuarantineMap();
+                        qMap[quarantined.fileName] = quarantined.metadata;
+                        await saveQuarantineMap(qMap);
+                        appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
+                        actionTaken = "Quarantined";
+                    } catch (e: any) {
+                        appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
+                        actionTaken = "Quarantine Failed";
+                    }
+                } else {
+                    await addScanResult({
+                        source: "manual",
+                        scanType: type,
+                        target: scanTarget,
+                        originalPath,
+                        threatName
+                    });
+                    appendJobLogs(jobId, [`Threat found, sent to Results: ${originalPath}`]);
+                    actionTaken = "Sent to Results";
+                }
+                saveJobProgress(jobId, { threatsFound, actionTaken });
+            };
+
+            for (let i = 0; i < chunks.length; i++) {
+                const job = activeJobs[jobId];
+                if (!job || job.status !== "running") break;
+                const chunk = chunks[i];
+                const listPath = await createScanFileList(chunk);
+                const args = buildClamFileListArgs(settings, isClamd, listPath);
+                const chunkLines: string[] = [];
+                saveJobProgress(jobId, {
+                    phase: `ClamAV batch ${i + 1}/${chunks.length}`,
+                    currentFile: chunk[0] || "",
+                    scannedFiles,
+                    totalFiles: scanFiles.length
+                });
+                const code = await new Promise<number>((resolve) => {
+                    const child = spawn(exePath, args);
+                    activeJobs[jobId].process = child;
+                    child.stdout.on("data", data => {
+                        const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
+                        chunkLines.push(...lines);
+                        appendJobLogs(jobId, lines);
+                    });
+                    child.stderr.on("data", data => {
+                        const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
+                        chunkLines.push(...lines);
+                        appendJobLogs(jobId, lines);
+                    });
+                    child.on("error", error => {
+                        appendJobLogs(jobId, [`Process error: ${error.message}`]);
+                        resolve(-1);
+                    });
+                    child.on("close", closeCode => resolve(closeCode ?? 0));
+                });
+                await fs.unlink(listPath).catch(() => {});
+                if (activeJobs[jobId]?.process) activeJobs[jobId].process = null;
+
+                for (const line of chunkLines) {
+                    if (line.includes(" FOUND")) await handleFoundLine(line);
+                    else if (line.includes(" ERROR") || line.startsWith("WARNING:")) errorsFound++;
+                }
+                scannedFiles += chunk.length;
+                saveJobProgress(jobId, {
+                    scannedFiles,
+                    errorsFound,
+                    currentFile: chunk[chunk.length - 1] || "",
+                    phase: `ClamAV batch ${i + 1}/${chunks.length}`,
+                    result: code
+                });
+                if (chunkDelayMs > 0 && i < chunks.length - 1) await sleep(chunkDelayMs);
+            }
+            clearInterval(heartbeat);
+
+            if (activeJobs[jobId]?.status === "running") {
+                saveJobProgress(jobId, { phase: "YARA scan", currentFile: "" });
+                const yaraTargets = type === "memory" ? scanFiles : (effectiveTarget ? [effectiveTarget] : []);
+                const yaraResult = await runYaraScanForTargets(settings, yaraTargets, {
+                    activeJobs,
+                    appendJobLogs,
+                    jobId,
+                    source: "manual",
+                    scanType: type,
+                    target: scanTarget,
+                    action: settings.scanDetectionAction || "results"
+                });
+                if (yaraResult.matches > 0) {
+                    threatsFound += yaraResult.matches;
+                    actionTaken = yaraResult.actionTaken;
+                    saveJobProgress(jobId, { threatsFound, actionTaken });
+                }
+            }
+
+            const isThreat = threatsFound > 0;
+            const duration = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+            appendJobLogs(jobId, [isThreat ? "Scan finished with detections." : "Scan finished with no detections."]);
+            await addHistory({
+                type: `scan-${type}`,
+                target: scanTarget,
+                result: isThreat ? 1 : 0,
+                threatsFound,
+                scannedFiles,
+                duration,
+                actionTaken: isThreat ? actionTaken : "None"
+            });
+
+            if ((type === "disk" || type === "folder" || type === "file") && effectiveTarget) {
+                saveJobProgress(jobId, { phase: "Building shield cache", currentFile: "" });
+                appendJobLogs(jobId, ["Building real-time shield cache for this scan target..."]);
+                try {
+                    const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, (count) => {
+                        appendJobLogs(jobId, [`Shield cache indexed: ${count} files`]);
+                    });
+                    appendJobLogs(jobId, [`Shield cache updated: ${cachedCount} files indexed`]);
+                } catch (e: any) {
+                    appendJobLogs(jobId, [`Shield cache update failed: ${e.message}`]);
+                }
+            }
+
+            activeJobs[jobId].status = "done";
+            activeJobs[jobId].result = isThreat ? 1 : 0;
+            activeJobs[jobId].process = null;
+            saveJobProgress(jobId, {
+                status: "done",
+                phase: "Complete",
+                completedAt: Date.now(),
+                result: isThreat ? 1 : 0,
+                scannedFiles,
+                threatsFound,
+                errorsFound,
+                actionTaken: isThreat ? actionTaken : "None"
+            });
+        }).catch(e => {
+            const job = activeJobs[jobId];
+            if (!job) return;
+            appendJobLogs(jobId, [`Error: ${e.message}`]);
+            job.status = "done";
+            job.result = -1;
+            job.process = null;
+            saveJobProgress(jobId, {
+                status: "done",
+                phase: "Error",
+                completedAt: Date.now(),
+                result: -1
+            });
+        });
+    });
+
+    app.post("/api/scan-legacy", async (req, res) => {
+        const { target, type } = req.body;
+        const effectiveTarget = resolveScanTarget(type, target);
+        const jobId = Date.now().toString();
         // type could be 'file', 'folder', 'disk', 'memory'
         
         if (isSimulated) {
@@ -3055,7 +3565,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
         res.json({
             status: job.status,
             logs: job.logs,
-            result: job.result
+            result: job.result,
+            progress: job.progress || null
         });
         // Clear logs after sending them so we don't accumulate too much
         job.logs = [];
@@ -3068,6 +3579,13 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 job.process.kill();
             }
             job.status = "done";
+            saveJobProgress(req.params.jobId, {
+                status: "done",
+                phase: "Cancelled",
+                completedAt: Date.now(),
+                result: -1,
+                actionTaken: "Cancelled"
+            });
             job.logs.push("Scan cancelled by user.");
             res.json({ status: "cancelled" });
         } else {

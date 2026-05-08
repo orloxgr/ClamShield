@@ -559,6 +559,36 @@ export default function SettingsPage() {
                 className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
             </div>
+
+            <div className="flex items-center justify-between">
+              <div className="w-1/3 pr-4">
+                <label className="text-sm font-medium text-slate-400 block">Scan batch size</label>
+                <span className="text-xs text-slate-500">Manual scans are split into batches so progress, results, and throttling stay responsive.</span>
+              </div>
+              <input
+                type="number"
+                value={settings.scanBatchSize || 250}
+                min={1}
+                max={5000}
+                onChange={e => updateNumberSetting("scanBatchSize", e.target.value, 250, 1, 5000)}
+                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="w-1/3 pr-4">
+                <label className="text-sm font-medium text-slate-400 block">Pause between batches (ms)</label>
+                <span className="text-xs text-slate-500">Adds a small pause between manual scan batches to reduce CPU and disk pressure.</span>
+              </div>
+              <input
+                type="number"
+                value={settings.scanBatchDelayMs || 0}
+                min={0}
+                max={60000}
+                onChange={e => updateNumberSetting("scanBatchDelayMs", e.target.value, 0, 0, 60000)}
+                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
             {['scanArchives', 'recursive', 'followSymlinks'].map(key => (
               <label key={key} className="flex items-center justify-between cursor-pointer py-2">
                 <span className="text-slate-300 capitalize text-sm">{key.replace(/([A-Z])/g, ' $1').trim()}</span>

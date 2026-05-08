@@ -3,17 +3,17 @@ import { FolderSearch, HardDrive, FileSearch, Loader2, Cpu } from "lucide-react"
 import { useScan } from "../context/ScanContext";
 
 export default function Scan() {
-  const { scanState, output, startScan, cancelScan } = useScan();
+  const { scanState, output, progress, startScan, cancelScan } = useScan();
+  const scannedFiles = Number(progress?.scannedFiles || 0);
+  const totalFiles = Number(progress?.totalFiles || 0);
+  const percent = totalFiles > 0 ? Math.min(100, Math.round((scannedFiles / totalFiles) * 100)) : 0;
 
   const handleScanClick = async (type: string, target?: string) => {
     if (type === "folder" && !target) {
       try {
         const res = await fetch("/api/select-folder");
         const data = await res.json();
-        let selectedPath = data.path;
-        if (!selectedPath) {
-            selectedPath = window.prompt("[Simulated] Select a folder path manually:", "C:\\TestPath");
-        }
+        const selectedPath = data.path;
         if (selectedPath) {
           startScan(type, selectedPath);
         }
@@ -26,10 +26,7 @@ export default function Scan() {
       try {
         const res = await fetch("/api/select-file");
         const data = await res.json();
-        let selectedPath = data.path;
-        if (!selectedPath) {
-            selectedPath = window.prompt("[Simulated] Select a file path manually:", "C:\\TestPath\\testfile.exe");
-        }
+        const selectedPath = data.path;
         if (selectedPath) {
           startScan(type, selectedPath);
         }
@@ -70,7 +67,7 @@ export default function Scan() {
       </div>
 
       {(scanState === "running" || scanState === "done") && (
-        <div className="mt-8 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-96">
+        <div className="mt-8 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-[32rem]">
           <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
             <span className="font-mono text-sm text-slate-300 flex items-center gap-2">
               {scanState === "running" ? <Loader2 className="w-4 h-4 animate-spin text-indigo-400" /> : null}
@@ -85,6 +82,36 @@ export default function Scan() {
               </button>
             )}
           </div>
+          {progress && (
+            <div className="px-4 py-3 bg-slate-900/70 border-b border-slate-800 space-y-3">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>{progress.phase || "Scanning"}</span>
+                <span>{scannedFiles.toLocaleString()} / {totalFiles ? totalFiles.toLocaleString() : "?"} files{totalFiles ? ` (${percent}%)` : ""}</span>
+              </div>
+              <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                <div className="min-w-0">
+                  <span className="text-slate-500 block">Current</span>
+                  <span className="text-slate-300 truncate block font-mono">{progress.currentFile || "Preparing..."}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">Detections</span>
+                  <span className="text-red-300 font-mono">{Number(progress.threatsFound || 0).toLocaleString()}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">Elapsed / Quiet</span>
+                  <span className="text-slate-300 font-mono">
+                    {Number(progress.elapsedSeconds || 0).toLocaleString()}s / {Number(progress.quietSeconds || 0).toLocaleString()}s
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="flex-1 p-4 overflow-auto font-mono text-xs text-emerald-400/80 leading-relaxed space-y-1">
             {output.map((line, i) => (
               <div key={i}>{line}</div>

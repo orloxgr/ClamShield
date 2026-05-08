@@ -6,6 +6,7 @@ interface ScanContextType {
   scanState: ScanState;
   output: string[];
   jobId: string | null;
+  progress: any | null;
   startScan: (type: string, target?: string) => Promise<void>;
   cancelScan: () => void;
   resetScan: () => void;
@@ -27,12 +28,14 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
   const [scanState, setScanState] = useState<ScanState>("idle");
   const [output, setOutput] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<any | null>(null);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const startScan = async (type: string, target?: string) => {
     setScanState("running");
     setOutput([`Initiating ${type} scan...`, target ? `Target: ${target}` : '']);
+    setProgress(null);
     
     try {
       const res = await fetch("/api/scan", {
@@ -54,6 +57,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         setOutput(prev => appendOutput(prev, ["Running in simulation mode. Wait 3 seconds..."]));
         setTimeout(() => {
           setOutput(prev => appendOutput(prev, ["Scan complete. Simulated results saved.", "----------- SCAN SUMMARY -----------", "Known viruses: 12345", "Engine version: Simulated", `Target: ${target || type}`, "Scanned directories: 50", "Scanned files: 1240", "Infected files: 0"]));
+          setProgress({ scannedFiles: 1240, totalFiles: 1240, phase: "Complete" });
           setScanState("done");
           setJobId(null);
         }, 3000);
@@ -75,6 +79,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     }
     setScanState("done");
     setOutput(prev => appendOutput(prev, ["Scan cancelled by user."]));
+    setProgress(prev => prev ? { ...prev, status: "done", phase: "Cancelled" } : prev);
     setJobId(null);
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -86,6 +91,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     setScanState("idle");
     setOutput([]);
     setJobId(null);
+    setProgress(null);
   };
 
   // Polling hook
@@ -98,6 +104,9 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
             const data = await res.json();
             if (Array.isArray(data.logs) && data.logs.length > 0) {
               setOutput(prev => appendOutput(prev, data.logs));
+            }
+            if (data.progress) {
+              setProgress(data.progress);
             }
             if (data.status === "done") {
               setScanState("done");
@@ -120,7 +129,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
   }, [scanState, jobId, isSimulated]);
 
   return (
-    <ScanContext.Provider value={{ scanState, output, jobId, startScan, cancelScan, resetScan }}>
+    <ScanContext.Provider value={{ scanState, output, jobId, progress, startScan, cancelScan, resetScan }}>
       {children}
     </ScanContext.Provider>
   );
