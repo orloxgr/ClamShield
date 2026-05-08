@@ -269,6 +269,7 @@ function getFreePort() {
 }
 
 function createWindow(port, startHidden = false) {
+  let rendererRecovering = false;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -291,6 +292,18 @@ function createWindow(port, startHidden = false) {
   };
   
   loadURL();
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (rendererRecovering || isQuiting || details.reason === 'clean-exit') return;
+    rendererRecovering = true;
+    console.warn('Main window renderer stopped; reloading UI', details);
+    setTimeout(() => {
+      rendererRecovering = false;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(`http://127.0.0.1:${port}`).catch(err => console.error("Failed to recover main window", err));
+      }
+    }, 1000);
+  });
 
   mainWindow.on('close', function (event) {
     if (!isQuiting) {

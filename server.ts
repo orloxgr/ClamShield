@@ -2435,9 +2435,9 @@ async function startServer() {
         yaraAutoUpdateTimer = setTimeout(async () => {
             try {
                 const history = await getHistory();
-                const lastUpdate = history.find((h: any) => h.type === "yara-update" && h.result === 0);
+                const lastAttempt = history.find((h: any) => h.type === "yara-update");
                 const intervalMs = normalizePositiveNumber(settings.yaraUpdateIntervalHours, 168, 1, 8760) * 60 * 60 * 1000;
-                const shouldUpdate = !lastUpdate || Date.now() - new Date(lastUpdate.date).getTime() > intervalMs;
+                const shouldUpdate = !lastAttempt || Date.now() - new Date(lastAttempt.date).getTime() > intervalMs;
                 if (shouldUpdate) {
                     console.log("Triggering YARA Forge auto-update...");
                     await updateYaraForgeRules(settings, message => console.log(`YARA auto-update: ${message}`));
