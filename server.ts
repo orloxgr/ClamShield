@@ -13,7 +13,7 @@ import chokidar from "chokidar";
 
 const runtimeFileName = typeof __filename === "string" ? __filename : path.resolve(process.argv[1] || ".");
 const runtimeDir = typeof __dirname === "string" ? __dirname : path.dirname(runtimeFileName);
-const nodeRequire = createRequire(import.meta.url);
+const nodeRequire = createRequire(runtimeFileName);
 
 const execAsync = promisify(exec);
 
