@@ -24,6 +24,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function sendClientLog(level: "error" | "warn" | "info" | "debug", message: string, details?: any) {
+  fetch("/api/client-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ level, message, details }),
+    keepalive: true
+  }).catch(() => {});
+}
+
 class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
     super(props);
@@ -37,6 +46,11 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Er
 
   componentDidCatch(error: Error, info: any) {
     console.error("ClamShield UI crashed:", error, info);
+    sendClientLog("error", "ClamShield UI crashed", {
+      message: error.message,
+      stack: error.stack,
+      componentStack: info?.componentStack
+    });
   }
 
   render() {
@@ -266,11 +280,39 @@ export default function App() {
   const [status, setStatus] = useState<any>(null);
 
   const fetchStatus = () => {
-    fetch("/api/status").then(r => r.json()).then(setStatus);
+    fetch("/api/status").then(r => r.json()).then(setStatus).catch(error => {
+      console.error("Failed to load ClamShield status:", error);
+      sendClientLog("error", "Failed to load ClamShield status", {
+        message: error?.message,
+        stack: error?.stack
+      });
+    });
   };
 
   useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      sendClientLog("error", "Unhandled renderer error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        stack: event.error?.stack
+      });
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason: any = event.reason;
+      sendClientLog("error", "Unhandled renderer promise rejection", {
+        message: reason?.message || String(reason),
+        stack: reason?.stack
+      });
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
     fetchStatus();
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
   }, []);
 
   if (!status) {

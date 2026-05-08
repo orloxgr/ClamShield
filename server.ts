@@ -1,6 +1,6 @@
 import express from "express";
 import fs from "fs/promises";
-import { createWriteStream, createReadStream, existsSync } from "fs";
+import { appendFileSync, createWriteStream, createReadStream, existsSync, mkdirSync } from "fs";
 import path from "path";
 import os from "os";
 import { exec, spawn } from "child_process";
@@ -22,6 +22,63 @@ const programDataDir = process.platform === "win32"
     : path.join(process.cwd(), "data", "ClamShield");
 
 const engineBaseDir = path.join(programDataDir, "engine");
+const defaultLogsDir = path.join(programDataDir, "logs");
+let debugLoggingEnabled = false;
+let currentLogsDir = defaultLogsDir;
+
+function logArgToString(arg: any) {
+    if (arg instanceof Error) return arg.stack || arg.message;
+    if (typeof arg === "string") return arg;
+    try {
+        return JSON.stringify(arg);
+    } catch {
+        return String(arg);
+    }
+}
+
+function writeAppLog(fileName: string, level: string, args: any[]) {
+    try {
+        mkdirSync(currentLogsDir, { recursive: true });
+        const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${args.map(logArgToString).join(" ")}\n`;
+        appendFileSync(path.join(currentLogsDir, fileName), line, "utf8");
+    } catch {
+        // Logging must never break protection or scans.
+    }
+}
+
+const originalConsole = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+    debug: console.debug.bind(console)
+};
+
+console.log = (...args: any[]) => {
+    originalConsole.log(...args);
+    if (debugLoggingEnabled) writeAppLog("server.log", "info", args);
+};
+console.debug = (...args: any[]) => {
+    originalConsole.debug(...args);
+    if (debugLoggingEnabled) writeAppLog("server.log", "debug", args);
+};
+console.warn = (...args: any[]) => {
+    originalConsole.warn(...args);
+    writeAppLog("server.log", "warn", args);
+};
+console.error = (...args: any[]) => {
+    originalConsole.error(...args);
+    writeAppLog("server.log", "error", args);
+};
+
+process.on("uncaughtException", error => {
+    writeAppLog("server.log", "fatal", ["Uncaught exception", error]);
+    originalConsole.error("Uncaught exception:", error);
+});
+
+process.on("unhandledRejection", reason => {
+    writeAppLog("server.log", "fatal", ["Unhandled rejection", reason]);
+    originalConsole.error("Unhandled rejection:", reason);
+});
 
 const defaultSettings = {
     // Relying on 64-bit Program Files by default, but we'll try to use a local bundled path if possible
@@ -34,7 +91,7 @@ const defaultSettings = {
     clamdConf: process.platform === "win32" ? path.join(engineBaseDir, "clamav", "clamd.conf") : "/etc/clamav/clamd.conf",
     databaseDir: path.join(programDataDir, "db"),
     quarantineDir: path.join(programDataDir, "quarantine"),
-    logsDir: path.join(programDataDir, "logs"),
+    logsDir: defaultLogsDir,
     defaultAction: "ask",
     actionOnDetection: "ask",
     scanDetectionAction: "results",
@@ -61,7 +118,9 @@ const defaultSettings = {
     runOnStartup: true,
     startMinimized: false,
     eulaAccepted: false,
-    playSoundOnAlert: true,
+    playSoundOnAlert: false,
+    enableDebugLog: false,
+    logRetentionDays: 7,
     autoDisableDefender: true,
     defenderEnforceIntervalMinutes: 5
 };
@@ -893,21 +952,53 @@ async function loadConfig() {
         const parsed = JSON.parse(data);
         const actionOnDetection = parsed.actionOnDetection === "warn" ? "ask" : (parsed.actionOnDetection || defaultSettings.actionOnDetection);
         const scanDetectionAction = parsed.scanDetectionAction || (parsed.actionOnDetection === "quarantine" || parsed.autoQuarantine ? "quarantine" : defaultSettings.scanDetectionAction);
-        return {
+        const loadedSettings = {
             ...defaultSettings,
             ...parsed,
             actionOnDetection,
             scanDetectionAction,
             eulaAccepted: parsed.eulaAccepted !== false
         };
+        currentLogsDir = loadedSettings.logsDir || defaultLogsDir;
+        debugLoggingEnabled = loadedSettings.enableDebugLog === true;
+        return loadedSettings;
     } catch {
+        currentLogsDir = defaultLogsDir;
+        debugLoggingEnabled = defaultSettings.enableDebugLog;
         return defaultSettings;
     }
 }
 
 async function saveConfig(settings: any) {
     const configPath = path.join(programDataDir, "settings.json");
+    currentLogsDir = settings.logsDir || defaultLogsDir;
+    debugLoggingEnabled = settings.enableDebugLog === true;
     await fs.writeFile(configPath, JSON.stringify(settings, null, 2));
+}
+
+async function cleanupOldLogs(settings: any) {
+    const retentionDays = normalizePositiveNumber(settings.logRetentionDays, 7, 1, 365);
+    const logsDir = settings.logsDir || defaultLogsDir;
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    try {
+        await fs.mkdir(logsDir, { recursive: true });
+        const entries = await fs.readdir(logsDir, { withFileTypes: true });
+        await Promise.all(entries
+            .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith(".log"))
+            .map(async entry => {
+                const logPath = path.join(logsDir, entry.name);
+                try {
+                    const stat = await fs.stat(logPath);
+                    if (stat.mtimeMs < cutoff) {
+                        await fs.unlink(logPath);
+                    }
+                } catch (e) {
+                    console.warn("Failed to apply log retention for", logPath, e);
+                }
+            }));
+    } catch (e) {
+        console.warn("Failed to clean old logs:", e);
+    }
 }
 
 async function manageStartup(settings: any) {
@@ -1164,6 +1255,12 @@ async function startServer() {
     
     let settings = await loadConfig();
     await ensureDirs(settings);
+    await cleanupOldLogs(settings);
+    console.log("ClamShield service starting", {
+        version: process.env.npm_package_version,
+        logsDir: settings.logsDir,
+        debugLoggingEnabled: settings.enableDebugLog === true
+    });
     let defenderTimer: NodeJS.Timeout | null = null;
     const scheduleDefenderEnforcement = async (runNow = true) => {
         if (defenderTimer) clearInterval(defenderTimer);
@@ -1213,6 +1310,13 @@ async function startServer() {
             if (job.analysisLogs.length > 5000) job.analysisLogs.splice(0, job.analysisLogs.length - 5000);
         }
     };
+
+    app.post("/api/client-log", (req, res) => {
+        const level = typeof req.body?.level === "string" ? req.body.level : "error";
+        const message = req.body?.message || "Renderer log";
+        writeAppLog("renderer.log", level, [message, req.body?.details || {}]);
+        res.json({ success: true });
+    });
 
     const createScanHeartbeat = (jobId: string, label: string) => {
         const startedAt = Date.now();
@@ -1704,6 +1808,7 @@ async function startServer() {
         settings = { ...settings, ...req.body };
         await saveConfig(settings);
         await ensureDirs(settings);
+        await cleanupOldLogs(settings);
         res.json({ success: true, settings });
         Promise.resolve()
             .then(async () => {

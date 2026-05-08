@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Save, Folder, Shield, Sliders, ShieldAlert, Heart } from "lucide-react";
+import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart } from "lucide-react";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -221,7 +221,7 @@ export default function SettingsPage() {
             <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
               <div>
                 <span className="text-slate-200 font-medium block">Play Sound on Threat Found</span>
-                <span className="text-slate-500 text-xs">Play a system beep sound when a threat is detected.</span>
+                <span className="text-slate-500 text-xs">Play a short bundled alert sound when a threat popup opens. Off by default.</span>
               </div>
               <input 
                 type="checkbox" 
@@ -230,6 +230,46 @@ export default function SettingsPage() {
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>
+          </div>
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between font-medium text-slate-200">
+            <div className="flex items-center gap-2">
+              <Bug className="w-5 h-5 text-indigo-400" />
+              Diagnostics
+            </div>
+          </div>
+          <div className="p-6 space-y-4">
+            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Enable Debug Log</span>
+                <span className="text-slate-500 text-xs">Writes extra startup, popup, and service details. Error and crash logs are always kept so white screens can be diagnosed.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.enableDebugLog === true}
+                onChange={e => setSettings({...settings, enableDebugLog: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-slate-400 block w-1/3">
+                Delete logs after days
+                <span className="block text-xs font-normal text-slate-500 mt-1">Default is 7 days. Logs are stored under C:\ProgramData\ClamShield\logs.</span>
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={settings.logRetentionDays || 7}
+                onChange={e => updateNumberSetting("logRetentionDays", e.target.value, 7, 1, 365)}
+                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+              Main app, popup, renderer, and service errors are written to the logs folder. Turn on debug log only while investigating a problem.
+            </div>
           </div>
         </section>
 

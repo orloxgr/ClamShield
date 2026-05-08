@@ -161,6 +161,33 @@
     const filePath = params.get("path") || "Unknown path";
     const playSound = params.get("playSound") !== "false";
 
+    function logPopupError(message, details) {
+      fetch(`http://127.0.0.1:${port}/api/client-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level: "error", message, details }),
+        keepalive: true
+      }).catch(() => {});
+    }
+
+    window.addEventListener("error", event => {
+      logPopupError("Threat popup renderer error", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        stack: event.error && event.error.stack
+      });
+    });
+
+    window.addEventListener("unhandledrejection", event => {
+      const reason = event.reason || {};
+      logPopupError("Threat popup promise rejection", {
+        message: reason.message || String(reason),
+        stack: reason.stack
+      });
+    });
+
     document.getElementById("threatName").textContent = name;
     document.getElementById("threatPath").textContent = filePath;
     if (playSound) {

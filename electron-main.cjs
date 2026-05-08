@@ -15,6 +15,7 @@ let isQuiting = false;
 let activeAlerts = new Map();
 let primaryDisplay;
 let resultsReminderWindow = null;
+let debugLoggingEnabled = false;
 
 function getProgramDataDir() {
   return process.platform === 'win32'
@@ -22,11 +23,91 @@ function getProgramDataDir() {
     : path.join(__dirname, 'data', 'ClamShield');
 }
 
+function getLogsDir() {
+  return path.join(getProgramDataDir(), 'logs');
+}
+
+function logArgToString(arg) {
+  if (arg instanceof Error) return arg.stack || arg.message;
+  if (typeof arg === 'string') return arg;
+  try {
+    return JSON.stringify(arg);
+  } catch {
+    return String(arg);
+  }
+}
+
+function writeMainLog(level, args) {
+  try {
+    fs.mkdirSync(getLogsDir(), { recursive: true });
+    const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] ${args.map(logArgToString).join(' ')}\n`;
+    fs.appendFileSync(path.join(getLogsDir(), 'electron-main.log'), line, 'utf8');
+  } catch {
+    // Logging must never stop the app from launching.
+  }
+}
+
+const originalConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  debug: console.debug.bind(console)
+};
+
+console.log = (...args) => {
+  originalConsole.log(...args);
+  if (debugLoggingEnabled) writeMainLog('info', args);
+};
+console.debug = (...args) => {
+  originalConsole.debug(...args);
+  if (debugLoggingEnabled) writeMainLog('debug', args);
+};
+console.warn = (...args) => {
+  originalConsole.warn(...args);
+  writeMainLog('warn', args);
+};
+console.error = (...args) => {
+  originalConsole.error(...args);
+  writeMainLog('error', args);
+};
+
+process.on('uncaughtException', (error) => {
+  writeMainLog('fatal', ['Uncaught exception', error]);
+  originalConsole.error('Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  writeMainLog('fatal', ['Unhandled rejection', reason]);
+  originalConsole.error('Unhandled rejection:', reason);
+});
+
+function attachWindowLogging(win, label) {
+  if (!win || !win.webContents) return;
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    writeMainLog('error', [`${label} failed to load`, { errorCode, errorDescription, validatedURL }]);
+  });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    writeMainLog('fatal', [`${label} renderer process gone`, details]);
+  });
+  win.webContents.on('unresponsive', () => {
+    writeMainLog('warn', [`${label} window became unresponsive`]);
+  });
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const isErrorLevel = level >= 2;
+    if (isErrorLevel || debugLoggingEnabled) {
+      writeMainLog(isErrorLevel ? 'error' : 'debug', [`${label} console`, { message, line, sourceId }]);
+    }
+  });
+}
+
 function readAppSettings() {
   try {
     const settingsPath = path.join(getProgramDataDir(), 'settings.json');
-    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    debugLoggingEnabled = settings.enableDebugLog === true;
+    return settings;
   } catch {
+    debugLoggingEnabled = false;
     return {};
   }
 }
@@ -50,7 +131,8 @@ function pollThreats(port) {
                         let playSound = false;
                         try {
                            const s = JSON.parse(setData);
-                           playSound = s.settings.playSoundOnAlert !== false; // Default to true if undefined
+                           playSound = s.settings.playSoundOnAlert === true;
+                           debugLoggingEnabled = s.settings.enableDebugLog === true;
                            if (s.settings.shieldShowPopup === false) {
                               activeAlerts.delete(threat.id);
                               return;
@@ -59,7 +141,7 @@ function pollThreats(port) {
                         createAlertWindow(threat, port, playSound);
                      });
                   }).on('error', () => {
-                     createAlertWindow(threat, port, true);
+                     createAlertWindow(threat, port, false);
                   });
                }
             });
@@ -99,6 +181,7 @@ function createAlertWindow(threat, port, playSound) {
    });
    
    activeAlerts.set(threat.id, alertWin);
+   attachWindowLogging(alertWin, 'Threat alert');
 
    alertWin.on('closed', () => {
       activeAlerts.delete(threat.id);
@@ -106,6 +189,7 @@ function createAlertWindow(threat, port, playSound) {
    
    const alertUrl = `http://127.0.0.1:${port}/alert.html?id=${encodeURIComponent(threat.id)}&name=${encodeURIComponent(threat.threatName)}&path=${encodeURIComponent(threat.originalPath)}&port=${port}&playSound=${playSound}`;
    
+   console.debug('Opening threat alert window', { threatId: threat.id, playSound });
    alertWin.loadURL(alertUrl).catch(err => console.error("Failed to load alert HTML", err));
 }
 
@@ -151,6 +235,8 @@ function createResultsReminderWindow(reminder, port) {
       }
    });
 
+   attachWindowLogging(resultsReminderWindow, 'Results reminder');
+
    resultsReminderWindow.on('closed', () => {
       resultsReminderWindow = null;
    });
@@ -195,6 +281,7 @@ function createWindow(port, startHidden = false) {
     },
     icon: path.join(__dirname, 'public/icon.png')
   });
+  attachWindowLogging(mainWindow, 'Main window');
 
   // Wait a moment for server to start, then load
   const loadURL = () => {
@@ -279,6 +366,7 @@ app.on('ready', async () => {
   const port = await getFreePort();
   const settings = readAppSettings();
   const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
+  console.log('ClamShield Electron starting', { port, startHidden, debugLoggingEnabled });
   startServer(port);
   createTray();
   createWindow(port, startHidden);
