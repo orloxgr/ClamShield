@@ -400,18 +400,44 @@ async function restoreDefenderPreferences() {
 
 async function openWindowsSecurity() {
     if (process.platform !== "win32") return { success: false, error: "Only supported on Windows." };
-    const targets = ["windowsdefender:", "ms-settings:windowsdefender"];
-    for (const target of targets) {
-        try {
-            spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", "Start-Process", target], {
-                detached: true,
-                stdio: "ignore",
-                windowsHide: true
-            }).unref();
-            return { success: true, target };
-        } catch {}
+    const attempts = [
+        { command: "explorer.exe", args: ["windowsdefender:"] },
+        { command: "explorer.exe", args: ["ms-settings:windowsdefender"] },
+        { command: "cmd.exe", args: ["/c", "start", "", "windowsdefender:"] },
+        { command: "cmd.exe", args: ["/c", "start", "", "ms-settings:windowsdefender"] }
+    ];
+    const errors: string[] = [];
+    for (const attempt of attempts) {
+        const result = await new Promise<{ success: boolean, error?: string }>((resolve) => {
+            let settled = false;
+            const done = (success: boolean, error?: string) => {
+                if (!settled) {
+                    settled = true;
+                    resolve({ success, error });
+                }
+            };
+            try {
+                const child = spawn(attempt.command, attempt.args, {
+                    detached: true,
+                    stdio: "ignore",
+                    windowsHide: true
+                });
+                child.on("error", (err: any) => done(false, err?.message || String(err)));
+                child.on("spawn", () => {
+                    child.unref();
+                    done(true);
+                });
+                setTimeout(() => done(true), 1200).unref?.();
+            } catch (e: any) {
+                done(false, e?.message || String(e));
+            }
+        });
+        if (result.success) {
+            return { success: true, command: attempt.command, args: attempt.args };
+        }
+        if (result.error) errors.push(`${attempt.command}: ${result.error}`);
     }
-    return { success: false, error: "Windows Security could not be opened." };
+    return { success: false, error: errors.join("; ") || "Windows Security could not be opened." };
 }
 
 async function autoDisableDefender() {

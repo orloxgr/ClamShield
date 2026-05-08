@@ -6,6 +6,10 @@
 
 !macro customInstall
   ExecWait `"$SYSDIR\schtasks.exe" /create /tn "ClamShield" /tr "\"$INSTDIR\ClamShield.exe\"" /sc onlogon /rl highest /f`
+  ${if} ${isUpdated}
+    DetailPrint "Restarting ClamShield after update..."
+    Exec `"$INSTDIR\ClamShield.exe" --minimized`
+  ${endif}
 !macroend
 
 !macro customUnInstall
