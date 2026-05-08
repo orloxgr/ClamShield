@@ -10,6 +10,7 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 - One-click FreshClam signature updates.
 - Optional YARA scanning powered by ready-to-use YARA Forge rule packages.
 - YARA Forge Core rules are enabled by default, with Extended and Full profiles available for advanced coverage.
+- Separate update controls for ClamAV signatures, YARA Forge rules, and ClamShield releases.
 - Manual full system, folder, file, and memory scans.
 - Windows process scan checks executable images used by running processes.
 - Low-impact real-time shield for watched folders.
@@ -92,6 +93,18 @@ Use the Updates page to download or refresh YARA rules with `Update YARA Rules`.
 - `https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip`
 
 YARA matches appear in the Results page with `Engine: YARA`, rule name, source, and selected ruleset. Users can quarantine the file or add it to exceptions from the Results flow.
+
+On Windows, ClamShield writes YARA scan lists as UTF-16LE without BOM so the upstream YARA CLI can scan paths with Greek, Cyrillic, Arabic, and other Unicode characters.
+
+## Updates
+
+The Updates page has separate actions:
+
+- `Update ClamAV`: runs FreshClam for virus signatures.
+- `Update YARA Rules`: checks the local YARA engine and downloads the selected YARA Forge ruleset.
+- `Check ClamShield`: checks GitHub Releases for a newer ClamShield installer.
+
+ClamShield update checks can be enabled weekly from Settings. Silent app install is available as an explicit setting; when enabled, ClamShield downloads the latest installer, launches it, and closes itself so the installer can replace application files.
 
 ## Uninstall Behavior
 

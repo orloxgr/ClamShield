@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { RefreshCw, Database, Loader2, ShieldCheck } from "lucide-react";
+import { RefreshCw, Database, Loader2, ShieldCheck, DownloadCloud } from "lucide-react";
 
 const MAX_TERMINAL_LINES = 800;
 
@@ -15,9 +15,14 @@ export default function Updates() {
   const [yaraUpdateState, setYaraUpdateState] = useState<"idle" | "running" | "done">("idle");
   const [yaraOutput, setYaraOutput] = useState<string[]>([]);
   const [yaraJobId, setYaraJobId] = useState<string | null>(null);
+  const [appUpdateState, setAppUpdateState] = useState<"idle" | "checking" | "available" | "none" | "running" | "done">("idle");
+  const [appUpdateInfo, setAppUpdateInfo] = useState<any>(null);
+  const [appOutput, setAppOutput] = useState<string[]>([]);
+  const [appJobId, setAppJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<any>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const yaraPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const appPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const refreshStatus = async () => {
     try {
@@ -64,7 +69,7 @@ export default function Updates() {
 
   const runYaraUpdate = async () => {
     setYaraUpdateState("running");
-    setYaraOutput(["Updating YARA engine and YARA Forge rules..."]);
+    setYaraOutput(["Checking YARA engine, then updating YARA Forge rules..."]);
     try {
       const res = await fetch("/api/update-yara", { method: "POST" });
       const data = await res.json();
@@ -75,6 +80,59 @@ export default function Updates() {
       setYaraUpdateState("done");
       setYaraJobId(null);
     }
+  };
+
+  const checkAppUpdate = async () => {
+    setAppUpdateState("checking");
+    setAppOutput(["Checking GitHub releases for a newer ClamShield version..."]);
+    try {
+      const res = await fetch("/api/app-update");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to check ClamShield updates.");
+      setAppUpdateInfo(data);
+      setAppOutput(prev => appendOutput(prev, [
+        `Installed: ${data.currentVersion}`,
+        `Latest: ${data.latestVersion}`,
+        data.updateAvailable ? `Update available: ${data.assetName || data.releaseUrl}` : "ClamShield is up to date."
+      ]));
+      setAppUpdateState(data.updateAvailable ? "available" : "none");
+    } catch (e: any) {
+      setAppOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+      setAppUpdateState("done");
+    }
+  };
+
+  const installAppUpdate = async () => {
+    setAppUpdateState("running");
+    setAppOutput(prev => appendOutput(prev, ["Downloading and launching the ClamShield installer..."]));
+    try {
+      const res = await fetch("/api/app-update/install", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to start ClamShield update.");
+      setAppJobId(data.jobId);
+    } catch (e: any) {
+      setAppOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+      setAppUpdateState("done");
+      setAppJobId(null);
+    }
+  };
+
+  const skipAppVersion = async () => {
+    if (!appUpdateInfo?.latestVersion) return;
+    await fetch("/api/app-update/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: appUpdateInfo.latestVersion })
+    });
+    setAppOutput(prev => appendOutput(prev, [`Skipped ClamShield ${appUpdateInfo.latestVersion}.`]));
+    setAppUpdateState("none");
+  };
+
+  const disableAppUpdates = async () => {
+    await fetch("/api/app-update/disable", { method: "POST" });
+    setAppOutput(prev => appendOutput(prev, ["ClamShield update checks disabled. You can re-enable them in Settings."]));
+    setAppUpdateState("done");
+    refreshStatus();
   };
 
   useEffect(() => {
@@ -138,11 +196,41 @@ export default function Updates() {
     };
   }, [yaraUpdateState, yaraJobId]);
 
+  useEffect(() => {
+    if (appUpdateState === "running" && appJobId) {
+      appPollIntervalRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/scan/${appJobId}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.logs && data.logs.length > 0) {
+              setAppOutput(prev => appendOutput(prev, data.logs));
+            }
+            if (data.status === "done") {
+              setAppUpdateState("done");
+              setAppJobId(null);
+              clearInterval(appPollIntervalRef.current!);
+              appPollIntervalRef.current = null;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to poll ClamShield update status:", e);
+        }
+      }, 1000);
+    }
+
+    return () => {
+      if (appPollIntervalRef.current) {
+        clearInterval(appPollIntervalRef.current);
+      }
+    };
+  }, [appUpdateState, appJobId]);
+
   return (
     <div className="p-8 max-w-4xl mx-auto space-y-8">
       <header>
-        <h1 className="text-3xl font-bold text-white mb-2">Signature Updates</h1>
-        <p className="text-slate-400">Keep your virus database current with freshclam</p>
+        <h1 className="text-3xl font-bold text-white mb-2">Updates</h1>
+        <p className="text-slate-400">Update ClamAV signatures, YARA Forge rules, and ClamShield itself.</p>
       </header>
 
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 flex items-center justify-between">
@@ -161,7 +249,7 @@ export default function Updates() {
           className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <RefreshCw className={`w-5 h-5 ${updateState === "running" ? "animate-spin" : ""}`} />
-          {updateState === "running" ? "Updating..." : "Update Now"}
+          {updateState === "running" ? "Updating..." : "Update ClamAV"}
         </button>
       </div>
 
@@ -189,6 +277,53 @@ export default function Updates() {
         </button>
       </div>
 
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 flex items-center justify-between gap-6">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full">
+            <DownloadCloud className="w-8 h-8" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="font-semibold text-white text-lg">ClamShield Application</h3>
+            <p className="text-slate-400 text-sm">
+              Installed: {status?.appVersion || "Unknown"}
+              {appUpdateInfo?.latestVersion ? ` - Latest: ${appUpdateInfo.latestVersion}` : ""}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {appUpdateState === "available" && (
+            <>
+              <button
+                onClick={skipAppVersion}
+                className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors"
+              >
+                Skip Version
+              </button>
+              <button
+                onClick={disableAppUpdates}
+                className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors"
+              >
+                Disable Checks
+              </button>
+            </>
+          )}
+          <button
+            onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate}
+            disabled={appUpdateState === "checking" || appUpdateState === "running"}
+            className="flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`w-5 h-5 ${appUpdateState === "checking" || appUpdateState === "running" ? "animate-spin" : ""}`} />
+            {appUpdateState === "checking"
+              ? "Checking..."
+              : appUpdateState === "running"
+                ? "Installing..."
+                : appUpdateState === "available"
+                  ? "Install Update"
+                  : "Check ClamShield"}
+          </button>
+        </div>
+      </div>
+
       {(updateState === "running" || updateState === "done") && (
         <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-64">
            <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2">
@@ -213,6 +348,20 @@ export default function Updates() {
           </div>
           <div className="flex-1 p-4 overflow-auto font-mono text-xs text-emerald-400/80 leading-relaxed space-y-1 flex flex-col justify-end">
             {yaraOutput.map((line, i) => <div key={i}>{line}</div>)}
+          </div>
+        </div>
+      )}
+
+      {appUpdateState !== "idle" && (
+        <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-64">
+           <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2">
+            <span className="font-mono text-sm text-slate-300 flex items-center gap-2">
+              {appUpdateState === "checking" || appUpdateState === "running" ? <Loader2 className="w-4 h-4 animate-spin text-cyan-400" /> : null}
+              ClamShield Output
+            </span>
+          </div>
+          <div className="flex-1 p-4 overflow-auto font-mono text-xs text-emerald-400/80 leading-relaxed space-y-1 flex flex-col justify-end">
+            {appOutput.map((line, i) => <div key={i}>{line}</div>)}
           </div>
         </div>
       )}

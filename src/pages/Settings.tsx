@@ -414,6 +414,46 @@ export default function SettingsPage() {
                 />
               </div>
             )}
+
+            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
+              <div>
+                <span className="text-slate-300 block text-sm">Check for ClamShield app updates weekly</span>
+                <span className="text-xs text-slate-500">Looks for a newer GitHub release while ClamShield is running.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.appUpdateCheckEnabled !== false}
+                onChange={e => setSettings({...settings, appUpdateCheckEnabled: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            {settings.appUpdateCheckEnabled !== false && (
+              <>
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-400 block w-1/3">ClamShield update interval (hours)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8760}
+                    value={settings.appUpdateIntervalHours || 168}
+                    onChange={e => updateNumberSetting("appUpdateIntervalHours", e.target.value, 168, 1, 8760)}
+                    className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <label className="flex items-center justify-between cursor-pointer py-2">
+                  <div>
+                    <span className="text-slate-300 block text-sm">Silent install ClamShield updates</span>
+                    <span className="text-xs text-slate-500">Downloads and launches the installer automatically, then closes ClamShield so files can be replaced.</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.appSilentAutoInstall === true}
+                    onChange={e => setSettings({...settings, appSilentAutoInstall: e.target.checked})}
+                    className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                  />
+                </label>
+              </>
+            )}
             
             <div className="flex items-center justify-between py-2">
               <span className="text-slate-300 text-sm mb-1 block">Send scanned items to</span>

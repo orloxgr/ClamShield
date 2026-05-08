@@ -115,6 +115,10 @@ const defaultSettings = {
     yaraUpdateIntervalHours: 168,
     yaraTimeoutSeconds: 15,
     yaraMaxFileSize: 50,
+    appUpdateCheckEnabled: true,
+    appUpdateIntervalHours: 168,
+    appSilentAutoInstall: false,
+    skippedAppVersion: "",
     offloadToMemory: false,
     maxFileSize: 50, // MB
     scanArchives: true,
@@ -841,6 +845,78 @@ async function countYaraRules(filePath: string) {
     } catch {
         return 0;
     }
+}
+
+function normalizeVersion(value: any) {
+    return String(value || "0.0.0").trim().replace(/^v/i, "");
+}
+
+function compareVersions(a: string, b: string) {
+    const left = normalizeVersion(a).split(".").map(part => parseInt(part, 10) || 0);
+    const right = normalizeVersion(b).split(".").map(part => parseInt(part, 10) || 0);
+    const length = Math.max(left.length, right.length);
+    for (let i = 0; i < length; i++) {
+        const delta = (left[i] || 0) - (right[i] || 0);
+        if (delta !== 0) return delta;
+    }
+    return 0;
+}
+
+async function getCurrentAppVersion() {
+    let pkgVersion = process.env.npm_package_version || "1.0.14";
+    try {
+        const pkgPath = path.join(runtimeDir, process.env.NODE_ENV === "production" ? ".." : "", "package.json");
+        const pkgData = await fs.readFile(pkgPath, "utf8");
+        pkgVersion = JSON.parse(pkgData).version || pkgVersion;
+    } catch {}
+    return normalizeVersion(pkgVersion);
+}
+
+async function getLatestClamShieldRelease(settings: any) {
+    const currentVersion = await getCurrentAppVersion();
+    const releaseRes = await axios.get("https://api.github.com/repos/orloxgr/ClamShield/releases/latest", {
+        headers: { "User-Agent": "ClamShield" }
+    });
+    const release = releaseRes.data;
+    const latestVersion = normalizeVersion(release.tag_name || release.name);
+    const skipped = normalizeVersion(settings.skippedAppVersion) === latestVersion;
+    const asset = (release.assets || []).find((item: any) => {
+        const name = String(item.name || "").toLowerCase();
+        return name.endsWith(".exe") && (name.includes("setup") || name.includes("clamshield"));
+    }) || (release.assets || []).find((item: any) => String(item.name || "").toLowerCase().endsWith(".exe"));
+
+    return {
+        currentVersion,
+        latestVersion,
+        updateAvailable: compareVersions(latestVersion, currentVersion) > 0 && !skipped,
+        skipped,
+        releaseUrl: release.html_url,
+        publishedAt: release.published_at,
+        assetName: asset?.name || "",
+        downloadUrl: asset?.browser_download_url || ""
+    };
+}
+
+async function downloadAndLaunchClamShieldInstaller(settings: any, log?: (message: string) => void) {
+    const update = await getLatestClamShieldRelease(settings);
+    if (!update.updateAvailable) return { ...update, launched: false };
+    if (!update.downloadUrl) throw new Error("Latest ClamShield release does not include a Windows installer asset.");
+
+    const updatesDir = path.join(programDataDir, "updates");
+    const safeName = update.assetName.replace(/[<>:"/\\|?*]/g, "_") || `ClamShield-Setup-${update.latestVersion}.exe`;
+    const installerPath = path.join(updatesDir, safeName);
+    log?.(`Downloading ClamShield ${update.latestVersion} installer...`);
+    await downloadToFile(update.downloadUrl, installerPath, log);
+
+    const args = ["/S"];
+    log?.(`Launching installer: ${installerPath}`);
+    const child = spawn(installerPath, args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true
+    });
+    child.unref();
+    return { ...update, launched: true, installerPath };
 }
 
 async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
@@ -1659,14 +1735,16 @@ function shouldSkipYaraTarget(settings: any, filePath: string, fingerprint: Shie
 
 async function createYaraTargetList(settings: any, targets: string[], onProgress?: (count: number) => void) {
     const listPath = path.join(os.tmpdir(), `clamshield-yara-list-${Date.now()}-${randomBytes(6).toString("hex")}.txt`);
-    const writer = createWriteStream(listPath, { encoding: "utf8" });
+    const writer = createWriteStream(listPath, { encoding: "utf16le" });
     let count = 0;
+    let unreadablePathCount = 0;
     try {
         for (const target of targets.filter(Boolean)) {
             let stat;
             try {
                 stat = await fs.stat(target);
             } catch {
+                unreadablePathCount++;
                 continue;
             }
             if (stat.isFile()) {
@@ -1694,7 +1772,7 @@ async function createYaraTargetList(settings: any, targets: string[], onProgress
         });
     }
     onProgress?.(count);
-    return { listPath, count };
+    return { listPath, count, unreadablePathCount };
 }
 
 function parseYaraMatchLine(line: string) {
@@ -1778,9 +1856,14 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         return { matches: 0, actionTaken: "None" };
     }
 
-    const { listPath, count } = await createYaraTargetList(settings, targets, (indexed) => {
+    const { listPath, count, unreadablePathCount } = await createYaraTargetList(settings, targets, (indexed) => {
         options.appendJobLogs(options.jobId, [`YARA target list indexed: ${indexed} files`]);
     });
+    if (unreadablePathCount > 0) {
+        options.appendJobLogs(options.jobId, [
+            `YARA skipped ${unreadablePathCount} unreadable target path${unreadablePathCount === 1 ? "" : "s"}.`
+        ]);
+    }
     if (count === 0) {
         await fs.unlink(listPath).catch(() => {});
         options.appendJobLogs(options.jobId, ["YARA skipped: no eligible files after exclusions and size limits."]);
@@ -1807,6 +1890,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     const stdoutLines: string[] = [];
     const child = spawn(yaraPath, args);
     job.process = child;
+    let openErrorCount = 0;
     const exitCode = await new Promise<number>((resolve) => {
         child.stdout.on("data", data => {
             const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
@@ -1815,7 +1899,15 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         });
         child.stderr.on("data", data => {
             const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
-            if (lines.length) options.appendJobLogs(options.jobId, lines.map((line: string) => `YARA: ${line}`));
+            const visibleLines: string[] = [];
+            for (const line of lines) {
+                if (/error scanning .*could not open file/i.test(line)) {
+                    openErrorCount++;
+                } else {
+                    visibleLines.push(line);
+                }
+            }
+            if (visibleLines.length) options.appendJobLogs(options.jobId, visibleLines.map((line: string) => `YARA: ${line}`));
         });
         child.on("error", error => {
             options.appendJobLogs(options.jobId, [`YARA process error: ${error.message}`]);
@@ -1825,6 +1917,11 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     });
     await fs.unlink(listPath).catch(() => {});
     if (job.process === child) job.process = null;
+    if (openErrorCount > 0) {
+        options.appendJobLogs(options.jobId, [
+            `YARA skipped ${openErrorCount} file${openErrorCount === 1 ? "" : "s"} it could not open. ClamAV scan results are still valid.`
+        ]);
+    }
 
     const detectionsByPath = new Map<string, { originalPath: string, ruleNames: Set<string> }>();
     for (const line of stdoutLines) {
@@ -2243,12 +2340,7 @@ async function startServer() {
         hasYaraEngine = Boolean(settings.yaraPath && existsSync(settings.yaraPath));
         hasYaraRules = existsSync(getYaraRulesFile(settings));
 
-        let pkgVersion = "1.0.14";
-        try {
-            const pkgPath = path.join(runtimeDir, process.env.NODE_ENV === "production" ? ".." : "", "package.json");
-            const pkgData = await fs.readFile(pkgPath, "utf8");
-            pkgVersion = JSON.parse(pkgData).version || "1.0.14";
-        } catch {}
+        const pkgVersion = await getCurrentAppVersion();
         res.json({
             appVersion: pkgVersion,
             isSimulated,
@@ -2467,9 +2559,57 @@ async function startServer() {
         }, 60000);
     };
 
+    let appUpdateTimer: NodeJS.Timeout | null = null;
+    const scheduleNextAppUpdateCheck = () => {
+        if (appUpdateTimer) clearTimeout(appUpdateTimer);
+        if (!settings.appUpdateCheckEnabled) return;
+
+        appUpdateTimer = setTimeout(async () => {
+            try {
+                const history = await getHistory();
+                const lastAttempt = history.find((h: any) => h.type === "app-update-check");
+                const intervalMs = normalizePositiveNumber(settings.appUpdateIntervalHours, 168, 1, 8760) * 60 * 60 * 1000;
+                const shouldCheck = !lastAttempt || Date.now() - new Date(lastAttempt.date).getTime() > intervalMs;
+                if (shouldCheck) {
+                    console.log("Checking for ClamShield app update...");
+                    const update = await getLatestClamShieldRelease(settings);
+                    let actionTaken = update.updateAvailable ? `Available ${update.latestVersion}` : "No update";
+                    if (update.updateAvailable && settings.appSilentAutoInstall === true) {
+                        await downloadAndLaunchClamShieldInstaller(settings, message => console.log(`ClamShield update: ${message}`));
+                        actionTaken = `Installer launched ${update.latestVersion}`;
+                        const timer = setTimeout(() => process.exit(0), 1500);
+                        timer.unref?.();
+                    }
+                    await addHistory({
+                        type: "app-update-check",
+                        target: "ClamShield",
+                        result: 0,
+                        threatsFound: 0,
+                        scannedFiles: 0,
+                        duration: 1,
+                        actionTaken
+                    });
+                }
+            } catch (e: any) {
+                console.error("ClamShield app update check failed:", e.message);
+                await addHistory({
+                    type: "app-update-check",
+                    target: "ClamShield",
+                    result: 1,
+                    threatsFound: 0,
+                    scannedFiles: 0,
+                    duration: 1,
+                    actionTaken: "Failed"
+                });
+            }
+            scheduleNextAppUpdateCheck();
+        }, 60000);
+    };
+
     // Initial trigger
     scheduleNextUpdate();
     scheduleNextYaraUpdate();
+    scheduleNextAppUpdateCheck();
 
     app.post("/api/settings", async (req, res) => {
         settings = { ...settings, ...req.body };
@@ -2486,6 +2626,7 @@ async function startServer() {
                 await scheduleDefenderEnforcement(false);
                 scheduleNextUpdate();
                 scheduleNextYaraUpdate();
+                scheduleNextAppUpdateCheck();
             })
             .catch(e => console.error("Failed to apply settings side effects:", e));
     });
@@ -2854,7 +2995,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
 
                 const isThreat = code === 1 || threatsFound > 0;
-                appendJobLogs(jobId, [`Scan finished with exit code ${code ?? "unknown"}.`]);
+                const exitSummary = code === 1
+                    ? "Scan finished with exit code 1 (threats were found)."
+                    : `Scan finished with exit code ${code ?? "unknown"}.`;
+                appendJobLogs(jobId, [exitSummary]);
                 await addHistory({
                     type: `scan-${type}`,
                     target: type === "memory" ? "Running process images" : (effectiveTarget || "C:\\"),
@@ -3006,6 +3150,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.post("/api/update-yara", async (req, res) => {
         const jobId = "yara-update-" + Date.now().toString();
+        const requestedRuleset = normalizeYaraRuleset(req.body?.ruleset || settings.yaraRuleset);
+        if (requestedRuleset !== settings.yaraRuleset) {
+            settings = { ...settings, yaraRuleset: requestedRuleset };
+            await saveConfig(settings);
+        }
         activeJobs[jobId] = { status: "running", logs: [] };
         res.json({ jobId, status: "started" });
 
@@ -3038,6 +3187,87 @@ if ($dialog.ShowDialog() -eq 'OK') {
             await addHistory({
                 type: "yara-update",
                 target: `YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)}`,
+                result: 1,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Failed"
+            });
+        }
+    });
+
+    app.get("/api/app-update", async (req, res) => {
+        try {
+            res.json(await getLatestClamShieldRelease(settings));
+        } catch (e: any) {
+            res.status(500).json({ error: e.message || "Failed to check for ClamShield updates." });
+        }
+    });
+
+    app.post("/api/app-update/skip", async (req, res) => {
+        try {
+            const version = normalizeVersion(req.body?.version || "");
+            if (!version || version === "0.0.0") {
+                return res.status(400).json({ error: "Missing version to skip." });
+            }
+            settings = { ...settings, skippedAppVersion: version };
+            await saveConfig(settings);
+            res.json({ success: true, skippedAppVersion: version });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/app-update/disable", async (req, res) => {
+        try {
+            settings = { ...settings, appUpdateCheckEnabled: false };
+            await saveConfig(settings);
+            scheduleNextAppUpdateCheck();
+            res.json({ success: true, settings });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/app-update/install", async (req, res) => {
+        const jobId = "app-update-" + Date.now().toString();
+        activeJobs[jobId] = { status: "running", logs: [] };
+        res.json({ jobId, status: "started" });
+
+        const startedAt = Date.now();
+        try {
+            const result = await downloadAndLaunchClamShieldInstaller(settings, message => {
+                if (activeJobs[jobId]) activeJobs[jobId].logs.push(message);
+            });
+            if (!activeJobs[jobId]) return;
+            activeJobs[jobId].logs.push(result.launched
+                ? "ClamShield installer launched. The app will close so the update can replace files."
+                : "No newer ClamShield version is available.");
+            activeJobs[jobId].status = "done";
+            activeJobs[jobId].result = 0;
+            await addHistory({
+                type: "app-update-install",
+                target: `ClamShield ${result.latestVersion || ""}`.trim(),
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: result.launched ? "Installer launched" : "No update"
+            });
+            if (result.launched) {
+                const timer = setTimeout(() => process.exit(0), 1500);
+                timer.unref?.();
+            }
+        } catch (e: any) {
+            console.error("ClamShield app update install failed:", e.message);
+            if (activeJobs[jobId]) {
+                activeJobs[jobId].logs.push(`Error: ${e.message}`);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = 1;
+            }
+            await addHistory({
+                type: "app-update-install",
+                target: "ClamShield",
                 result: 1,
                 threatsFound: 0,
                 scannedFiles: 0,

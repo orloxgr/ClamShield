@@ -85,10 +85,12 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
   const [eulaAccepted, setEulaAccepted] = useState(Boolean(status?.settings?.eulaAccepted));
   const [installing, setInstalling] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [updatingYara, setUpdatingYara] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
 
   const needsEngine = !status.hasEngine && !status.isSimulated;
   const needsDb = !status.hasDb && !status.isSimulated;
+  const needsYara = status.settings?.yaraEnabled !== false && (!status.hasYaraEngine || !status.hasYaraRules) && !status.isSimulated;
 
   useEffect(() => {
     const storedAcceptance = localStorage.getItem("clamshield_eula") === "true";
@@ -102,13 +104,13 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
     }
   }, [status?.settings?.eulaAccepted]);
 
-  if (eulaAccepted && !needsEngine && !needsDb) return null;
+  if (eulaAccepted && !needsEngine && !needsDb && !needsYara) return null;
 
   const acceptEula = async () => {
     localStorage.setItem("clamshield_eula", "true");
     await fetch("/api/accept-eula", { method: "POST" });
     setEulaAccepted(true);
-    if (!needsEngine && !needsDb) {
+    if (!needsEngine && !needsDb && !needsYara) {
       onComplete();
     }
   };
@@ -146,6 +148,32 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
     }
   };
 
+  const doYaraUpdate = async () => {
+    setUpdatingYara(true);
+    setProgressMsg("Downloading YARA engine and Core rules...");
+    const res = await fetch("/api/update-yara", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ruleset: "core" })
+    }).then(r => r.json());
+    if (res.jobId) {
+      const iv = setInterval(async () => {
+        const statusRes = await fetch(`/api/scan/${res.jobId}`).then(r => r.json());
+        if (Array.isArray(statusRes.logs) && statusRes.logs.length > 0) {
+          setProgressMsg(statusRes.logs[statusRes.logs.length - 1]);
+        }
+        if (statusRes.status === "done") {
+          clearInterval(iv);
+          setUpdatingYara(false);
+          onComplete();
+        }
+      }, 1000);
+    } else {
+      setUpdatingYara(false);
+      onComplete();
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center backdrop-blur-sm">
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-8 shadow-2xl">
@@ -175,7 +203,7 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
                   I Agree
                 </button>
              </div>
-          ) : (installing || updating) ? (
+          ) : (installing || updating || updatingYara) ? (
             <div className="w-full space-y-4 py-4">
               <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mx-auto" />
               <p className="text-sm text-indigo-300 animate-pulse">{progressMsg}</p>
@@ -208,6 +236,22 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
                     className="w-full py-2 bg-amber-600 hover:bg-amber-500 rounded-lg text-white font-medium transition-colors"
                   >
                     Update Definitions
+                  </button>
+                </div>
+              ) : needsYara ? (
+                <div className="bg-slate-950 rounded-lg p-4 border border-slate-800 text-left">
+                  <h3 className="font-semibold text-slate-200 mb-1 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    3. Install YARA Core
+                  </h3>
+                  <p className="text-sm text-slate-400 mb-4">
+                    YARA detection is enabled by default. Download the YARA engine and Core rules before first use.
+                  </p>
+                  <button
+                    onClick={doYaraUpdate}
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white font-medium transition-colors"
+                  >
+                    Download YARA Core
                   </button>
                 </div>
               ) : null}

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require('electron');
 const path = require('path');
 const { spawn, fork } = require('child_process');
 const fs = require('fs');
@@ -16,6 +16,9 @@ let activeAlerts = new Map();
 let primaryDisplay;
 let resultsReminderWindow = null;
 let debugLoggingEnabled = false;
+let appUpdatePromptVersion = null;
+let lastAppUpdateCheckAt = 0;
+let appUpdateChecking = false;
 
 function getProgramDataDir() {
   return process.platform === 'win32'
@@ -268,6 +271,84 @@ function getFreePort() {
   });
 }
 
+function requestJson(port, pathName, method = 'GET', body = null) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: pathName,
+      method,
+      headers: payload ? {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      } : undefined
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = data ? JSON.parse(data) : {};
+          if (res.statusCode >= 400) {
+            reject(new Error(parsed.error || `HTTP ${res.statusCode}`));
+          } else {
+            resolve(parsed);
+          }
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function pollAppUpdates(port) {
+  setInterval(async () => {
+    if (appUpdateChecking) return;
+    appUpdateChecking = true;
+    try {
+      const status = await requestJson(port, '/api/status');
+      const settings = status.settings || {};
+      debugLoggingEnabled = settings.enableDebugLog === true;
+      if (settings.appUpdateCheckEnabled === false) return;
+      const intervalMs = Math.max(1, Number(settings.appUpdateIntervalHours || 168)) * 60 * 60 * 1000;
+      if (Date.now() - lastAppUpdateCheckAt < intervalMs) return;
+      lastAppUpdateCheckAt = Date.now();
+
+      const update = await requestJson(port, '/api/app-update');
+      if (!update.updateAvailable || appUpdatePromptVersion === update.latestVersion) return;
+      appUpdatePromptVersion = update.latestVersion;
+
+      const choice = dialog.showMessageBoxSync(mainWindow || undefined, {
+        type: 'info',
+        title: 'ClamShield Update Available',
+        message: `ClamShield ${update.latestVersion} is available.`,
+        detail: `Installed version: ${update.currentVersion}\nLatest version: ${update.latestVersion}`,
+        buttons: ['Install', 'Skip this version', 'Disable update checks', 'Later'],
+        defaultId: 0,
+        cancelId: 3
+      });
+
+      if (choice === 0) {
+        await requestJson(port, '/api/app-update/install', 'POST');
+      } else if (choice === 1) {
+        await requestJson(port, '/api/app-update/skip', 'POST', { version: update.latestVersion });
+      } else if (choice === 2) {
+        await requestJson(port, '/api/app-update/disable', 'POST');
+      } else {
+        appUpdatePromptVersion = null;
+      }
+    } catch (error) {
+      console.warn('ClamShield update prompt failed', error.message);
+    } finally {
+      appUpdateChecking = false;
+    }
+  }, 60000);
+}
+
 function createWindow(port, startHidden = false) {
   let rendererRecovering = false;
   mainWindow = new BrowserWindow({
@@ -385,6 +466,7 @@ app.on('ready', async () => {
   createWindow(port, startHidden);
   pollThreats(port);
   pollResultsReminder(port);
+  pollAppUpdates(port);
 });
 
 app.on('window-all-closed', function () {
