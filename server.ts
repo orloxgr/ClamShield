@@ -1712,6 +1712,27 @@ function cacheEntryMatches(current: ShieldCacheEntry | null, cached?: ShieldCach
     return !!current && !!cached && current.size === cached.size && current.mtimeMs === cached.mtimeMs;
 }
 
+async function pathExists(filePath?: string) {
+    if (!filePath) return false;
+    try {
+        await fs.access(filePath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function ensureFreshclamConfig(settings: any) {
+    await fs.mkdir(settings.databaseDir, { recursive: true });
+    await fs.mkdir(settings.logsDir || defaultLogsDir, { recursive: true });
+    if (!settings.freshclamConf) {
+        settings.freshclamConf = path.join(settings.clamavDir || path.join(engineBaseDir, "clamav"), "freshclam.conf");
+    }
+    await fs.mkdir(path.dirname(settings.freshclamConf), { recursive: true });
+    const confContent = `DatabaseDirectory ${settings.databaseDir}\nUpdateLogFile ${path.join(settings.logsDir || defaultLogsDir, 'freshclam.log')}\nDatabaseMirror database.clamav.net\n`;
+    await fs.writeFile(settings.freshclamConf, confContent);
+}
+
 function resolveScanTarget(type: string, target?: string) {
     if (target) return target;
     if (type === "disk") return process.platform === "win32" ? "C:\\" : "/";
@@ -1920,12 +1941,9 @@ async function checkClamAV(settings: any) {
         // Ensure configuration files exist
         if (settings.freshclamConf) {
             try {
-                await fs.access(settings.freshclamConf);
+                await ensureFreshclamConfig(settings);
             } catch (e) {
-                const confContent = `DatabaseDirectory ${settings.databaseDir}\nUpdateLogFile ${path.join(settings.logsDir, 'freshclam.log')}\nDatabaseMirror database.clamav.net\n`;
-                await fs.mkdir(path.dirname(settings.freshclamConf), { recursive: true });
-                await fs.writeFile(settings.freshclamConf, confContent).catch(console.error);
-                console.log("Created missing freshclam.conf");
+                console.error("Failed to ensure freshclam.conf:", e);
             }
         }
 
@@ -3010,10 +3028,7 @@ async function startServer() {
         let hasYaraRules = false;
         const quarantineItems = await getQuarantineItems(settings.quarantineDir);
         try {
-            const entries = await fs.readdir(engineBaseDir, { withFileTypes: true });
-            const clamDir = entries.find(e => e.isDirectory() && e.name.toLowerCase().startsWith("clamav") && e.name !== "clamav.zip");
-            if (clamDir) hasEngine = true;
-            
+            hasEngine = await pathExists(settings.clamscanPath) && await pathExists(settings.freshclamPath);
             const dbFiles = await fs.readdir(settings.databaseDir);
             hasDb = dbFiles.some(f => f.endsWith('.cvd') || f.endsWith('.cld'));
         } catch { }
@@ -3113,12 +3128,6 @@ async function startServer() {
             const clamdConfPath = path.join(engineBaseDir, finalClamDir, "clamd.conf");
             await fs.mkdir(settings.databaseDir, { recursive: true });
             
-            const confContent = `DatabaseDirectory ${settings.databaseDir}\nUpdateLogFile ${path.join(settings.logsDir, 'freshclam.log')}\nDatabaseMirror database.clamav.net\n`;
-            await fs.writeFile(confPath, confContent);
-
-            const clamdConfContent = buildClamdConfContent(settings);
-            await fs.writeFile(clamdConfPath, clamdConfContent);
-            
             settings.clamavDir = path.join(engineBaseDir, finalClamDir);
             settings.clamscanPath = path.join(settings.clamavDir, "clamscan.exe");
             settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
@@ -3126,6 +3135,11 @@ async function startServer() {
             settings.clamdscanPath = path.join(settings.clamavDir, "clamdscan.exe");
             settings.freshclamConf = confPath;
             settings.clamdConf = clamdConfPath;
+
+            await ensureFreshclamConfig(settings);
+
+            const clamdConfContent = buildClamdConfContent(settings);
+            await fs.writeFile(clamdConfPath, clamdConfContent);
             
             await saveConfig(settings);
             await autoDisableDefender();
@@ -4243,15 +4257,26 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         try {
             activeJobs[jobId] = { status: "running", logs: [] };
-            
+            if (!await pathExists(settings.freshclamPath)) {
+                throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
+            }
+            appendJobLogs(jobId, ["Preparing FreshClam configuration..."]);
+            await ensureFreshclamConfig(settings);
+            await saveConfig(settings);
+
             const args = ["--config-file=" + settings.freshclamConf, "--datadir=" + settings.databaseDir];
+            appendJobLogs(jobId, ["Downloading ClamAV virus definitions..."]);
             const child = spawn(settings.freshclamPath, args);
             activeJobs[jobId].process = child;
+            let processStartFailed = false;
             
             child.on("error", (err: any) => {
+                processStartFailed = true;
                 console.error("Failed to start freshclam process:", err.message);
                 if (activeJobs[jobId]) {
-                    activeJobs[jobId].status = "error";
+                    activeJobs[jobId].status = "done";
+                    activeJobs[jobId].result = -1;
+                    activeJobs[jobId].process = null;
                     appendJobLogs(jobId, ["Process error: " + err.message]);
                     broadcastJobEvent(jobId);
                 }
@@ -4269,6 +4294,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
             
             child.on("close", async (code) => {
                 if (!activeJobs[jobId]) return;
+                if (processStartFailed) return;
+                if (code === 0) {
+                    appendJobLogs(jobId, ["Virus definitions updated successfully."]);
+                } else {
+                    appendJobLogs(jobId, [
+                        `FreshClam failed with exit code ${code ?? "unknown"}.`,
+                        "Check your internet connection, firewall, proxy, or ClamAV mirror access."
+                    ]);
+                }
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = code ?? 0;
                 activeJobs[jobId].process = null;
@@ -4285,17 +4319,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 });
             });
 
-            child.on("error", (err) => {
-                if (!activeJobs[jobId]) return;
-                appendJobLogs(jobId, [`Error: ${err.message}`]);
-                activeJobs[jobId].status = "done";
-                activeJobs[jobId].result = -1;
-                activeJobs[jobId].process = null;
-                broadcastJobEvent(jobId);
-            });
-            
             res.json({ jobId, status: "started" });
         } catch(e: any) {
+            if (activeJobs[jobId]) {
+                appendJobLogs(jobId, [`Error: ${e.message}`]);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = -1;
+                broadcastJobEvent(jobId);
+            }
             res.status(500).json({ error: e.message });
         }
     });

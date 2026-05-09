@@ -87,6 +87,8 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
   const [updating, setUpdating] = useState(false);
   const [updatingYara, setUpdatingYara] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
+  const [setupError, setSetupError] = useState("");
+  const [setupLogs, setSetupLogs] = useState<string[]>([]);
 
   const needsEngine = !status.hasEngine && !status.isSimulated;
   const needsDb = !status.hasDb && !status.isSimulated;
@@ -117,13 +119,33 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
 
   const doInstall = async () => {
     setInstalling(true);
+    setSetupError("");
+    setSetupLogs([]);
     setProgressMsg("Downloading and extracting ClamAV engine...");
-    fetch("/api/install-engine", { method: "POST" });
+    const startRes = await fetch("/api/install-engine", { method: "POST" });
+    const startData = await startRes.json().catch(() => ({}));
+    if (!startRes.ok) {
+      setInstalling(false);
+      setSetupError(startData.error || "Failed to start ClamAV engine installation.");
+      return;
+    }
     
     // Poll for status
     const iv = setInterval(async () => {
       const res = await fetch("/api/status").then(r => r.json());
       setProgressMsg(res.installProgress || "Installing...");
+      if (!res.isInstalling && String(res.installProgress || "").startsWith("Error:")) {
+        clearInterval(iv);
+        setInstalling(false);
+        setSetupError(res.installProgress);
+        return;
+      }
+      if (!res.isInstalling && !res.hasEngine) {
+        clearInterval(iv);
+        setInstalling(false);
+        setSetupError("ClamAV engine installation finished, but the required executables were not found.");
+        return;
+      }
       if (!res.isInstalling && res.hasEngine) {
         clearInterval(iv);
         setInstalling(false);
@@ -134,43 +156,76 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
 
   const doUpdate = async () => {
     setUpdating(true);
+    setSetupError("");
+    setSetupLogs([]);
     setProgressMsg("Downloading initial virus definitions (this may take a few minutes)...");
-    const res = await fetch("/api/update", { method: "POST" }).then(r => r.json());
-    if (res.jobId) {
+    const res = await fetch("/api/update", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setUpdating(false);
+      setSetupError(data.error || "Failed to start virus definition update.");
+      return;
+    }
+    if (data.jobId) {
       const iv = setInterval(async () => {
-        const statusRes = await fetch(`/api/scan/${res.jobId}`).then(r => r.json());
+        const statusRes = await fetch(`/api/scan/${data.jobId}`).then(r => r.json());
+        if (Array.isArray(statusRes.logs) && statusRes.logs.length > 0) {
+          setSetupLogs(prev => [...prev, ...statusRes.logs].slice(-12));
+          setProgressMsg(statusRes.logs[statusRes.logs.length - 1]);
+        }
         if (statusRes.status === "done") {
           clearInterval(iv);
           setUpdating(false);
-          onComplete();
+          const latestStatus = await fetch("/api/status").then(r => r.json()).catch(() => null);
+          if (Number(statusRes.result || 0) === 0 && latestStatus?.hasDb) {
+            onComplete();
+          } else {
+            setSetupError("Virus definitions did not install. FreshClam failed or no database files were created.");
+          }
         }
       }, 2000);
+    } else {
+      setUpdating(false);
+      setSetupError("FreshClam did not return a job id.");
     }
   };
 
   const doYaraUpdate = async () => {
     setUpdatingYara(true);
+    setSetupError("");
+    setSetupLogs([]);
     setProgressMsg("Downloading YARA engine and Core rules...");
-    const res = await fetch("/api/update-yara", {
+    const response = await fetch("/api/update-yara", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ruleset: "core" })
-    }).then(r => r.json());
+    });
+    const res = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setUpdatingYara(false);
+      setSetupError(res.error || "Failed to start YARA setup.");
+      return;
+    }
     if (res.jobId) {
       const iv = setInterval(async () => {
         const statusRes = await fetch(`/api/scan/${res.jobId}`).then(r => r.json());
         if (Array.isArray(statusRes.logs) && statusRes.logs.length > 0) {
+          setSetupLogs(prev => [...prev, ...statusRes.logs].slice(-12));
           setProgressMsg(statusRes.logs[statusRes.logs.length - 1]);
         }
         if (statusRes.status === "done") {
           clearInterval(iv);
           setUpdatingYara(false);
-          onComplete();
+          if (Number(statusRes.result || 0) === 0) {
+            onComplete();
+          } else {
+            setSetupError("YARA setup failed. Check the log output below.");
+          }
         }
       }, 1000);
     } else {
       setUpdatingYara(false);
-      onComplete();
+      setSetupError("YARA setup did not return a job id.");
     }
   };
 
@@ -186,6 +241,21 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
             <h2 className="text-2xl font-bold text-white mb-2">Welcome to ClamShield</h2>
             <p className="text-slate-400">{!eulaAccepted ? "Please read the terms below." : "Let's get your antivirus engine ready."}</p>
           </div>
+
+          {setupError && (
+            <div className="w-full bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-left">
+              <p className="text-sm font-semibold text-red-300 mb-1">Setup could not continue</p>
+              <p className="text-xs text-red-200/80">{setupError}</p>
+            </div>
+          )}
+
+          {setupLogs.length > 0 && (
+            <div className="w-full bg-slate-950 rounded-lg border border-slate-800 p-3 text-left max-h-32 overflow-auto font-mono text-xs text-slate-300 space-y-1">
+              {setupLogs.map((line, index) => (
+                <div key={`${index}-${line}`}>{line}</div>
+              ))}
+            </div>
+          )}
 
           {!eulaAccepted ? (
              <div className="w-full space-y-4">

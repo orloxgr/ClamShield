@@ -522,9 +522,11 @@ app.on('ready', async () => {
   const port = await getFreePort();
   const settings = readAppSettings();
   const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
+  writeMainLog('info', ['ClamShield Electron ready', { port, startHidden, argv: process.argv, version: app.getVersion() }]);
   console.log('ClamShield Electron starting', { port, startHidden, debugLoggingEnabled });
   await setApiSessionCookie(port);
   startServer(port);
+  writeMainLog('info', ['ClamShield backend process requested', { port }]);
   createTray();
   createWindow(port, startHidden);
   connectApiEvents(port);
