@@ -1770,6 +1770,27 @@ async function findExtractedClamavDir() {
     return "";
 }
 
+async function adoptClamavEngineFolder(sourceDir: string) {
+    const finalClamDir = path.join(engineBaseDir, "clamav");
+    const stagingDir = path.join(engineBaseDir, `clamav-staging-${Date.now()}`);
+    try {
+        await retryRemovePath(stagingDir);
+        await retryCopyDirectory(sourceDir, stagingDir);
+        await retryRemovePath(finalClamDir);
+        await fs.rename(stagingDir, finalClamDir);
+        if (path.resolve(sourceDir).toLowerCase() !== path.resolve(finalClamDir).toLowerCase()) {
+            await retryRemovePath(sourceDir).catch(e => console.debug("ClamAV extracted folder cleanup failed:", e?.message || e));
+        }
+        return finalClamDir;
+    } catch (e: any) {
+        await retryRemovePath(stagingDir).catch(() => {});
+        if (e?.code === "EPERM" || e?.code === "EBUSY" || e?.code === "EACCES") {
+            throw new Error(`Windows blocked replacing the ClamAV engine folder (${e.code}). Close ClamShield and any antivirus scan touching C:\\ProgramData\\ClamShield, then try again.`);
+        }
+        throw e;
+    }
+}
+
 function resolveScanTarget(type: string, target?: string) {
     if (target) return target;
     if (type === "disk") return process.platform === "win32" ? "C:\\" : "/";
@@ -1898,7 +1919,7 @@ async function manageClamd(settings: any) {
         if (!clamdProcess) {
             console.log("Starting clamd process...");
             try {
-                clamdProcess = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf]);
+                clamdProcess = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf], { windowsHide: true });
                 clamdConfSignature = nextClamdConfSignature;
                 applyShieldLowImpactPriority(clamdProcess, settings, "clamd");
                 clamdProcess.on("error", (err: any) => {
@@ -1960,7 +1981,8 @@ async function checkClamAV(settings: any) {
             const managedEngineExists = await pathExists(path.join(managedClamDir, "clamscan.exe")) && await pathExists(path.join(managedClamDir, "freshclam.exe"));
 
             if (!managedEngineExists && extractedClamDir) {
-                settings.clamavDir = extractedClamDir;
+                console.log("Adopting extracted ClamAV engine into managed folder.");
+                settings.clamavDir = await adoptClamavEngineFolder(extractedClamDir);
                 settings.clamscanPath = path.join(settings.clamavDir, "clamscan.exe");
                 settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
                 settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
@@ -2498,7 +2520,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     ]);
 
     const stdoutLines: string[] = [];
-    const child = spawn(yaraPath, args);
+    const child = spawn(yaraPath, args, { windowsHide: true });
     job.process = child;
     let openErrorCount = 0;
     const exitCode = await new Promise<number>((resolve) => {
@@ -2886,7 +2908,7 @@ async function startServer() {
             
             try {
                 const heartbeat = createScanHeartbeat(jobId, "Shield scan");
-                const child = spawn(exePath, args);
+                const child = spawn(exePath, args, { windowsHide: true });
                 activeJobs[jobId].process = child;
                 applyShieldLowImpactPriority(child, currentSettings, isClamd ? "clamdscan" : "clamscan");
                 if (isClamd && clamdProcess) {
@@ -3154,22 +3176,8 @@ async function startServer() {
             if (!extractedClamDir) {
                 throw new Error("ClamAV archive was extracted, but clamscan.exe and freshclam.exe were not found.");
             }
-            const finalClamDir = path.join(engineBaseDir, "clamav");
-            const stagingDir = path.join(engineBaseDir, `clamav-staging-${Date.now()}`);
-            try {
-                await retryRemovePath(stagingDir);
-                installProgress = "Copying ClamAV engine into managed folder...";
-                await retryCopyDirectory(extractedClamDir, stagingDir);
-                await retryRemovePath(finalClamDir);
-                await fs.rename(stagingDir, finalClamDir);
-                await retryRemovePath(extractedClamDir).catch(e => console.debug("ClamAV extracted folder cleanup failed:", e?.message || e));
-            } catch (e: any) {
-                await retryRemovePath(stagingDir).catch(() => {});
-                if (e?.code === "EPERM" || e?.code === "EBUSY" || e?.code === "EACCES") {
-                    throw new Error(`Windows blocked replacing the ClamAV engine folder (${e.code}). Close ClamShield and any antivirus scan touching C:\\ProgramData\\ClamShield, then try again.`);
-                }
-                throw e;
-            }
+            installProgress = "Copying ClamAV engine into managed folder...";
+            const finalClamDir = await adoptClamavEngineFolder(extractedClamDir);
 
             const confPath = path.join(finalClamDir, "freshclam.conf");
             const clamdConfPath = path.join(finalClamDir, "clamd.conf");
@@ -3237,7 +3245,7 @@ async function startServer() {
                     if (shouldUpdate) {
                         console.log("Triggering auto-update...");
                         const args = ["--config-file=" + settings.freshclamConf, "--datadir=" + settings.databaseDir];
-                        const child = spawn(settings.freshclamPath, args);
+                        const child = spawn(settings.freshclamPath, args, { windowsHide: true });
                         
                         child.on("error", (err: any) => {
                             console.error("Auto-update process error:", err.message);
@@ -3466,7 +3474,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 `;
             try {
                 const encoded = Buffer.from(script, "utf16le").toString("base64");
-                const child = spawn("powershell", ["-STA", "-NoProfile", "-EncodedCommand", encoded]);
+                const child = spawn("powershell", ["-STA", "-NoProfile", "-EncodedCommand", encoded], { windowsHide: true });
                 let output = "";
                 let errorOutput = "";
                 child.stdout.on("data", data => output += data.toString());
@@ -3501,7 +3509,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 `;
             try {
                 const encoded = Buffer.from(script, "utf16le").toString("base64");
-                const child = spawn("powershell", ["-STA", "-NoProfile", "-EncodedCommand", encoded]);
+                const child = spawn("powershell", ["-STA", "-NoProfile", "-EncodedCommand", encoded], { windowsHide: true });
                 let output = "";
                 let errorOutput = "";
                 child.stdout.on("data", data => output += data.toString());
@@ -3753,7 +3761,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     totalFiles: allScanFiles.length
                 });
                 const code = await new Promise<number>((resolve) => {
-                    const child = spawn(exePath, args);
+                    const child = spawn(exePath, args, { windowsHide: true });
                     activeJobs[jobId].process = child;
                     let lastCurrentFileUpdateAt = 0;
                     const handleEngineLines = (lines: string[]) => {
@@ -4024,7 +4032,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             console.debug(`Legacy scan executable: ${exePath}`);
             console.debug(`Legacy scan arguments: ${args.join(" ")}`);
             const heartbeat = createScanHeartbeat(jobId, "Scan");
-            const child = spawn(exePath, args);
+            const child = spawn(exePath, args, { windowsHide: true });
             activeJobs[jobId].process = child;
             
             child.on("error", (err: any) => {
@@ -4313,7 +4321,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             const args = ["--config-file=" + settings.freshclamConf, "--datadir=" + settings.databaseDir];
             appendJobLogs(jobId, ["Downloading ClamAV virus definitions..."]);
-            const child = spawn(settings.freshclamPath, args);
+            const child = spawn(settings.freshclamPath, args, { windowsHide: true });
             activeJobs[jobId].process = child;
             let processStartFailed = false;
             

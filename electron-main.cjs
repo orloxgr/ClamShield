@@ -21,6 +21,11 @@ let appUpdatePromptVersion = null;
 let lastAppUpdateCheckAt = 0;
 let appUpdateChecking = false;
 const apiSessionToken = randomBytes(32).toString('hex');
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 function apiHeaders(extra = {}) {
   return { ...extra, 'X-ClamShield-Session': apiSessionToken };
@@ -519,6 +524,7 @@ function startServer(port) {
 }
 
 app.on('ready', async () => {
+  if (!gotSingleInstanceLock) return;
   const port = await getFreePort();
   const settings = readAppSettings();
   const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
@@ -531,6 +537,13 @@ app.on('ready', async () => {
   createWindow(port, startHidden);
   connectApiEvents(port);
   pollAppUpdates(port);
+});
+
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
 });
 
 app.on('window-all-closed', function () {

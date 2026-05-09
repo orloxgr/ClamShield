@@ -9,6 +9,11 @@
   ${if} ${isUpdated}
     DetailPrint "Restarting ClamShield after update..."
     Exec `"$INSTDIR\ClamShield.exe" --minimized`
+  ${else}
+    ${ifNot} ${Silent}
+      DetailPrint "Launching ClamShield after install..."
+      Exec `"$INSTDIR\ClamShield.exe"`
+    ${endif}
   ${endif}
 !macroend
 
