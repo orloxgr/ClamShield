@@ -33,6 +33,13 @@ function sendClientLog(level: "error" | "warn" | "info" | "debug", message: stri
   }).catch(() => {});
 }
 
+function normalizeSetupLogLines(lines: unknown[]) {
+  return lines
+    .flatMap(line => String(line ?? "").split(/\r\n|\n|\r/g))
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
 class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
     super(props);
@@ -170,8 +177,11 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
       const iv = setInterval(async () => {
         const statusRes = await fetch(`/api/scan/${data.jobId}`).then(r => r.json());
         if (Array.isArray(statusRes.logs) && statusRes.logs.length > 0) {
-          setSetupLogs(prev => [...prev, ...statusRes.logs].slice(-12));
-          setProgressMsg(statusRes.logs[statusRes.logs.length - 1]);
+          const nextLogs = normalizeSetupLogLines(statusRes.logs);
+          if (nextLogs.length > 0) {
+            setSetupLogs(prev => [...prev, ...nextLogs].slice(-12));
+            setProgressMsg(nextLogs[nextLogs.length - 1]);
+          }
         }
         if (statusRes.status === "done") {
           clearInterval(iv);
@@ -210,8 +220,11 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
       const iv = setInterval(async () => {
         const statusRes = await fetch(`/api/scan/${res.jobId}`).then(r => r.json());
         if (Array.isArray(statusRes.logs) && statusRes.logs.length > 0) {
-          setSetupLogs(prev => [...prev, ...statusRes.logs].slice(-12));
-          setProgressMsg(statusRes.logs[statusRes.logs.length - 1]);
+          const nextLogs = normalizeSetupLogLines(statusRes.logs);
+          if (nextLogs.length > 0) {
+            setSetupLogs(prev => [...prev, ...nextLogs].slice(-12));
+            setProgressMsg(nextLogs[nextLogs.length - 1]);
+          }
         }
         if (statusRes.status === "done") {
           clearInterval(iv);
@@ -249,14 +262,6 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
             </div>
           )}
 
-          {setupLogs.length > 0 && (
-            <div className="w-full bg-slate-950 rounded-lg border border-slate-800 p-3 text-left max-h-32 overflow-auto font-mono text-xs text-slate-300 space-y-1">
-              {setupLogs.map((line, index) => (
-                <div key={`${index}-${line}`}>{line}</div>
-              ))}
-            </div>
-          )}
-
           {!eulaAccepted ? (
              <div className="w-full space-y-4">
                 <div className="bg-slate-950 rounded-lg p-4 border border-slate-800 text-left h-48 overflow-auto text-sm text-slate-300">
@@ -276,7 +281,15 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
           ) : (installing || updating || updatingYara) ? (
             <div className="w-full space-y-4 py-4">
               <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mx-auto" />
-              <p className="text-sm text-indigo-300 animate-pulse">{progressMsg}</p>
+              {setupLogs.length > 0 ? (
+                <div className="w-full bg-slate-950 rounded-lg border border-slate-800 p-3 text-left max-h-40 overflow-auto font-mono text-xs text-slate-300 space-y-1">
+                  {setupLogs.map((line, index) => (
+                    <div key={`${index}-${line}`} className="whitespace-pre-wrap break-words">{line}</div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-indigo-300 animate-pulse whitespace-pre-wrap break-words">{progressMsg}</p>
+              )}
             </div>
           ) : (
              <div className="w-full space-y-4">
