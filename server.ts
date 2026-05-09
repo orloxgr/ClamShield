@@ -1733,6 +1733,43 @@ async function ensureFreshclamConfig(settings: any) {
     await fs.writeFile(settings.freshclamConf, confContent);
 }
 
+async function retryRemovePath(targetPath: string, attempts = 5) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            await fs.rm(targetPath, { recursive: true, force: true });
+            return;
+        } catch (e: any) {
+            if (attempt === attempts) throw e;
+            await sleep(500 * attempt);
+        }
+    }
+}
+
+async function retryCopyDirectory(sourcePath: string, targetPath: string, attempts = 3) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            await fs.cp(sourcePath, targetPath, { recursive: true, force: true });
+            return;
+        } catch (e: any) {
+            if (attempt === attempts) throw e;
+            await sleep(500 * attempt);
+        }
+    }
+}
+
+async function findExtractedClamavDir() {
+    const entries = await fs.readdir(engineBaseDir, { withFileTypes: true });
+    const candidates = entries
+        .filter(entry => entry.isDirectory() && entry.name.toLowerCase().startsWith("clamav") && entry.name.toLowerCase() !== "clamav")
+        .map(entry => path.join(engineBaseDir, entry.name));
+    for (const candidate of candidates) {
+        if (await pathExists(path.join(candidate, "clamscan.exe")) && await pathExists(path.join(candidate, "freshclam.exe"))) {
+            return candidate;
+        }
+    }
+    return "";
+}
+
 function resolveScanTarget(type: string, target?: string) {
     if (target) return target;
     if (type === "disk") return process.platform === "win32" ? "C:\\" : "/";
@@ -1918,14 +1955,12 @@ async function checkClamAV(settings: any) {
         // Auto-fix paths if old clamav-* folder exists
         try {
             await fs.mkdir(engineBaseDir, { recursive: true });
-            const entries = await fs.readdir(engineBaseDir, { withFileTypes: true });
-            const clamDir = entries.find(e => e.isDirectory() && e.name.toLowerCase().startsWith("clamav") && e.name !== "clamav");
-            
-            if (clamDir) {
-                // Rename the old extracted folder to 'clamav'
-                await fs.rename(path.join(engineBaseDir, clamDir.name), path.join(engineBaseDir, "clamav"));
-                
-                settings.clamavDir = path.join(engineBaseDir, "clamav");
+            const extractedClamDir = await findExtractedClamavDir();
+            const managedClamDir = path.join(engineBaseDir, "clamav");
+            const managedEngineExists = await pathExists(path.join(managedClamDir, "clamscan.exe")) && await pathExists(path.join(managedClamDir, "freshclam.exe"));
+
+            if (!managedEngineExists && extractedClamDir) {
+                settings.clamavDir = extractedClamDir;
                 settings.clamscanPath = path.join(settings.clamavDir, "clamscan.exe");
                 settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
                 settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
@@ -3115,20 +3150,32 @@ async function startServer() {
             });
             
             installProgress = "Configuring engine & signatures...";
-            const entries = await fs.readdir(engineBaseDir, { withFileTypes: true });
-            const clamDir = entries.find(e => e.isDirectory() && e.name.toLowerCase().startsWith("clamav") && e.name !== "clamav.zip" && e.name !== "clamav");
-            
-            let finalClamDir = "clamav";
-            if (clamDir) {
-                // Rename the extracted folder to 'clamav'
-                await fs.rename(path.join(engineBaseDir, clamDir.name), path.join(engineBaseDir, finalClamDir));
+            const extractedClamDir = await findExtractedClamavDir();
+            if (!extractedClamDir) {
+                throw new Error("ClamAV archive was extracted, but clamscan.exe and freshclam.exe were not found.");
+            }
+            const finalClamDir = path.join(engineBaseDir, "clamav");
+            const stagingDir = path.join(engineBaseDir, `clamav-staging-${Date.now()}`);
+            try {
+                await retryRemovePath(stagingDir);
+                installProgress = "Copying ClamAV engine into managed folder...";
+                await retryCopyDirectory(extractedClamDir, stagingDir);
+                await retryRemovePath(finalClamDir);
+                await fs.rename(stagingDir, finalClamDir);
+                await retryRemovePath(extractedClamDir).catch(e => console.debug("ClamAV extracted folder cleanup failed:", e?.message || e));
+            } catch (e: any) {
+                await retryRemovePath(stagingDir).catch(() => {});
+                if (e?.code === "EPERM" || e?.code === "EBUSY" || e?.code === "EACCES") {
+                    throw new Error(`Windows blocked replacing the ClamAV engine folder (${e.code}). Close ClamShield and any antivirus scan touching C:\\ProgramData\\ClamShield, then try again.`);
+                }
+                throw e;
             }
 
-            const confPath = path.join(engineBaseDir, finalClamDir, "freshclam.conf");
-            const clamdConfPath = path.join(engineBaseDir, finalClamDir, "clamd.conf");
+            const confPath = path.join(finalClamDir, "freshclam.conf");
+            const clamdConfPath = path.join(finalClamDir, "clamd.conf");
             await fs.mkdir(settings.databaseDir, { recursive: true });
             
-            settings.clamavDir = path.join(engineBaseDir, finalClamDir);
+            settings.clamavDir = finalClamDir;
             settings.clamscanPath = path.join(settings.clamavDir, "clamscan.exe");
             settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
             settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
