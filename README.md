@@ -56,6 +56,19 @@ Run the installer as administrator. On first launch, ClamShield can download and
 
 During install or upgrade, the installer closes a running `ClamShield.exe` process before replacing files. Upgrades are handled as an in-place file replacement and do not run ClamShield's full uninstall cleanup. Existing ClamAV engine files, signature databases, settings, and first-run agreement state in `C:\ProgramData\ClamShield` are preserved during upgrades.
 
+### Microsoft Defender SmartScreen
+
+Because ClamShield is a new public beta application, Windows may show a Microsoft Defender SmartScreen warning the first time the installer or app is opened. This can happen when an app is not yet commonly downloaded, even if the file is clean.
+
+If you downloaded ClamShield from the official GitHub Releases page and you trust the release, use:
+
+1. `More info`
+2. `Run anyway`
+
+On localized Windows installations, the button names may be translated.
+
+Do not bypass SmartScreen for installers downloaded from unofficial links.
+
 ## YARA Detection Layer
 
 ClamShield can use YARA as a second detection layer in addition to ClamAV.

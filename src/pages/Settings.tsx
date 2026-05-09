@@ -597,17 +597,12 @@ export default function SettingsPage() {
 
             <div className="flex items-center justify-between">
               <div className="w-1/3 pr-4">
-                <label className="text-sm font-medium text-slate-400 block">Scan batch size</label>
-                <span className="text-xs text-slate-500">Manual scans are split into batches so progress, results, and throttling stay responsive.</span>
+                <label className="text-sm font-medium text-slate-400 block">Adaptive scan batches</label>
+                <span className="text-xs text-slate-500">Manual scans use smaller batches for small folders and larger batches for big folders to keep progress responsive.</span>
               </div>
-              <input
-                type="number"
-                value={settings.scanBatchSize || 250}
-                min={1}
-                max={5000}
-                onChange={e => updateNumberSetting("scanBatchSize", e.target.value, 250, 1, 5000)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
+              <div className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-xs text-slate-400 leading-relaxed">
+                {"<=100 files: 1 per batch | 101-500: 3 | 501-1000: 10 | 1001+: 100"}
+              </div>
             </div>
 
             <div className="flex items-center justify-between">

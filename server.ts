@@ -69,11 +69,11 @@ console.debug = (...args: any[]) => {
 };
 console.warn = (...args: any[]) => {
     originalConsole.warn(...args);
-    writeAppLog("server.log", "warn", args);
+    if (debugLoggingEnabled) writeAppLog("server.log", "warn", args);
 };
 console.error = (...args: any[]) => {
     originalConsole.error(...args);
-    writeAppLog("server.log", "error", args);
+    if (debugLoggingEnabled) writeAppLog("server.log", "error", args);
 };
 
 process.on("uncaughtException", error => {
@@ -150,8 +150,11 @@ const defaultSettings = {
     defenderEnforceIntervalMinutes: 5
 };
 
-const apiSessionToken = randomBytes(32).toString("hex");
+const apiSessionToken = process.env.CLAMSHIELD_API_TOKEN || randomBytes(32).toString("hex");
 const apiCookieName = "clamshield_session";
+const apiHeaderName = "x-clamshield-session";
+let pendingThreatHandler: ((threat: any) => void) | null = null;
+let scanResultsChangedHandler: (() => void | Promise<void>) | null = null;
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -464,8 +467,9 @@ function readCookie(req: express.Request, name: string) {
 }
 
 function requireLocalApiSession(req: express.Request, res: express.Response, next: express.NextFunction) {
-    if (!req.path.startsWith("/api") || req.method === "GET") return next();
+    if (!req.path.startsWith("/api")) return next();
     if (readCookie(req, apiCookieName) === apiSessionToken) return next();
+    if (req.header(apiHeaderName) === apiSessionToken) return next();
     res.status(403).json({ error: "Invalid local API session." });
 }
 
@@ -773,6 +777,9 @@ async function createScanFileList(paths: string[]) {
 class ScanSessionStore {
     private db: any;
     private upsertStmt: any;
+    private insertFileStmt: any;
+    private markFileDoneStmt: any;
+    private markFilePendingStmt: any;
 
     constructor(dbPath: string) {
         mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -796,7 +803,19 @@ class ScanSessionStore {
                 result INTEGER,
                 action_taken TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS scan_session_files (
+                job_id TEXT NOT NULL,
+                file_index INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                normalized_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                size INTEGER NOT NULL DEFAULT 0,
+                mtime_ms INTEGER NOT NULL DEFAULT 0,
+                scanned_at INTEGER,
+                PRIMARY KEY (job_id, normalized_path)
+            );
             CREATE INDEX IF NOT EXISTS idx_scan_sessions_updated_at ON scan_sessions(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_scan_session_files_status ON scan_session_files(job_id, status, file_index);
         `);
         this.upsertStmt = this.db.prepare(`
             INSERT INTO scan_sessions (
@@ -819,6 +838,28 @@ class ScanSessionStore {
                 result = excluded.result,
                 action_taken = excluded.action_taken
         `);
+        this.insertFileStmt = this.db.prepare(`
+            INSERT INTO scan_session_files (
+                job_id, file_index, file_path, normalized_path, status, size, mtime_ms, scanned_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id, normalized_path) DO UPDATE SET
+                file_index = excluded.file_index,
+                file_path = excluded.file_path,
+                status = excluded.status,
+                size = excluded.size,
+                mtime_ms = excluded.mtime_ms,
+                scanned_at = excluded.scanned_at
+        `);
+        this.markFileDoneStmt = this.db.prepare(`
+            UPDATE scan_session_files
+            SET status = 'done', size = ?, mtime_ms = ?, scanned_at = ?
+            WHERE job_id = ? AND normalized_path = ?
+        `);
+        this.markFilePendingStmt = this.db.prepare(`
+            UPDATE scan_session_files
+            SET status = 'pending', size = ?, mtime_ms = ?, scanned_at = NULL
+            WHERE job_id = ? AND normalized_path = ?
+        `);
     }
 
     save(progress: ScanProgress) {
@@ -839,6 +880,77 @@ class ScanSessionStore {
             progress.result ?? null,
             progress.actionTaken || "None"
         );
+    }
+
+    saveFiles(jobId: string, files: Array<{ filePath: string, size: number, mtimeMs: number }>) {
+        this.db.exec("BEGIN");
+        try {
+            this.db.prepare("DELETE FROM scan_session_files WHERE job_id = ?").run(jobId);
+            files.forEach((file, index) => {
+                this.insertFileStmt.run(
+                    jobId,
+                    index,
+                    file.filePath,
+                    normalizeCachePath(file.filePath),
+                    "pending",
+                    file.size,
+                    file.mtimeMs,
+                    null
+                );
+            });
+            this.db.exec("COMMIT");
+        } catch (e) {
+            this.db.exec("ROLLBACK");
+            throw e;
+        }
+    }
+
+    getLatestResumable() {
+        return this.db.prepare(`
+            SELECT *
+            FROM scan_sessions
+            WHERE status IN ('running', 'paused', 'error')
+              AND type IN ('disk', 'folder', 'file')
+            ORDER BY updated_at DESC
+            LIMIT 1
+        `).get();
+    }
+
+    getSession(jobId: string) {
+        return this.db.prepare("SELECT * FROM scan_sessions WHERE job_id = ?").get(jobId);
+    }
+
+    getFiles(jobId: string) {
+        return this.db.prepare(`
+            SELECT *
+            FROM scan_session_files
+            WHERE job_id = ?
+            ORDER BY file_index ASC
+        `).all(jobId);
+    }
+
+    markFilesDone(jobId: string, files: Array<{ filePath: string, size: number, mtimeMs: number }>) {
+        this.db.exec("BEGIN");
+        try {
+            const scannedAt = Date.now();
+            for (const file of files) {
+                this.markFileDoneStmt.run(file.size, file.mtimeMs, scannedAt, jobId, normalizeCachePath(file.filePath));
+            }
+            this.db.exec("COMMIT");
+        } catch (e) {
+            this.db.exec("ROLLBACK");
+            throw e;
+        }
+    }
+
+    markFilePending(jobId: string, filePath: string, size: number, mtimeMs: number) {
+        this.markFilePendingStmt.run(size, mtimeMs, jobId, normalizeCachePath(filePath));
+    }
+
+    discard(jobId: string) {
+        this.db.prepare("UPDATE scan_sessions SET status = 'discarded', phase = 'Discarded', updated_at = ? WHERE job_id = ?")
+            .run(Date.now(), jobId);
+        this.db.prepare("DELETE FROM scan_session_files WHERE job_id = ?").run(jobId);
     }
 }
 
@@ -895,32 +1007,42 @@ function buildClamdConfContent(settings: any) {
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
         "TCPAddr 127.0.0.1",
-        "TCPSocket 3310",
-        `LogFile ${path.join(settings.logsDir, "clamd.log")}`
+        "TCPSocket 3310"
     ];
+    if (settings.enableDebugLog === true) {
+        lines.push(`LogFile ${path.join(settings.logsDir, "clamd.log")}`);
+        lines.push("LogTime yes");
+        lines.push("LogVerbose yes");
+    }
     getClamShieldScanExclusionPaths(settings)
         .forEach((folderPath: string) => lines.push(`ExcludePath ${pathToClamExcludePattern(folderPath)}`));
     return `${lines.join("\n")}\n`;
 }
 
-async function ensureClamdConfExclusions(settings: any) {
-    if (!settings.clamdConf) return;
+function getClamdConfSignature(settings: any) {
+    return createHash("sha256").update(buildClamdConfContent(settings)).digest("hex");
+}
+
+async function ensureClamdConfContent(settings: any) {
+    if (!settings.clamdConf) return false;
     try {
+        await fs.mkdir(path.dirname(settings.clamdConf), { recursive: true });
         let content = "";
         try {
             content = await fs.readFile(settings.clamdConf, "utf8");
-        } catch {
-            await fs.writeFile(settings.clamdConf, buildClamdConfContent(settings));
-            return;
+        } catch (e: any) {
+            console.debug("clamd.conf could not be read; writing managed config:", e?.message || e);
         }
-        const missing = getClamShieldScanExclusionPaths(settings)
-            .map((folderPath: string) => `ExcludePath ${pathToClamExcludePattern(folderPath)}`)
-            .filter((line: string) => !content.includes(line));
-        if (missing.length > 0) {
-            await fs.appendFile(settings.clamdConf, `\n${missing.join("\n")}\n`);
+        const desired = buildClamdConfContent(settings);
+        if (content !== desired) {
+            await fs.writeFile(settings.clamdConf, desired);
+            console.debug("clamd.conf updated to match ClamShield managed settings.");
+            return true;
         }
-    } catch (e) {
-        console.warn("Failed to ensure clamd YARA exclusions:", e);
+        return false;
+    } catch (e: any) {
+        console.warn("Failed to ensure clamd managed config:", e?.message || e);
+        return false;
     }
 }
 
@@ -988,18 +1110,31 @@ function parseClamOutputPath(line: string) {
 }
 
 function isNoisyClamFileLine(line: string) {
-    return /:\s+(OK|Empty file|Symbolic link|Excluded|File path check failure|Can't get file status|Can't open file or directory)(?:\.| ERROR)?$/i.test(line) ||
+    return /:\s+(OK|Empty file|Symbolic link|Excluded)(?:\.| ERROR)?$/i.test(line) ||
         /^WARNING: File path check failure for:/i.test(line);
+}
+
+function isLockedOrUnstableClamLine(line: string) {
+    return /File path check failure|Can't get file status|Can't open file or directory|Access denied/i.test(line);
 }
 
 function isImportantClamOutputLine(line: string) {
     if (!line) return false;
-    if (line.includes(" FOUND")) return true;
     if (/^-{3,}\s*SCAN SUMMARY\s*-{3,}$/i.test(line)) return true;
-    if (/^(Known viruses|Engine version|Scanned directories|Scanned files|Infected files|Total errors|Time|Start Date|End Date):/i.test(line)) return true;
+    if (/^(Scanned files|Infected files|Total errors|Time):/i.test(line)) return true;
     if (/^(ERROR|LibClamAV Error|Process error):/i.test(line)) return true;
+    if (isLockedOrUnstableClamLine(line)) return true;
     if (line.includes(" ERROR") && !isNoisyClamFileLine(line)) return true;
     return false;
+}
+
+function displayFileName(filePath: string) {
+    return path.basename(filePath || "").trim() || "Unknown file";
+}
+
+function titleCase(value: string) {
+    const normalized = String(value || "").trim();
+    return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase() : "";
 }
 
 async function hashFile(filePath: string) {
@@ -1098,7 +1233,9 @@ async function findLargestYaraFile(rootPath: string): Promise<string | null> {
             if (!best || stat.size > best.size) {
                 best = { filePath, size: stat.size };
             }
-        } catch {}
+        } catch (e: any) {
+            console.debug("Unable to inspect candidate YARA rules file:", filePath, e?.message || e);
+        }
     }
     return best?.filePath || null;
 }
@@ -1133,7 +1270,9 @@ async function getCurrentAppVersion() {
         const pkgPath = path.join(runtimeDir, process.env.NODE_ENV === "production" ? ".." : "", "package.json");
         const pkgData = await fs.readFile(pkgPath, "utf8");
         pkgVersion = JSON.parse(pkgData).version || pkgVersion;
-    } catch {}
+    } catch (e: any) {
+        console.debug("Unable to read package.json for app version; using fallback version:", e?.message || e);
+    }
     return normalizeVersion(pkgVersion);
 }
 
@@ -1366,7 +1505,9 @@ async function loadLegacyShieldScanCache(): Promise<ShieldScanCache> {
         if (parsed && parsed.version === 1 && parsed.files && typeof parsed.files === "object") {
             return parsed;
         }
-    } catch {}
+    } catch (e: any) {
+        console.debug("Legacy shield scan cache could not be loaded; starting with an empty cache:", e?.message || e);
+    }
     return { version: 1, files: {} };
 }
 
@@ -1521,6 +1662,52 @@ async function getFileFingerprint(filePath: string): Promise<ShieldCacheEntry | 
     }
 }
 
+async function getScanFileRecords(filePaths: string[]) {
+    const records: Array<{ filePath: string, size: number, mtimeMs: number }> = [];
+    for (const filePath of filePaths) {
+        const fingerprint = await getFileFingerprint(filePath);
+        records.push({
+            filePath,
+            size: fingerprint?.size || 0,
+            mtimeMs: fingerprint?.mtimeMs || 0
+        });
+    }
+    return records;
+}
+
+function scanSessionRowToProgress(row: any): ScanProgress | null {
+    if (!row) return null;
+    return {
+        jobId: row.job_id,
+        type: row.type,
+        target: row.target,
+        status: row.status,
+        phase: row.phase,
+        totalFiles: Number(row.total_files || 0),
+        scannedFiles: Number(row.scanned_files || 0),
+        currentFile: row.current_file || "",
+        startedAt: Number(row.started_at || Date.now()),
+        updatedAt: Number(row.updated_at || Date.now()),
+        completedAt: row.completed_at ? Number(row.completed_at) : undefined,
+        threatsFound: Number(row.threats_found || 0),
+        errorsFound: Number(row.errors_found || 0),
+        result: row.result === null || row.result === undefined ? undefined : Number(row.result),
+        actionTaken: row.action_taken || "None",
+        elapsedSeconds: Math.max(0, Math.floor((Date.now() - Number(row.started_at || Date.now())) / 1000)),
+        quietSeconds: Math.max(0, Math.floor((Date.now() - Number(row.updated_at || Date.now())) / 1000))
+    };
+}
+
+function canResumeScanType(type: string) {
+    return type === "disk" || type === "folder" || type === "file";
+}
+
+function fileRecordMatches(row: any, fingerprint: ShieldCacheEntry | null) {
+    return !!fingerprint &&
+        Number(row.size || 0) === fingerprint.size &&
+        Number(row.mtime_ms || 0) === fingerprint.mtimeMs;
+}
+
 function cacheEntryMatches(current: ShieldCacheEntry | null, cached?: ShieldCacheEntry) {
     return !!current && !!cached && current.size === cached.size && current.mtimeMs === cached.mtimeMs;
 }
@@ -1610,6 +1797,13 @@ function chunkItems<T>(items: T[], chunkSize: number) {
     return chunks;
 }
 
+function getAdaptiveScanBatchSize(totalFiles: number) {
+    if (totalFiles <= 100) return 1;
+    if (totalFiles <= 500) return 3;
+    if (totalFiles <= 1000) return 10;
+    return 100;
+}
+
 async function addTargetToShieldCache(cache: ShieldScanCacheStore, targetPath: string, onProgress?: (count: number) => void) {
     let count = 0;
     for await (const filePath of walkFiles(targetPath)) {
@@ -1629,33 +1823,35 @@ let isInstalling = false;
 let installProgress = "";
 let cachedIsAdmin = false;
 let clamdProcess: any = null;
+let clamdConfSignature = "";
 
 async function manageClamd(settings: any) {
     if (isSimulated || !settings.clamdPath) return;
 
     if (settings.offloadToMemory) {
+        const nextClamdConfSignature = getClamdConfSignature(settings);
+        await ensureClamdConfContent(settings);
+        if (clamdProcess && clamdConfSignature && clamdConfSignature !== nextClamdConfSignature) {
+            console.log("Restarting clamd because managed clamd.conf changed.");
+            clamdProcess.kill();
+            clamdProcess = null;
+            await sleep(500);
+        }
         if (!clamdProcess) {
             console.log("Starting clamd process...");
             try {
-                // Ensure clamd.conf exists, create if missing
-                try {
-                    await fs.access(settings.clamdConf);
-                } catch (e) {
-                    const clamdConfContent = buildClamdConfContent(settings);
-                    await fs.writeFile(settings.clamdConf, clamdConfContent);
-                    console.log("Created missing clamd.conf");
-                }
-                await ensureClamdConfExclusions(settings);
-                
                 clamdProcess = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf]);
+                clamdConfSignature = nextClamdConfSignature;
                 applyShieldLowImpactPriority(clamdProcess, settings, "clamd");
                 clamdProcess.on("error", (err: any) => {
                     console.error("Failed to start clamd:", err.message);
                     clamdProcess = null;
+                    clamdConfSignature = "";
                 });
                 clamdProcess.on("close", () => {
                     console.log("clamd process closed.");
                     clamdProcess = null;
+                    clamdConfSignature = "";
                 });
             } catch (e: any) {
                 console.error("Failed to start clamd:", e.message);
@@ -1677,6 +1873,7 @@ async function manageClamd(settings: any) {
             console.log("Stopping clamd process...");
             clamdProcess.kill();
             clamdProcess = null;
+            clamdConfSignature = "";
         }
     }
 }
@@ -1726,20 +1923,14 @@ async function checkClamAV(settings: any) {
                 await fs.access(settings.freshclamConf);
             } catch (e) {
                 const confContent = `DatabaseDirectory ${settings.databaseDir}\nUpdateLogFile ${path.join(settings.logsDir, 'freshclam.log')}\nDatabaseMirror database.clamav.net\n`;
+                await fs.mkdir(path.dirname(settings.freshclamConf), { recursive: true });
                 await fs.writeFile(settings.freshclamConf, confContent).catch(console.error);
                 console.log("Created missing freshclam.conf");
             }
         }
 
         if (settings.clamdConf) {
-            try {
-                await fs.access(settings.clamdConf);
-            } catch (e) {
-                    const clamdConfContent = buildClamdConfContent(settings);
-                    await fs.writeFile(settings.clamdConf, clamdConfContent).catch(console.error);
-                    console.log("Created missing clamd.conf on startup");
-                }
-                await ensureClamdConfExclusions(settings);
+            await ensureClamdConfContent(settings);
         }
     }
 }
@@ -1994,6 +2185,9 @@ async function getScanResults() {
 
 async function saveScanResults(results: any[]) {
     await fs.writeFile(getScanResultsPath(), JSON.stringify(results.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)), null, 2));
+    if (scanResultsChangedHandler) {
+        Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify scan results change:", e));
+    }
 }
 
 async function getResultsReminderState() {
@@ -2006,6 +2200,9 @@ async function getResultsReminderState() {
 
 async function saveResultsReminderState(state: any) {
     await fs.writeFile(getResultsReminderPath(), JSON.stringify(state, null, 2));
+    if (scanResultsChangedHandler) {
+        Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify results reminder change:", e));
+    }
 }
 
 async function addScanResult(result: any) {
@@ -2137,7 +2334,10 @@ function parseYaraMatchLine(line: string) {
 async function handleYaraDetection(settings: any, detection: any, options: any) {
     const exceptions = await getExceptions();
     if (isExcluded(detection.originalPath, exceptions)) {
-        options.appendJobLogs(options.jobId, [`YARA ignored (Exception): ${detection.originalPath}`]);
+        options.appendJobLogs(options.jobId, [
+            `YARA threat found: ${displayFileName(detection.originalPath)}`,
+            "Action: Ignored because it is in Exceptions"
+        ]);
         return "Ignored";
     }
 
@@ -2148,23 +2348,31 @@ async function handleYaraDetection(settings: any, detection: any, options: any) 
             const qMap = await getQuarantineMap();
             qMap[quarantined.fileName] = quarantined.metadata;
             await saveQuarantineMap(qMap);
-            options.appendJobLogs(options.jobId, [`YARA quarantined: ${detection.originalPath} -> ${quarantined.destPath}`]);
+            options.appendJobLogs(options.jobId, [
+                `YARA threat found: ${displayFileName(detection.originalPath)}`,
+                "Action: Quarantined"
+            ]);
             return "Quarantined";
         } catch (e: any) {
-            options.appendJobLogs(options.jobId, [`YARA failed to quarantine ${detection.originalPath}: ${e.message}`]);
+            options.appendJobLogs(options.jobId, [`YARA quarantine failed for ${displayFileName(detection.originalPath)}: ${e.message}`]);
             return "Quarantine Failed";
         }
     }
 
     if (options.action === "ask" && Array.isArray(options.pendingThreats)) {
-        options.pendingThreats.push({
+        const pendingThreat = {
             id: Date.now().toString() + Math.random().toString(36).substring(7),
             originalPath: detection.originalPath,
             threatName,
             engine: "YARA",
             timestamp: Date.now()
-        });
-        options.appendJobLogs(options.jobId, [`YARA match waiting for user action: ${detection.originalPath}`]);
+        };
+        options.pendingThreats.push(pendingThreat);
+        if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+        options.appendJobLogs(options.jobId, [
+            `YARA threat found: ${displayFileName(detection.originalPath)}`,
+            "Action: Waiting for your decision"
+        ]);
         return "Pending";
     }
 
@@ -2177,7 +2385,10 @@ async function handleYaraDetection(settings: any, detection: any, options: any) 
         engine: "YARA",
         yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset)
     });
-    options.appendJobLogs(options.jobId, [`YARA match sent to Results: ${detection.originalPath}`]);
+    options.appendJobLogs(options.jobId, [
+        `YARA threat found: ${displayFileName(detection.originalPath)}`,
+        "Action: Sent to Results"
+    ]);
     return "Sent to Results";
 }
 
@@ -2196,14 +2407,14 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
 
     let yaraPath: string;
     try {
-        yaraPath = await ensureYaraEngine(settings, message => options.appendJobLogs(options.jobId, [`YARA: ${message}`]));
+        yaraPath = await ensureYaraEngine(settings, message => console.debug(`YARA: ${message}`));
     } catch (e: any) {
         options.appendJobLogs(options.jobId, [`YARA skipped: ${e.message}`]);
         return { matches: 0, actionTaken: "None" };
     }
 
     const { listPath, count, unreadablePathCount } = await createYaraTargetList(settings, targets, (indexed) => {
-        options.appendJobLogs(options.jobId, [`YARA target list indexed: ${indexed} files`]);
+        console.debug(`YARA target list indexed: ${indexed} files`);
     });
     if (unreadablePathCount > 0) {
         options.appendJobLogs(options.jobId, [
@@ -2228,9 +2439,9 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         listPath
     ];
     options.appendJobLogs(options.jobId, [
-        `YARA ruleset: ${normalizeYaraRuleset(settings.yaraRuleset)} (${rulesFile})`,
-        `YARA executable: ${yaraPath}`,
-        `YARA arguments: ${args.join(" ")}`
+        "YARA scan started",
+        `YARA ruleset: ${titleCase(normalizeYaraRuleset(settings.yaraRuleset))}`,
+        `YARA scanned files: ${count}`
     ]);
 
     const stdoutLines: string[] = [];
@@ -2241,7 +2452,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         child.stdout.on("data", data => {
             const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
             stdoutLines.push(...lines);
-            if (lines.length) options.appendJobLogs(options.jobId, lines.map((line: string) => `YARA: ${line}`));
+            if (lines.length) console.debug("YARA output:", lines);
         });
         child.stderr.on("data", data => {
             const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
@@ -2253,7 +2464,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
                     visibleLines.push(line);
                 }
             }
-            if (visibleLines.length) options.appendJobLogs(options.jobId, visibleLines.map((line: string) => `YARA: ${line}`));
+            if (visibleLines.length) console.debug("YARA stderr:", visibleLines);
         });
         child.on("error", error => {
             options.appendJobLogs(options.jobId, [`YARA process error: ${error.message}`]);
@@ -2289,7 +2500,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         if (result !== "Ignored") actionTaken = result;
     }
 
-    options.appendJobLogs(options.jobId, [`YARA finished with exit code ${exitCode}. Matches: ${detectionsByPath.size}.`]);
+    options.appendJobLogs(options.jobId, [`YARA matches: ${detectionsByPath.size}`]);
     return { matches: detectionsByPath.size, actionTaken };
 }
 
@@ -2297,12 +2508,15 @@ async function startServer() {
     const app = express();
     app.use(express.json());
     app.use((req, res, next) => {
-        res.cookie(apiCookieName, apiSessionToken, {
-            httpOnly: true,
-            sameSite: "strict",
-            secure: false,
-            path: "/"
-        });
+        const hasValidSession = readCookie(req, apiCookieName) === apiSessionToken || req.header(apiHeaderName) === apiSessionToken;
+        if (hasValidSession) {
+            res.cookie(apiCookieName, apiSessionToken, {
+                httpOnly: true,
+                sameSite: "strict",
+                secure: false,
+                path: "/"
+            });
+        }
         next();
     });
     app.use(requireLocalApiSession);
@@ -2338,6 +2552,67 @@ async function startServer() {
     const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
     const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number, progress?: ScanProgress }> = {};
     let pendingThreats: any[] = [];
+    const eventClients = new Set<express.Response>();
+    const sendApiEventToClient = (client: express.Response, event: string, data: any) => {
+        client.write(`event: ${event}\n`);
+        client.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+    const sendApiEvent = (event: string, data: any) => {
+        for (const client of Array.from(eventClients)) {
+            try {
+                sendApiEventToClient(client, event, data);
+            } catch {
+                eventClients.delete(client);
+            }
+        }
+    };
+    const jobEventClients = new Map<string, Set<express.Response>>();
+    const sendJobEventToClient = (client: express.Response, data: any) => {
+        client.write(`event: job\n`);
+        client.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+    const broadcastJobEvent = (jobId: string, logs: string[] = []) => {
+        const clients = jobEventClients.get(jobId);
+        if (!clients || clients.size === 0) return;
+        const job = activeJobs[jobId];
+        if (!job) {
+            for (const client of Array.from(clients)) {
+                try {
+                    sendJobEventToClient(client, { status: "missing", logs: [], progress: null });
+                } catch {}
+            }
+            return;
+        }
+        const payload = {
+            status: job.status,
+            logs,
+            progress: job.progress || null,
+            result: job.result
+        };
+        for (const client of Array.from(clients)) {
+            try {
+                sendJobEventToClient(client, payload);
+            } catch {
+                clients.delete(client);
+            }
+        }
+    };
+    const getResultsReminderPayload = async () => {
+        const results = await getScanResults();
+        if (results.length === 0) {
+            return { show: false, count: 0, latestTimestamp: 0 };
+        }
+        const latestTimestamp = Math.max(...results.map((item: any) => Number(item.timestamp || 0)));
+        const state = await getResultsReminderState();
+        const now = Date.now();
+        const show = now >= Number(state.remindUntil || 0) && latestTimestamp > Number(state.forgottenUntil || 0);
+        return { show, count: results.length, latestTimestamp };
+    };
+    const broadcastResultsReminder = async () => {
+        sendApiEvent("results-reminder", await getResultsReminderPayload());
+    };
+    pendingThreatHandler = threat => sendApiEvent("threat", threat);
+    scanResultsChangedHandler = broadcastResultsReminder;
     const shieldScanCache = await loadShieldScanCacheStore();
     console.log(`Shield cache backend: ${shieldScanCache.type}`);
     const saveJobProgress = (jobId: string, patch: Partial<ScanProgress>) => {
@@ -2356,6 +2631,7 @@ async function startServer() {
         } catch (e) {
             console.warn("Failed to save scan progress:", e);
         }
+        broadcastJobEvent(jobId);
     };
     const appendJobLogs = (jobId: string, lines: string[]) => {
         const job = activeJobs[jobId];
@@ -2374,13 +2650,46 @@ async function startServer() {
             job.analysisLogs.push(...analysisLines);
             if (job.analysisLogs.length > 5000) job.analysisLogs.splice(0, job.analysisLogs.length - 5000);
         }
+        broadcastJobEvent(jobId, lines);
     };
 
     app.post("/api/client-log", (req, res) => {
         const level = typeof req.body?.level === "string" ? req.body.level : "error";
         const message = req.body?.message || "Renderer log";
-        writeAppLog("renderer.log", level, [message, req.body?.details || {}]);
+        if (debugLoggingEnabled || level === "fatal") {
+            writeAppLog("renderer.log", level, [message, req.body?.details || {}]);
+        }
         res.json({ success: true });
+    });
+
+    app.get("/api/events", async (req, res) => {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders?.();
+        eventClients.add(res);
+        sendApiEventToClient(res, "connected", { ok: true });
+        for (const threat of pendingThreats) {
+            sendApiEventToClient(res, "threat", threat);
+        }
+        try {
+            sendApiEventToClient(res, "results-reminder", await getResultsReminderPayload());
+        } catch (e) {
+            console.warn("Failed to send initial results reminder event:", e);
+        }
+        const keepAlive = setInterval(() => {
+            try {
+                res.write(":keepalive\n\n");
+            } catch {
+                clearInterval(keepAlive);
+                eventClients.delete(res);
+            }
+        }, 25000);
+        keepAlive.unref?.();
+        req.on("close", () => {
+            clearInterval(keepAlive);
+            eventClients.delete(res);
+        });
     });
 
     const createScanHeartbeat = (jobId: string, label: string) => {
@@ -2450,6 +2759,7 @@ async function startServer() {
 
         const filesBeingScanned = new Set<string>();
         const pendingShieldScans = new Map<string, { filePath: string, reason: "add" | "change" }>();
+        const lockedFileBackoff = new Map<string, number>();
         let activeShieldScans = 0;
         const maxShieldScans = Math.floor(normalizePositiveNumber(currentSettings.shieldMaxConcurrentScans, 1, 1, 4));
 
@@ -2479,6 +2789,12 @@ async function startServer() {
         const scanShieldFile = async (filePath: string, reason: "add" | "change") => {
             const normalizedPath = path.resolve(filePath).toLowerCase();
             if (filesBeingScanned.has(normalizedPath)) return;
+            const lockedUntil = lockedFileBackoff.get(normalizedPath) || 0;
+            if (lockedUntil > Date.now()) {
+                console.debug(`Shield: skipping locked/unstable file until ${new Date(lockedUntil).toISOString()} -> ${filePath}`);
+                return;
+            }
+            lockedFileBackoff.delete(normalizedPath);
             filesBeingScanned.add(normalizedPath);
             console.log(`Shield: File ${reason === "add" ? "detected" : "changed"} -> ${filePath}`);
             const fingerprint = await getFileFingerprint(filePath);
@@ -2498,7 +2814,9 @@ async function startServer() {
                 try {
                     await fs.access(currentSettings.clamdscanPath);
                     isClamd = true;
-                } catch (e) {}
+                } catch (e: any) {
+                    console.debug("Shield offload requested, but clamdscan is unavailable; falling back to clamscan:", e?.message || e);
+                }
             }
             let exePath = isClamd ? currentSettings.clamdscanPath : currentSettings.clamscanPath;
             let args = buildClamScanArgs(currentSettings, isClamd, "file", filePath);
@@ -2506,12 +2824,12 @@ async function startServer() {
             const jobId = "shield-" + Date.now() + Math.random().toString(36).substring(7);
             activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
             appendJobLogs(jobId, [
-                `Shield scan queued: ${filePath}`,
-                `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
-                `Low impact mode: ${currentSettings.shieldLowImpactMode === false ? "off" : normalizeWindowsPriority(currentSettings.shieldProcessPriority, "BelowNormal") + " CPU priority"}`,
-                `Executable: ${exePath}`,
-                `Arguments: ${args.join(" ")}`
+                `Real-time protection is checking: ${displayFileName(filePath)}`,
+                `Low impact mode: ${currentSettings.shieldLowImpactMode === false ? "off" : "on"}`
             ]);
+            console.debug(`Shield scan engine: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`);
+            console.debug(`Shield scan executable: ${exePath}`);
+            console.debug(`Shield scan arguments: ${args.join(" ")}`);
             
             try {
                 const heartbeat = createScanHeartbeat(jobId, "Shield scan");
@@ -2576,12 +2894,14 @@ async function startServer() {
                                         actionTaken = "Quarantine Failed";
                                     }
                                 } else if (action === "ask") {
-                                    pendingThreats.push({
+                                    const pendingThreat = {
                                         id: Date.now().toString() + Math.random().toString(36).substring(7),
                                         originalPath,
                                         threatName,
                                         timestamp: Date.now()
-                                    });
+                                    };
+                                    pendingThreats.push(pendingThreat);
+                                    if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
                                     appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
                                     actionTaken = "Pending";
                                 } else {
@@ -2636,6 +2956,13 @@ async function startServer() {
                         console.log(`Shield: Threat found in ${filePath}`);
                     }
 
+                    const lockedOrUnstable = !isThreat && (activeJobs[jobId].logs || []).some(isLockedOrUnstableClamLine);
+                    if (lockedOrUnstable) {
+                        const cooldownMs = 10 * 60 * 1000;
+                        lockedFileBackoff.set(normalizedPath, Date.now() + cooldownMs);
+                        console.debug(`Shield: locked/unstable scan backoff applied for ${Math.round(cooldownMs / 60000)} minutes -> ${filePath}`);
+                    }
+
                     const latestFingerprint = await getFileFingerprint(filePath);
                     if (latestFingerprint) {
                         shieldScanCache.set(normalizedPath, latestFingerprint);
@@ -2670,21 +2997,6 @@ async function startServer() {
     await manageClamd(settings);
 
     // API Routes
-
-    app.get("/api/testzip", (req, res) => {
-        const https = require('https');
-        const unzipper = require('unzipper');
-        const files: string[] = [];
-        https.get('https://www.clamav.net/downloads/production/clamav-1.4.1-win-x64-portable.zip', (resp: any) => {
-            resp.pipe(unzipper.Parse())
-            .on('entry', function (entry: any) {
-                files.push(entry.path);
-                entry.autodrain();
-            }).on('finish', () => {
-                res.json(files);
-            });
-        });
-    });
 
     app.get("/api/status", async (req, res) => {
         const history = await getHistory();
@@ -2819,7 +3131,11 @@ async function startServer() {
             await autoDisableDefender();
 
             // Clean up zip
-            try { await fs.unlink(zipPath); } catch {}
+            try {
+                await fs.unlink(zipPath);
+            } catch (e: any) {
+                console.debug("ClamAV installer zip cleanup failed:", e?.message || e);
+            }
             
             await checkClamAV(settings); // Verify
             isInstalling = false;
@@ -3146,21 +3462,31 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.post("/api/scan", async (req, res) => {
-        const { target, type } = req.body;
-        const effectiveTarget = resolveScanTarget(type, target);
-        const jobId = Date.now().toString();
-        const scanTarget = type === "memory" ? "Running process images" : (effectiveTarget || "C:\\");
+        const { target, type, resumeJobId } = req.body;
+        const resumeSession = resumeJobId ? scanSessions.getSession(String(resumeJobId)) : null;
+        if (resumeJobId && (!resumeSession || !canResumeScanType(resumeSession.type))) {
+            return res.status(404).json({ error: "No resumable scan was found." });
+        }
+        const isResume = !!resumeSession;
+        const scanType = resumeSession?.type || type;
+        const scanTarget = resumeSession?.target || (scanType === "memory" ? "Running process images" : (resolveScanTarget(scanType, target) || "C:\\"));
+        const effectiveTarget = scanType === "memory" ? undefined : resolveScanTarget(scanType, scanTarget);
+        const jobId = resumeSession?.job_id || Date.now().toString();
+
+        if (activeJobs[jobId]?.status === "running") {
+            return res.json({ jobId, status: "started", resumed: isResume, progress: activeJobs[jobId].progress || null });
+        }
 
         if (isSimulated) {
             res.json({ jobId, status: "started", simulated: true });
             activeJobs[jobId] = {
                 status: "running",
                 logs: ["Starting simulated scan..."],
-                progress: createInitialScanProgress(jobId, type, scanTarget)
+                progress: createInitialScanProgress(jobId, scanType, scanTarget)
             };
             saveJobProgress(jobId, { totalFiles: 1240, phase: "Simulated scan" });
             setTimeout(async () => {
-                const isThreat = Math.random() < 0.5 && type !== "update";
+                const isThreat = Math.random() < 0.5 && scanType !== "update";
                 let threatsFound = 0;
                 let actionTaken = "None";
                 if (isThreat) {
@@ -3168,7 +3494,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     const filePath = path.join(effectiveTarget || "C:\\TestPath", "eicar.com.txt");
                     await addScanResult({
                         source: "manual",
-                        scanType: type,
+                        scanType,
                         target: scanTarget,
                         originalPath: filePath,
                         threatName: "Eicar-Test-Signature (Simulated)"
@@ -3183,13 +3509,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     status: "done",
                     phase: "Complete",
                     scannedFiles: 1240,
+                    currentFile: "Complete",
                     completedAt: Date.now(),
                     threatsFound,
                     result: isThreat ? 1 : 0,
                     actionTaken
                 });
                 await addHistory({
-                    type: `scan-${type}`,
+                    type: `scan-${scanType}`,
                     target: scanTarget,
                     result: isThreat ? 1 : 0,
                     threatsFound,
@@ -3215,20 +3542,46 @@ if ($dialog.ShowDialog() -eq 'OK') {
             status: "running",
             logs: [],
             analysisLogs: [],
-            progress: createInitialScanProgress(jobId, type, scanTarget)
+            progress: isResume
+                ? { ...createInitialScanProgress(jobId, scanType, scanTarget), ...(scanSessionRowToProgress(resumeSession) || {}), status: "running", phase: "Resuming" }
+                : createInitialScanProgress(jobId, scanType, scanTarget)
         };
-        res.json({ jobId, status: "started" });
+        res.json({ jobId, status: "started", resumed: isResume, progress: activeJobs[jobId].progress || null });
 
         Promise.resolve().then(async () => {
-            saveJobProgress(jobId, { phase: "Enumerating files" });
-            const scanFiles = await enumerateScanTargets(settings, type, scanTarget);
-            if (scanFiles.length === 0) {
+            saveJobProgress(jobId, { phase: isResume ? "Loading saved scan" : "Enumerating files" });
+            let allScanFiles: string[] = [];
+            let scanFiles: string[] = [];
+            let scannedFiles = 0;
+
+            if (isResume) {
+                const fileRows = scanSessions.getFiles(jobId);
+                for (const row of fileRows) {
+                    allScanFiles.push(row.file_path);
+                    const fingerprint = await getFileFingerprint(row.file_path);
+                    if (row.status === "done" && fileRecordMatches(row, fingerprint)) {
+                        scannedFiles++;
+                    } else {
+                        scanFiles.push(row.file_path);
+                        scanSessions.markFilePending(jobId, row.file_path, fingerprint?.size || 0, fingerprint?.mtimeMs || 0);
+                    }
+                }
+            } else {
+                allScanFiles = await enumerateScanTargets(settings, scanType, scanTarget);
+                scanFiles = allScanFiles;
+                if (canResumeScanType(scanType)) {
+                    scanSessions.saveFiles(jobId, await getScanFileRecords(allScanFiles));
+                }
+            }
+
+            if (allScanFiles.length === 0) {
                 appendJobLogs(jobId, ["No readable files found for this scan target."]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = 0;
                 saveJobProgress(jobId, {
                     status: "done",
                     phase: "No readable files",
+                    currentFile: "Complete",
                     completedAt: Date.now(),
                     result: 0
                 });
@@ -3236,21 +3589,21 @@ if ($dialog.ShowDialog() -eq 'OK') {
             }
 
             saveJobProgress(jobId, {
-                phase: "Queued",
-                totalFiles: scanFiles.length,
-                currentFile: scanFiles[0]
+                phase: isResume ? "Resuming" : "Queued",
+                totalFiles: allScanFiles.length,
+                scannedFiles,
+                currentFile: scanFiles[0] || "Preparing final checks"
             });
 
-            if (type === "disk" && process.platform === "win32") {
+            if (scanType === "disk" && process.platform === "win32") {
                 appendJobLogs(jobId, [
                     "Skipping Windows locked paging/system files that cannot be opened while Windows is running:",
                     "C:\\pagefile.sys, C:\\swapfile.sys, C:\\hiberfil.sys, C:\\DumpStack.log.tmp"
                 ]);
             }
-            if (type === "memory" && process.platform === "win32") {
+            if (scanType === "memory" && process.platform === "win32") {
                 appendJobLogs(jobId, [
-                    `Enumerated ${scanFiles.length} running process executable image${scanFiles.length === 1 ? "" : "s"}.`,
-                    "Scanning process image files with ClamAV..."
+                    `Running programs found: ${scanFiles.length}`
                 ]);
             }
 
@@ -3259,13 +3612,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 try {
                     await fs.access(settings.clamdscanPath);
                     isClamd = true;
-                } catch {}
+                } catch (e: any) {
+                    console.debug("Scan offload requested, but clamdscan is unavailable; falling back to clamscan:", e?.message || e);
+                }
             }
             const exePath = isClamd ? settings.clamdscanPath : settings.clamscanPath;
-            const chunkSize = Math.round(normalizePositiveNumber(settings.scanBatchSize, 250, 1, 5000));
+            const chunkSize = getAdaptiveScanBatchSize(scanFiles.length);
             const chunkDelayMs = Math.round(normalizePositiveNumber(settings.scanBatchDelayMs, 0, 0, 60000));
             const chunks = chunkItems(scanFiles, chunkSize);
-            let scannedFiles = 0;
             let threatsFound = 0;
             let errorsFound = 0;
             let actionTaken = "None";
@@ -3274,11 +3628,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const exceptions = await getExceptions();
 
             appendJobLogs(jobId, [
-                `Scan target: ${scanTarget}`,
-                `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
-                `Executable: ${exePath}`,
-                `Files queued: ${scanFiles.length}`,
-                `Batch size: ${chunkSize}`
+                isResume ? "Resuming interrupted scan..." : (scanType === "memory" ? "Scanning running programs..." : "Scanning selected files..."),
+                isResume ? `Files remaining: ${scanFiles.length}` : `Files to scan: ${scanFiles.length}`
             ]);
 
             const handleFoundLine = async (line: string) => {
@@ -3286,7 +3637,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (!match) return;
                 const originalPath = match[1];
                 if (isExcluded(originalPath, exceptions)) {
-                    appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
+                    appendJobLogs(jobId, [
+                        `Threat found: ${displayFileName(originalPath)}`,
+                        "Action: Ignored because it is in Exceptions"
+                    ]);
                     return;
                 }
                 threatsFound++;
@@ -3298,21 +3652,27 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         const qMap = await getQuarantineMap();
                         qMap[quarantined.fileName] = quarantined.metadata;
                         await saveQuarantineMap(qMap);
-                        appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
+                        appendJobLogs(jobId, [
+                            `Threat found: ${displayFileName(originalPath)}`,
+                            "Action: Quarantined"
+                        ]);
                         actionTaken = "Quarantined";
                     } catch (e: any) {
-                        appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
+                        appendJobLogs(jobId, [`Quarantine failed for ${displayFileName(originalPath)}: ${e.message}`]);
                         actionTaken = "Quarantine Failed";
                     }
                 } else {
                     await addScanResult({
                         source: "manual",
-                        scanType: type,
+                        scanType,
                         target: scanTarget,
                         originalPath,
                         threatName
                     });
-                    appendJobLogs(jobId, [`Threat found, sent to Results: ${originalPath}`]);
+                    appendJobLogs(jobId, [
+                        `Threat found: ${displayFileName(originalPath)}`,
+                        "Action: Sent to Results"
+                    ]);
                     actionTaken = "Sent to Results";
                 }
                 saveJobProgress(jobId, { threatsFound, actionTaken });
@@ -3329,7 +3689,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     phase: `ClamAV batch ${i + 1}/${chunks.length}`,
                     currentFile: chunk[0] || "",
                     scannedFiles,
-                    totalFiles: scanFiles.length
+                    totalFiles: allScanFiles.length
                 });
                 const code = await new Promise<number>((resolve) => {
                     const child = spawn(exePath, args);
@@ -3364,6 +3724,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 });
                 await fs.unlink(listPath).catch(() => {});
                 if (activeJobs[jobId]?.process) activeJobs[jobId].process = null;
+                if (activeJobs[jobId]?.status !== "running") {
+                    break;
+                }
 
                 let suppressedCleanLines = 0;
                 let suppressedFileWarningLines = 0;
@@ -3382,8 +3745,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
                 if (suppressedCleanLines > 0 || suppressedFileWarningLines > 0) {
                     appendJobLogs(jobId, [
-                        `Batch ${i + 1}/${chunks.length}: ${suppressedCleanLines} clean file line${suppressedCleanLines === 1 ? "" : "s"} hidden, ${suppressedFileWarningLines} file warning${suppressedFileWarningLines === 1 ? "" : "s"} counted.`
+                        `Batch ${i + 1}/${chunks.length} complete.`
                     ]);
+                }
+                if (canResumeScanType(scanType)) {
+                    scanSessions.markFilesDone(jobId, await getScanFileRecords(chunk));
                 }
                 scannedFiles += chunk.length;
                 saveJobProgress(jobId, {
@@ -3396,16 +3762,19 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (chunkDelayMs > 0 && i < chunks.length - 1) await sleep(chunkDelayMs);
             }
             clearInterval(heartbeat);
+            if (activeJobs[jobId]?.status !== "running") {
+                return;
+            }
 
             if (activeJobs[jobId]?.status === "running") {
                 saveJobProgress(jobId, { phase: "YARA scan", currentFile: "" });
-                const yaraTargets = type === "memory" ? scanFiles : (effectiveTarget ? [effectiveTarget] : []);
+                const yaraTargets = scanType === "memory" ? scanFiles : (effectiveTarget ? [effectiveTarget] : []);
                 const yaraResult = await runYaraScanForTargets(settings, yaraTargets, {
                     activeJobs,
                     appendJobLogs,
                     jobId,
                     source: "manual",
-                    scanType: type,
+                    scanType,
                     target: scanTarget,
                     action: settings.scanDetectionAction || "results"
                 });
@@ -3418,9 +3787,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             const isThreat = threatsFound > 0;
             const duration = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-            appendJobLogs(jobId, [isThreat ? "Scan finished with detections." : "Scan finished with no detections."]);
+            appendJobLogs(jobId, [isThreat ? "Scan complete: detections found" : "Scan complete: no active threats found"]);
             await addHistory({
-                type: `scan-${type}`,
+                type: `scan-${scanType}`,
                 target: scanTarget,
                 result: isThreat ? 1 : 0,
                 threatsFound,
@@ -3429,16 +3798,16 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 actionTaken: isThreat ? actionTaken : "None"
             });
 
-            if ((type === "disk" || type === "folder" || type === "file") && effectiveTarget) {
+            if ((scanType === "disk" || scanType === "folder" || scanType === "file") && effectiveTarget) {
                 saveJobProgress(jobId, { phase: "Building shield cache", currentFile: "" });
-                appendJobLogs(jobId, ["Building real-time shield cache for this scan target..."]);
+                appendJobLogs(jobId, ["Updating real-time protection cache..."]);
                 try {
                     const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, (count) => {
-                        appendJobLogs(jobId, [`Shield cache indexed: ${count} files`]);
+                        console.debug(`Shield cache indexed: ${count} files`);
                     });
-                    appendJobLogs(jobId, [`Shield cache updated: ${cachedCount} files indexed`]);
+                    appendJobLogs(jobId, [`Protection cache updated: ${cachedCount} files`]);
                 } catch (e: any) {
-                    appendJobLogs(jobId, [`Shield cache update failed: ${e.message}`]);
+                    appendJobLogs(jobId, [`Protection cache update failed: ${e.message}`]);
                 }
             }
 
@@ -3448,6 +3817,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             saveJobProgress(jobId, {
                 status: "done",
                 phase: "Complete",
+                currentFile: "Complete",
                 completedAt: Date.now(),
                 result: isThreat ? 1 : 0,
                 scannedFiles,
@@ -3459,13 +3829,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const job = activeJobs[jobId];
             if (!job) return;
             appendJobLogs(jobId, [`Error: ${e.message}`]);
+            const resumable = canResumeScanType(scanType);
             job.status = "done";
             job.result = -1;
             job.process = null;
             saveJobProgress(jobId, {
-                status: "done",
-                phase: "Error",
-                completedAt: Date.now(),
+                status: resumable ? "error" : "done",
+                phase: resumable ? "Interrupted by error" : "Error",
+                currentFile: "Error",
+                completedAt: resumable ? undefined : Date.now(),
                 result: -1
             });
         });
@@ -3481,7 +3853,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             // Simulated scan
             res.json({ jobId, status: "started", simulated: true });
             
-            activeJobs[jobId] = { status: "running", logs: ["Starting simulated scan..."] };
+            activeJobs[jobId] = { status: "running", logs: [] };
+            appendJobLogs(jobId, ["Starting simulated scan..."]);
             
             // Simulate run
             setTimeout(async () => {
@@ -3493,11 +3866,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     threatsFound = 1;
                     const testPath = effectiveTarget || "C:\\TestPath";
                     const filePath = path.join(testPath, "eicar.com.txt");
-                    activeJobs[jobId].logs.push(`FOUND: ${filePath}: Eicar-Test-Signature`);
+                    appendJobLogs(jobId, [`FOUND: ${filePath}: Eicar-Test-Signature`]);
                     
                     const action = settings.scanDetectionAction || "results";
                     if (action === "quarantine") {
-                        activeJobs[jobId].logs.push(`Quarantined: ${filePath}`);
+                        appendJobLogs(jobId, [`Quarantined: ${filePath}`]);
                         actionTaken = "Quarantined";
                     } else {
                         await addScanResult({
@@ -3507,14 +3880,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
                             originalPath: filePath,
                             threatName: "Eicar-Test-Signature (Simulated)"
                         });
-                        activeJobs[jobId].logs.push(`Threat found, sent to Results: ${filePath}`);
+                        appendJobLogs(jobId, [`Threat found, sent to Results: ${filePath}`]);
                         actionTaken = "Sent to Results";
                     }
                 }
                 
-                activeJobs[jobId].logs.push("Scan completed.");
+                appendJobLogs(jobId, ["Scan completed."]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = isThreat ? 1 : 0;
+                broadcastJobEvent(jobId);
                 
                 await addHistory({
                     type: `scan-${type}`,
@@ -3560,7 +3934,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
             try {
                 await fs.access(settings.clamdscanPath);
                 isClamd = true;
-            } catch (e) {}
+            } catch (e: any) {
+                console.debug("Legacy scan offload requested, but clamdscan is unavailable; falling back to clamscan:", e?.message || e);
+            }
         }
         let exePath = isClamd ? settings.clamdscanPath : settings.clamscanPath;
         let args = buildClamScanArgs(settings, isClamd, type, scanTarget);
@@ -3575,16 +3951,17 @@ if ($dialog.ShowDialog() -eq 'OK') {
             }
             if (type === "memory" && process.platform === "win32") {
                 appendJobLogs(jobId, [
-                    `Enumerated ${memoryProcessCount} running process executable image${memoryProcessCount === 1 ? "" : "s"}.`,
-                    "Scanning process image files with ClamAV..."
+                    `Running programs found: ${memoryProcessCount}`,
+                    "Scanning running programs..."
                 ]);
             }
             appendJobLogs(jobId, [
-                `Scan target: ${type === "memory" ? "Running process images" : (effectiveTarget || scanTarget || "Default target")}`,
-                `Engine mode: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`,
-                `Executable: ${exePath}`,
-                `Arguments: ${args.join(" ")}`
+                type === "memory" ? "Checking running programs..." : "Checking selected files..."
             ]);
+            console.debug(`Legacy scan target: ${type === "memory" ? "Running process images" : (effectiveTarget || scanTarget || "Default target")}`);
+            console.debug(`Legacy scan engine: ${isClamd ? "clamdscan/offload to RAM" : "clamscan/direct"}`);
+            console.debug(`Legacy scan executable: ${exePath}`);
+            console.debug(`Legacy scan arguments: ${args.join(" ")}`);
             const heartbeat = createScanHeartbeat(jobId, "Scan");
             const child = spawn(exePath, args);
             activeJobs[jobId].process = child;
@@ -3750,6 +4127,64 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
+    app.get("/api/scan/resumable", (req, res) => {
+        try {
+            const row = scanSessions.getLatestResumable();
+            const progress = scanSessionRowToProgress(row);
+            res.json({ available: !!progress, progress });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message || "Failed to load resumable scan." });
+        }
+    });
+
+    app.post("/api/scan/:jobId/discard", (req, res) => {
+        try {
+            const job = activeJobs[req.params.jobId];
+            if (job?.process) job.process.kill();
+            if (job) job.status = "done";
+            scanSessions.discard(req.params.jobId);
+            broadcastJobEvent(req.params.jobId, ["Interrupted scan discarded."]);
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message || "Failed to discard scan." });
+        }
+    });
+
+    app.get("/api/scan/:jobId/events", (req, res) => {
+        const jobId = req.params.jobId;
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders?.();
+        let clients = jobEventClients.get(jobId);
+        if (!clients) {
+            clients = new Set<express.Response>();
+            jobEventClients.set(jobId, clients);
+        }
+        clients.add(res);
+        const job = activeJobs[jobId];
+        sendJobEventToClient(res, {
+            status: job?.status || "missing",
+            logs: job?.logs || [],
+            progress: job?.progress || null,
+            result: job?.result
+        });
+        const keepAlive = setInterval(() => {
+            try {
+                res.write(":keepalive\n\n");
+            } catch {
+                clearInterval(keepAlive);
+                clients?.delete(res);
+            }
+        }, 25000);
+        keepAlive.unref?.();
+        req.on("close", () => {
+            clearInterval(keepAlive);
+            clients?.delete(res);
+            if (clients && clients.size === 0) jobEventClients.delete(jobId);
+        });
+    });
+
     app.get("/api/scan/:jobId", (req, res) => {
         const job = activeJobs[req.params.jobId];
         if (!job) {
@@ -3768,19 +4203,22 @@ if ($dialog.ShowDialog() -eq 'OK') {
     app.post("/api/scan/:jobId/cancel", (req, res) => {
         const job = activeJobs[req.params.jobId];
         if (job) {
+            const resumable = canResumeScanType(job.progress?.type || "");
             if (job.process) {
                 job.process.kill();
             }
             job.status = "done";
             saveJobProgress(req.params.jobId, {
-                status: "done",
-                phase: "Cancelled",
-                completedAt: Date.now(),
+                status: resumable ? "paused" : "done",
+                phase: resumable ? "Paused" : "Cancelled",
+                currentFile: resumable ? "Paused" : "Cancelled",
+                completedAt: resumable ? undefined : Date.now(),
                 result: -1,
-                actionTaken: "Cancelled"
+                actionTaken: resumable ? "Paused" : "Cancelled"
             });
-            job.logs.push("Scan cancelled by user.");
-            res.json({ status: "cancelled" });
+            appendJobLogs(req.params.jobId, [resumable ? "Scan paused. You can resume it later." : "Scan cancelled by user."]);
+            broadcastJobEvent(req.params.jobId);
+            res.json({ status: resumable ? "paused" : "cancelled" });
         } else {
             res.status(404).json({ error: "Job not found" });
         }
@@ -3814,18 +4252,19 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 console.error("Failed to start freshclam process:", err.message);
                 if (activeJobs[jobId]) {
                     activeJobs[jobId].status = "error";
-                    activeJobs[jobId].logs.push("Process error: " + err.message);
+                    appendJobLogs(jobId, ["Process error: " + err.message]);
+                    broadcastJobEvent(jobId);
                 }
             });
 
             child.stdout.on("data", (data) => {
                 const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
-                if (lines.length) activeJobs[jobId].logs.push(...lines);
+                if (lines.length) appendJobLogs(jobId, lines);
             });
             
             child.stderr.on("data", (data) => {
                 const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
-                if (lines.length) activeJobs[jobId].logs.push(...lines);
+                if (lines.length) appendJobLogs(jobId, lines);
             });
             
             child.on("close", async (code) => {
@@ -3833,6 +4272,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = code ?? 0;
                 activeJobs[jobId].process = null;
+                broadcastJobEvent(jobId);
                 
                 await addHistory({
                     type: "update",
@@ -3847,10 +4287,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             child.on("error", (err) => {
                 if (!activeJobs[jobId]) return;
-                activeJobs[jobId].logs.push(`Error: ${err.message}`);
+                appendJobLogs(jobId, [`Error: ${err.message}`]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = -1;
                 activeJobs[jobId].process = null;
+                broadcastJobEvent(jobId);
             });
             
             res.json({ jobId, status: "started" });
@@ -3871,14 +4312,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         const startedAt = Date.now();
         try {
-            activeJobs[jobId].logs.push(`Updating YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)} rules...`);
+            appendJobLogs(jobId, [`Updating YARA Forge ${normalizeYaraRuleset(settings.yaraRuleset)} rules...`]);
             const result = await updateYaraForgeRules(settings, message => {
-                if (activeJobs[jobId]) activeJobs[jobId].logs.push(message);
+                if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
             });
             if (!activeJobs[jobId]) return;
-            activeJobs[jobId].logs.push(`YARA update complete: ${result.ruleCount} rules loaded.`);
+            appendJobLogs(jobId, [`YARA update complete: ${result.ruleCount} rules loaded.`]);
             activeJobs[jobId].status = "done";
             activeJobs[jobId].result = 0;
+            broadcastJobEvent(jobId);
             await addHistory({
                 type: "yara-update",
                 target: `YARA Forge ${result.ruleset}`,
@@ -3891,9 +4333,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
         } catch (e: any) {
             console.error("YARA update failed:", e.message);
             if (activeJobs[jobId]) {
-                activeJobs[jobId].logs.push(`Error: ${e.message}`);
+                appendJobLogs(jobId, [`Error: ${e.message}`]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = 1;
+                broadcastJobEvent(jobId);
             }
             await addHistory({
                 type: "yara-update",
@@ -3948,14 +4391,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
         const startedAt = Date.now();
         try {
             const result = await downloadAndLaunchClamShieldInstaller(settings, message => {
-                if (activeJobs[jobId]) activeJobs[jobId].logs.push(message);
+                if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
             });
             if (!activeJobs[jobId]) return;
-            activeJobs[jobId].logs.push(result.launched
+            appendJobLogs(jobId, [result.launched
                 ? "ClamShield installer launched. The app will close so the update can replace files."
-                : "No newer ClamShield version is available.");
+                : "No newer ClamShield version is available."]);
             activeJobs[jobId].status = "done";
             activeJobs[jobId].result = 0;
+            broadcastJobEvent(jobId);
             await addHistory({
                 type: "app-update-install",
                 target: `ClamShield ${result.latestVersion || ""}`.trim(),
@@ -3972,9 +4416,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
         } catch (e: any) {
             console.error("ClamShield app update install failed:", e.message);
             if (activeJobs[jobId]) {
-                activeJobs[jobId].logs.push(`Error: ${e.message}`);
+                appendJobLogs(jobId, [`Error: ${e.message}`]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = 1;
+                broadcastJobEvent(jobId);
             }
             await addHistory({
                 type: "app-update-install",
@@ -4044,15 +4489,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.get("/api/results-reminder", async (req, res) => {
-        const results = await getScanResults();
-        if (results.length === 0) {
-            return res.json({ show: false, count: 0, latestTimestamp: 0 });
-        }
-        const latestTimestamp = Math.max(...results.map((item: any) => Number(item.timestamp || 0)));
-        const state = await getResultsReminderState();
-        const now = Date.now();
-        const show = now >= Number(state.remindUntil || 0) && latestTimestamp > Number(state.forgottenUntil || 0);
-        res.json({ show, count: results.length, latestTimestamp });
+        res.json(await getResultsReminderPayload());
     });
 
     app.post("/api/results-reminder/action", async (req, res) => {
@@ -4129,12 +4566,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.post("/api/simulate-threat", (req, res) => {
-        pendingThreats.push({
+        const pendingThreat = {
             id: Date.now().toString() + Math.random().toString(36).substring(7),
             originalPath: "C:\\TestPath\\fake-virus.exe",
             threatName: "Win32.Test.SimulatedThreat.A",
             timestamp: Date.now()
-        });
+        };
+        pendingThreats.push(pendingThreat);
+        if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
         res.json({ success: true });
     });
 

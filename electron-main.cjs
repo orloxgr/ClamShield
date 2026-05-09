@@ -1,8 +1,9 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, session } = require('electron');
 const path = require('path');
 const { spawn, fork } = require('child_process');
 const fs = require('fs');
 const net = require('net');
+const { randomBytes } = require('crypto');
 
 const http = require('http');
 
@@ -19,6 +20,23 @@ let debugLoggingEnabled = false;
 let appUpdatePromptVersion = null;
 let lastAppUpdateCheckAt = 0;
 let appUpdateChecking = false;
+const apiSessionToken = randomBytes(32).toString('hex');
+
+function apiHeaders(extra = {}) {
+  return { ...extra, 'X-ClamShield-Session': apiSessionToken };
+}
+
+async function setApiSessionCookie(port) {
+  await session.defaultSession.cookies.set({
+    url: `http://127.0.0.1:${port}`,
+    name: 'clamshield_session',
+    value: apiSessionToken,
+    path: '/',
+    httpOnly: true,
+    secure: false,
+    sameSite: 'strict'
+  });
+}
 
 function getProgramDataDir() {
   return process.platform === 'win32'
@@ -67,11 +85,11 @@ console.debug = (...args) => {
 };
 console.warn = (...args) => {
   originalConsole.warn(...args);
-  writeMainLog('warn', args);
+  if (debugLoggingEnabled) writeMainLog('warn', args);
 };
 console.error = (...args) => {
   originalConsole.error(...args);
-  writeMainLog('error', args);
+  if (debugLoggingEnabled) writeMainLog('error', args);
 };
 
 process.on('uncaughtException', (error) => {
@@ -87,17 +105,34 @@ process.on('unhandledRejection', (reason) => {
 function attachWindowLogging(win, label) {
   if (!win || !win.webContents) return;
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    writeMainLog('error', [`${label} failed to load`, { errorCode, errorDescription, validatedURL }]);
+    if (debugLoggingEnabled) {
+      writeMainLog('error', [`${label} failed to load`, { errorCode, errorDescription, validatedURL }]);
+    }
   });
   win.webContents.on('render-process-gone', (_event, details) => {
-    writeMainLog('fatal', [`${label} renderer process gone`, details]);
+    const crash = {
+      reason: details && details.reason,
+      exitCode: details && details.exitCode
+    };
+    if (debugLoggingEnabled) {
+      try {
+        crash.url = win.webContents.getURL();
+        crash.title = win.getTitle();
+        crash.osProcessId = win.webContents.getOSProcessId();
+        crash.isVisible = win.isVisible();
+        crash.isDestroyed = win.isDestroyed();
+      } catch (error) {
+        if (debugLoggingEnabled) writeMainLog('debug', [`${label} crash detail enrichment failed`, error]);
+      }
+    }
+    writeMainLog('fatal', [`${label} renderer process gone`, crash]);
   });
   win.webContents.on('unresponsive', () => {
-    writeMainLog('warn', [`${label} window became unresponsive`]);
+    if (debugLoggingEnabled) writeMainLog('warn', [`${label} window became unresponsive`]);
   });
   win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     const isErrorLevel = level >= 2;
-    if (isErrorLevel || debugLoggingEnabled) {
+    if (debugLoggingEnabled) {
       writeMainLog(isErrorLevel ? 'error' : 'debug', [`${label} console`, { message, line, sourceId }]);
     }
   });
@@ -115,44 +150,87 @@ function readAppSettings() {
   }
 }
 
-function pollThreats(port) {
-  setInterval(() => {
-    http.get(`http://127.0.0.1:${port}/api/pending-threats`, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => {
-        try {
-          const threats = JSON.parse(data);
-          if (Array.isArray(threats)) {
-            threats.forEach(threat => {
-               if (!activeAlerts.has(threat.id)) {
-                  activeAlerts.set(threat.id, true); // Placeholder to avoid double triggers
-                  http.get(`http://127.0.0.1:${port}/api/status`, (setRes) => {
-                     let setData = '';
-                     setRes.on('data', c => setData += c);
-                     setRes.on('end', () => {
-                        let playSound = false;
-                        try {
-                           const s = JSON.parse(setData);
-                           playSound = s.settings.playSoundOnAlert === true;
-                           debugLoggingEnabled = s.settings.enableDebugLog === true;
-                           if (s.settings.shieldShowPopup === false) {
-                              activeAlerts.delete(threat.id);
-                              return;
-                           }
-                        } catch(e) {}
-                        createAlertWindow(threat, port, playSound);
-                     });
-                  }).on('error', () => {
-                     createAlertWindow(threat, port, false);
-                  });
-               }
-            });
+async function handleThreatEvent(threat, port) {
+  if (!threat || !threat.id || activeAlerts.has(threat.id)) return;
+  activeAlerts.set(threat.id, true);
+  let playSound = false;
+  try {
+    const status = await requestJson(port, '/api/status');
+    const settings = status.settings || {};
+    playSound = settings.playSoundOnAlert === true;
+    debugLoggingEnabled = settings.enableDebugLog === true;
+    if (settings.shieldShowPopup === false) {
+      activeAlerts.delete(threat.id);
+      return;
+    }
+  } catch {
+    // If status is temporarily unavailable, still show the threat alert.
+  }
+  createAlertWindow(threat, port, playSound);
+}
+
+function handleApiEvent(eventName, data, port) {
+  if (eventName === 'threat') {
+    handleThreatEvent(data, port).catch(error => console.warn('Failed to handle threat event', error.message));
+  } else if (eventName === 'results-reminder') {
+    if (data && data.show && !(resultsReminderWindow && !resultsReminderWindow.isDestroyed())) {
+      createResultsReminderWindow(data, port);
+    }
+  }
+}
+
+function connectApiEvents(port) {
+  let retryTimer = null;
+  const scheduleReconnect = () => {
+    if (isQuiting || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      connectApiEvents(port);
+    }, 3000);
+    retryTimer.unref?.();
+  };
+
+  const req = http.request({
+    hostname: '127.0.0.1',
+    port,
+    path: '/api/events',
+    method: 'GET',
+    headers: apiHeaders({ Accept: 'text/event-stream' })
+  }, (res) => {
+    if (res.statusCode !== 200) {
+      res.resume();
+      scheduleReconnect();
+      return;
+    }
+    let buffer = '';
+    res.on('data', chunk => {
+      buffer += chunk.toString();
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        let eventName = 'message';
+        const dataLines = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith(':')) continue;
+          if (line.startsWith('event:')) eventName = line.slice(6).trim();
+          if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (dataLines.length) {
+          try {
+            handleApiEvent(eventName, JSON.parse(dataLines.join('\n')), port);
+          } catch (error) {
+            console.warn('Failed to parse ClamShield event', error.message);
           }
-        } catch (e) {}
-      });
-    }).on('error', () => {});
-  }, 2000);
+        }
+        boundary = buffer.indexOf('\n\n');
+      }
+    });
+    res.on('end', scheduleReconnect);
+    res.on('error', scheduleReconnect);
+  });
+  req.on('error', scheduleReconnect);
+  req.end();
 }
 
 function createAlertWindow(threat, port, playSound) {
@@ -194,24 +272,6 @@ function createAlertWindow(threat, port, playSound) {
    
    console.debug('Opening threat alert window', { threatId: threat.id, playSound });
    alertWin.loadURL(alertUrl).catch(err => console.error("Failed to load alert HTML", err));
-}
-
-function pollResultsReminder(port) {
-  setInterval(() => {
-    if (resultsReminderWindow && !resultsReminderWindow.isDestroyed()) return;
-    http.get(`http://127.0.0.1:${port}/api/results-reminder`, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => {
-        try {
-          const reminder = JSON.parse(data);
-          if (reminder && reminder.show) {
-            createResultsReminderWindow(reminder, port);
-          }
-        } catch (e) {}
-      });
-    }).on('error', () => {});
-  }, 30000);
 }
 
 function createResultsReminderWindow(reminder, port) {
@@ -281,8 +341,9 @@ function requestJson(port, pathName, method = 'GET', body = null) {
       method,
       headers: payload ? {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
-      } : undefined
+        'Content-Length': Buffer.byteLength(payload),
+        ...apiHeaders()
+      } : apiHeaders()
     }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -434,13 +495,14 @@ function startServer(port) {
       // Production build (run directly in main process)
       process.env.PORT = port.toString();
       process.env.NODE_ENV = 'production';
+      process.env.CLAMSHIELD_API_TOKEN = apiSessionToken;
       require(serverPath);
       serverProcess = { kill: () => {} }; // dummy object to maintain compatibility
     } else {
       // Fallback to dev server
       serverProcess = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['tsx', `"${serverDevPath}"`], {
         cwd: __dirname,
-        env: { ...process.env, PORT: port.toString() },
+        env: { ...process.env, PORT: port.toString(), CLAMSHIELD_API_TOKEN: apiSessionToken },
         shell: true
       });
     }
@@ -461,11 +523,11 @@ app.on('ready', async () => {
   const settings = readAppSettings();
   const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
   console.log('ClamShield Electron starting', { port, startHidden, debugLoggingEnabled });
+  await setApiSessionCookie(port);
   startServer(port);
   createTray();
   createWindow(port, startHidden);
-  pollThreats(port);
-  pollResultsReminder(port);
+  connectApiEvents(port);
   pollAppUpdates(port);
 });
 

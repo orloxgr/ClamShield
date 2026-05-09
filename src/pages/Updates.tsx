@@ -20,9 +20,16 @@ export default function Updates() {
   const [appOutput, setAppOutput] = useState<string[]>([]);
   const [appJobId, setAppJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<any>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const yaraPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const appPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const updateEventSourceRef = useRef<EventSource | null>(null);
+  const yaraEventSourceRef = useRef<EventSource | null>(null);
+  const appEventSourceRef = useRef<EventSource | null>(null);
+
+  const closeJobStream = (ref: { current: EventSource | null }) => {
+    if (ref.current) {
+      ref.current.close();
+      ref.current = null;
+    }
+  };
 
   const refreshStatus = async () => {
     try {
@@ -39,6 +46,7 @@ export default function Updates() {
   }, []);
 
   const runUpdate = async () => {
+    closeJobStream(updateEventSourceRef);
     setUpdateState("running");
     setOutput(["Triggering freshclam..."]);
     try {
@@ -68,6 +76,7 @@ export default function Updates() {
   };
 
   const runYaraUpdate = async () => {
+    closeJobStream(yaraEventSourceRef);
     setYaraUpdateState("running");
     setYaraOutput(["Checking YARA engine, then updating YARA Forge rules..."]);
     try {
@@ -103,6 +112,7 @@ export default function Updates() {
   };
 
   const installAppUpdate = async () => {
+    closeJobStream(appEventSourceRef);
     setAppUpdateState("running");
     setAppOutput(prev => appendOutput(prev, ["Downloading and launching the ClamShield installer..."]));
     try {
@@ -137,92 +147,86 @@ export default function Updates() {
 
   useEffect(() => {
     if (updateState === "running" && jobId && !isSimulated) {
-      pollIntervalRef.current = setInterval(async () => {
+      const source = new EventSource(`/api/scan/${encodeURIComponent(jobId)}/events`);
+      updateEventSourceRef.current = source;
+      const handleJobEvent = (event: MessageEvent) => {
         try {
-          const res = await fetch(`/api/scan/${jobId}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.logs && data.logs.length > 0) {
-              setOutput(prev => appendOutput(prev, data.logs));
-            }
-            if (data.status === "done") {
-              setUpdateState("done");
-              setJobId(null);
-              clearInterval(pollIntervalRef.current!);
-              pollIntervalRef.current = null;
-            }
+          const data = JSON.parse(event.data);
+          if (data.logs && data.logs.length > 0) {
+            setOutput(prev => appendOutput(prev, data.logs));
+          }
+          if (data.status === "done" || data.status === "missing") {
+            setUpdateState("done");
+            setJobId(null);
+            closeJobStream(updateEventSourceRef);
           }
         } catch (e) {
-          console.error("Failed to poll update status:", e);
+          console.error("Failed to process update event:", e);
         }
-      }, 1000);
+      };
+      source.addEventListener("job", handleJobEvent);
+      source.onerror = () => console.error("FreshClam event stream disconnected; waiting for reconnect.");
     }
 
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
+      closeJobStream(updateEventSourceRef);
     };
   }, [updateState, jobId, isSimulated]);
 
   useEffect(() => {
     if (yaraUpdateState === "running" && yaraJobId) {
-      yaraPollIntervalRef.current = setInterval(async () => {
+      const source = new EventSource(`/api/scan/${encodeURIComponent(yaraJobId)}/events`);
+      yaraEventSourceRef.current = source;
+      const handleJobEvent = (event: MessageEvent) => {
         try {
-          const res = await fetch(`/api/scan/${yaraJobId}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.logs && data.logs.length > 0) {
-              setYaraOutput(prev => appendOutput(prev, data.logs));
-            }
-            if (data.status === "done") {
-              setYaraUpdateState("done");
-              setYaraJobId(null);
-              refreshStatus();
-              clearInterval(yaraPollIntervalRef.current!);
-              yaraPollIntervalRef.current = null;
-            }
+          const data = JSON.parse(event.data);
+          if (data.logs && data.logs.length > 0) {
+            setYaraOutput(prev => appendOutput(prev, data.logs));
+          }
+          if (data.status === "done" || data.status === "missing") {
+            setYaraUpdateState("done");
+            setYaraJobId(null);
+            refreshStatus();
+            closeJobStream(yaraEventSourceRef);
           }
         } catch (e) {
-          console.error("Failed to poll YARA update status:", e);
+          console.error("Failed to process YARA update event:", e);
         }
-      }, 1000);
+      };
+      source.addEventListener("job", handleJobEvent);
+      source.onerror = () => console.error("YARA event stream disconnected; waiting for reconnect.");
     }
 
     return () => {
-      if (yaraPollIntervalRef.current) {
-        clearInterval(yaraPollIntervalRef.current);
-      }
+      closeJobStream(yaraEventSourceRef);
     };
   }, [yaraUpdateState, yaraJobId]);
 
   useEffect(() => {
     if (appUpdateState === "running" && appJobId) {
-      appPollIntervalRef.current = setInterval(async () => {
+      const source = new EventSource(`/api/scan/${encodeURIComponent(appJobId)}/events`);
+      appEventSourceRef.current = source;
+      const handleJobEvent = (event: MessageEvent) => {
         try {
-          const res = await fetch(`/api/scan/${appJobId}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.logs && data.logs.length > 0) {
-              setAppOutput(prev => appendOutput(prev, data.logs));
-            }
-            if (data.status === "done") {
-              setAppUpdateState("done");
-              setAppJobId(null);
-              clearInterval(appPollIntervalRef.current!);
-              appPollIntervalRef.current = null;
-            }
+          const data = JSON.parse(event.data);
+          if (data.logs && data.logs.length > 0) {
+            setAppOutput(prev => appendOutput(prev, data.logs));
+          }
+          if (data.status === "done" || data.status === "missing") {
+            setAppUpdateState("done");
+            setAppJobId(null);
+            closeJobStream(appEventSourceRef);
           }
         } catch (e) {
-          console.error("Failed to poll ClamShield update status:", e);
+          console.error("Failed to process ClamShield update event:", e);
         }
-      }, 1000);
+      };
+      source.addEventListener("job", handleJobEvent);
+      source.onerror = () => console.error("ClamShield update event stream disconnected; waiting for reconnect.");
     }
 
     return () => {
-      if (appPollIntervalRef.current) {
-        clearInterval(appPollIntervalRef.current);
-      }
+      closeJobStream(appEventSourceRef);
     };
   }, [appUpdateState, appJobId]);
 
