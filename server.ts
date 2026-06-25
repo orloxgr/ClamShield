@@ -155,6 +155,9 @@ const apiCookieName = "clamshield_session";
 const apiHeaderName = "x-clamshield-session";
 let pendingThreatHandler: ((threat: any) => void) | null = null;
 let scanResultsChangedHandler: (() => void | Promise<void>) | null = null;
+let appUpdateInstallPromise: Promise<any> | null = null;
+let queuedAppUpdateResult: any | null = null;
+const appUpdateInstallLoggers = new Set<(message: string) => void>();
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -1297,30 +1300,167 @@ async function getLatestClamShieldRelease(settings: any) {
         releaseUrl: release.html_url,
         publishedAt: release.published_at,
         assetName: asset?.name || "",
-        downloadUrl: asset?.browser_download_url || ""
+        downloadUrl: asset?.browser_download_url || "",
+        assetSize: Number(asset?.size || 0),
+        assetDigest: String(asset?.digest || "")
     };
 }
 
-async function downloadAndLaunchClamShieldInstaller(settings: any, log?: (message: string) => void) {
-    const update = await getLatestClamShieldRelease(settings);
-    if (!update.updateAvailable) return { ...update, launched: false };
-    if (!update.downloadUrl) throw new Error("Latest ClamShield release does not include a Windows installer asset.");
+function emitAppUpdateInstallLog(message: string) {
+    for (const logger of appUpdateInstallLoggers) {
+        try {
+            logger(message);
+        } catch {
+            // A disconnected UI must not interrupt the shared update.
+        }
+    }
+}
 
+function getExpectedSha256(digest: any) {
+    const match = /^sha256:([a-f0-9]{64})$/i.exec(String(digest || "").trim());
+    return match ? match[1].toLowerCase() : "";
+}
+
+async function isVerifiedClamShieldInstaller(filePath: string, update: any) {
+    try {
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile() || stat.size <= 0) return false;
+        if (update.assetSize > 0 && stat.size !== update.assetSize) return false;
+
+        const expectedSha256 = getExpectedSha256(update.assetDigest);
+        if (expectedSha256) {
+            const actualSha256 = await hashFile(filePath);
+            if (actualSha256.toLowerCase() !== expectedSha256) return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function downloadVerifiedClamShieldInstaller(update: any, log: (message: string) => void) {
     const updatesDir = path.join(programDataDir, "updates");
     const safeName = update.assetName.replace(/[<>:"/\\|?*]/g, "_") || `ClamShield-Setup-${update.latestVersion}.exe`;
     const installerPath = path.join(updatesDir, safeName);
-    log?.(`Downloading ClamShield ${update.latestVersion} installer...`);
-    await downloadToFile(update.downloadUrl, installerPath, log);
 
-    const args = ["/S"];
-    log?.(`Launching installer: ${installerPath}`);
-    const child = spawn(installerPath, args, {
-        detached: true,
-        stdio: "ignore",
+    if (await isVerifiedClamShieldInstaller(installerPath, update)) {
+        log(`Using verified ClamShield ${update.latestVersion} installer already on disk.`);
+        return installerPath;
+    }
+
+    const partialPath = `${installerPath}.${process.pid}.${Date.now()}.download`;
+    try {
+        log(`Downloading ClamShield ${update.latestVersion} installer...`);
+        await downloadToFile(update.downloadUrl, partialPath, log);
+        if (!(await isVerifiedClamShieldInstaller(partialPath, update))) {
+            throw new Error("Downloaded ClamShield installer failed size or SHA-256 verification.");
+        }
+
+        await fs.rm(installerPath, { force: true });
+        await fs.rename(partialPath, installerPath);
+        log("ClamShield installer download verified.");
+        return installerPath;
+    } finally {
+        await fs.rm(partialPath, { force: true }).catch(() => {});
+    }
+}
+
+async function queueInstallerAfterCurrentProcessExit(installerPath: string) {
+    if (process.platform !== "win32") {
+        const child = spawn(installerPath, ["/S"], {
+            detached: true,
+            stdio: "ignore"
+        });
+        await new Promise<void>((resolve, reject) => {
+            child.once("spawn", resolve);
+            child.once("error", reject);
+        });
+        child.unref();
+        return;
+    }
+
+    const handoffLogPath = path.join(programDataDir, "updates", "update-handoff.log");
+    const quotePowerShell = (value: string) => `'${value.replace(/'/g, "''")}'`;
+    const script = [
+        "$ErrorActionPreference = 'Stop'",
+        `$parentProcessId = ${process.pid}`,
+        `$installerPath = ${quotePowerShell(installerPath)}`,
+        `$handoffLogPath = ${quotePowerShell(handoffLogPath)}`,
+        "while (Get-Process -Id $parentProcessId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 250 }",
+        "try {",
+        "  Add-Content -LiteralPath $handoffLogPath -Value \"[$([DateTime]::UtcNow.ToString('o'))] Launching $installerPath\"",
+        "  Start-Process -FilePath $installerPath -ArgumentList '/S' -WindowStyle Hidden",
+        "} catch {",
+        "  Add-Content -LiteralPath $handoffLogPath -Value \"[$([DateTime]::UtcNow.ToString('o'))] Handoff failed: $($_.Exception.Message)\"",
+        "  exit 1",
+        "}"
+    ].join("\n");
+    const encodedHandoff = Buffer.from(script, "utf16le").toString("base64");
+    const handoffCommand = `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ${encodedHandoff}`;
+    const brokerScript = [
+        "$ErrorActionPreference = 'Stop'",
+        `$commandLine = ${quotePowerShell(handoffCommand)}`,
+        "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine }",
+        "if ($result.ReturnValue -ne 0) { throw \"Windows process broker returned $($result.ReturnValue).\" }"
+    ].join("\n");
+    const encodedBroker = Buffer.from(brokerScript, "utf16le").toString("base64");
+    const child = spawn("powershell.exe", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-WindowStyle", "Hidden",
+        "-EncodedCommand", encodedBroker
+    ], {
         windowsHide: true
     });
-    child.unref();
-    return { ...update, launched: true, installerPath };
+    let stderr = "";
+    child.stderr?.on("data", data => stderr += data.toString());
+    await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", code => {
+            if (code === 0) resolve();
+            else reject(new Error(stderr.trim() || `Unable to create independent update process (exit code ${code}).`));
+        });
+    });
+}
+
+async function performClamShieldInstallerHandoff(settings: any) {
+    const update = await getLatestClamShieldRelease(settings);
+    if (!update.updateAvailable) return { ...update, handoffReady: false };
+    if (!update.downloadUrl) throw new Error("Latest ClamShield release does not include a Windows installer asset.");
+
+    const installerPath = await downloadVerifiedClamShieldInstaller(update, emitAppUpdateInstallLog);
+    emitAppUpdateInstallLog(`Preparing safe installer handoff: ${installerPath}`);
+    await queueInstallerAfterCurrentProcessExit(installerPath);
+    emitAppUpdateInstallLog("Installer handoff ready. ClamShield can now close safely.");
+    return { ...update, handoffReady: true, installerPath };
+}
+
+async function downloadAndLaunchClamShieldInstaller(settings: any, log?: (message: string) => void) {
+    if (log) appUpdateInstallLoggers.add(log);
+    if (queuedAppUpdateResult?.handoffReady) {
+        log?.("The ClamShield installer handoff is already queued.");
+        if (log) appUpdateInstallLoggers.delete(log);
+        return queuedAppUpdateResult;
+    }
+    if (!appUpdateInstallPromise) {
+        appUpdateInstallPromise = performClamShieldInstallerHandoff(settings)
+            .then(result => {
+                if (result.handoffReady) queuedAppUpdateResult = result;
+                return result;
+            })
+            .finally(() => {
+                appUpdateInstallPromise = null;
+                appUpdateInstallLoggers.clear();
+            });
+    } else {
+        log?.("A ClamShield update is already in progress; joining the existing update.");
+    }
+
+    try {
+        return await appUpdateInstallPromise;
+    } finally {
+        if (log) appUpdateInstallLoggers.delete(log);
+    }
 }
 
 async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
@@ -2626,6 +2766,29 @@ async function startServer() {
 
     const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
     const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number, progress?: ScanProgress }> = {};
+    let appUpdateExitScheduled = false;
+
+    const scheduleAppExitForUpdate = () => {
+        if (appUpdateExitScheduled) return;
+        appUpdateExitScheduled = true;
+
+        for (const job of Object.values(activeJobs)) {
+            try {
+                job.process?.kill?.();
+            } catch {
+                // Best-effort cleanup before the installer replaces files.
+            }
+        }
+        try {
+            clamdProcess?.kill?.();
+            clamdProcess = null;
+        } catch {
+            // Best-effort cleanup before the installer replaces files.
+        }
+
+        const timer = setTimeout(() => process.exit(0), 2000);
+        timer.unref?.();
+    };
     let pendingThreats: any[] = [];
     const eventClients = new Set<express.Response>();
     const sendApiEventToClient = (client: express.Response, event: string, data: any) => {
@@ -3327,11 +3490,11 @@ async function startServer() {
                     console.log("Checking for ClamShield app update...");
                     const update = await getLatestClamShieldRelease(settings);
                     let actionTaken = update.updateAvailable ? `Available ${update.latestVersion}` : "No update";
+                    let shouldExitForUpdate = false;
                     if (update.updateAvailable && settings.appSilentAutoInstall === true) {
-                        await downloadAndLaunchClamShieldInstaller(settings, message => console.log(`ClamShield update: ${message}`));
-                        actionTaken = `Installer launched ${update.latestVersion}`;
-                        const timer = setTimeout(() => process.exit(0), 1500);
-                        timer.unref?.();
+                        const result = await downloadAndLaunchClamShieldInstaller(settings, message => console.log(`ClamShield update: ${message}`));
+                        actionTaken = result.handoffReady ? `Installer queued ${update.latestVersion}` : "No update";
+                        shouldExitForUpdate = result.handoffReady;
                     }
                     await addHistory({
                         type: "app-update-check",
@@ -3342,6 +3505,7 @@ async function startServer() {
                         duration: 1,
                         actionTaken
                     });
+                    if (shouldExitForUpdate) scheduleAppExitForUpdate();
                 }
             } catch (e: any) {
                 console.error("ClamShield app update check failed:", e.message);
@@ -4480,8 +4644,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
             });
             if (!activeJobs[jobId]) return;
-            appendJobLogs(jobId, [result.launched
-                ? "ClamShield installer launched. The app will close so the update can replace files."
+            appendJobLogs(jobId, [result.handoffReady
+                ? "ClamShield installer is ready. The app will close, then the installer will start."
                 : "No newer ClamShield version is available."]);
             activeJobs[jobId].status = "done";
             activeJobs[jobId].result = 0;
@@ -4493,12 +4657,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 threatsFound: 0,
                 scannedFiles: 0,
                 duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
-                actionTaken: result.launched ? "Installer launched" : "No update"
+                actionTaken: result.handoffReady ? "Installer queued" : "No update"
             });
-            if (result.launched) {
-                const timer = setTimeout(() => process.exit(0), 1500);
-                timer.unref?.();
-            }
+            if (result.handoffReady) scheduleAppExitForUpdate();
         } catch (e: any) {
             console.error("ClamShield app update install failed:", e.message);
             if (activeJobs[jobId]) {

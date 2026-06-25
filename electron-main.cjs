@@ -380,6 +380,7 @@ function pollAppUpdates(port) {
       const settings = status.settings || {};
       debugLoggingEnabled = settings.enableDebugLog === true;
       if (settings.appUpdateCheckEnabled === false) return;
+      if (settings.appSilentAutoInstall === true) return;
       const intervalMs = Math.max(1, Number(settings.appUpdateIntervalHours || 168)) * 60 * 60 * 1000;
       if (Date.now() - lastAppUpdateCheckAt < intervalMs) return;
       lastAppUpdateCheckAt = Date.now();

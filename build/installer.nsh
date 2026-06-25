@@ -1,6 +1,9 @@
 !macro customInit
   DetailPrint "Checking for running ClamShield process..."
-  nsExec::ExecToLog `"$SYSDIR\taskkill.exe" /IM "ClamShield.exe" /T /F`
+  ; Do not use taskkill /T here. App-triggered installers are descendants of
+  ; ClamShield.exe, so killing the whole tree can terminate the installer too.
+  nsExec::ExecToLog `"$SYSDIR\taskkill.exe" /IM "ClamShield.exe" /F`
+  nsExec::ExecToLog `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$$engineRoot = Join-Path $$env:ProgramData 'ClamShield\engine'; $$managedNames = @('clamd.exe', 'clamdscan.exe', 'clamscan.exe', 'freshclam.exe', 'yara64.exe'); Get-CimInstance Win32_Process | Where-Object { $$managedNames -contains $$_.Name -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$engineRoot, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"`
   Sleep 1000
 !macroend
 
