@@ -1,0 +1,56 @@
+CLAMSHIELD SOFTWARE NOTICE, ACKNOWLEDGMENT, AND DISCLAIMER
+Notice version: 2026-06-25
+
+PLEASE READ THIS NOTICE CAREFULLY BEFORE INSTALLING CLAMSHIELD.
+
+By selecting "I accept the terms in the License Agreement" and continuing with the installation, you confirm that you have received, read, understood, and acknowledged this notice.
+
+This notice is not an additional software license and does not restrict rights granted under the GNU General Public License version 2 or any applicable third-party license. It records acknowledgment of ClamShield's role, limitations, system effects, warranty disclaimer, and limitation of liability. It does not waive rights that cannot lawfully be waived.
+
+1. WHAT CLAMSHIELD IS
+
+ClamShield is a Windows graphical user interface and orchestration layer that helps users install, configure, update, and invoke third-party malware detection tools.
+
+ClamShield uses ClamAV for signature-based malware scanning and YARA for rule-based pattern matching. ClamShield is not an independent malware detection engine, and it is not a complete or traditional endpoint security suite.
+
+ClamAV is an open-source malware detection toolkit and antivirus engine provided by Cisco. YARA is a third-party pattern-matching tool commonly used to identify and classify files using rules. ClamShield is an independent project and is not affiliated with, sponsored by, or endorsed by Cisco, ClamAV, VirusTotal, Google, YARA, YARA Forge, Microsoft, or their respective owners or contributors.
+
+2. NO GUARANTEE OF COMPLETE PROTECTION
+
+No antivirus, malware scanner, rule set, or security product can guarantee detection, blocking, quarantine, or removal of every malicious or unwanted file.
+
+Results may be affected by false negatives, false positives, outdated or incomplete signatures and rules, unavailable or stopped scanning engines, configuration choices, scan exclusions, file-size limits, encrypted or password-protected content, unsupported file formats, inaccessible files, software defects, network failures, and malware designed to evade analysis.
+
+A clean scan result does not prove that a file, device, or system is safe. A detection does not prove that a file is malicious. You should review results carefully and use multiple appropriate security controls.
+
+3. SYSTEM CHANGES AND MICROSOFT DEFENDER
+
+ClamShield requires administrative privileges for installation and for certain features. It may download and manage ClamAV, YARA, malware signatures, and YARA rules; run background processes; monitor configured folders; create startup or scheduled-task entries; quarantine files; and install application updates.
+
+If the relevant option is enabled in ClamShield Settings, ClamShield may attempt to pause or manage Microsoft Defender real-time protection. Disabling, pausing, or reducing another security product may reduce overall system protection and may leave the system exposed if ClamShield, ClamAV, YARA, their databases, or their background processes are unavailable or fail.
+
+You are responsible for deciding whether to enable this option, verifying that effective security protection remains active, maintaining current backups, keeping software and detection data updated, and following safe computing practices.
+
+4. QUARANTINE, DELETION, AND FALSE POSITIVES
+
+Security tools can produce false positives. Quarantining, moving, restoring, or deleting files can cause data loss, application failure, or system instability. Maintain reliable backups and verify important detections before taking irreversible action.
+
+5. THIRD-PARTY SOFTWARE AND LICENSES
+
+ClamShield and bundled or downloaded components may be governed by separate open-source or third-party licenses. ClamAV is licensed under the GNU General Public License version 2. YARA, YARA rules, and other components remain subject to their respective licenses and notices. Their names, marks, and copyrights remain the property of their respective owners.
+
+6. WARRANTY DISCLAIMER
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, CLAMSHIELD IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, AVAILABILITY, SECURITY, OR THAT THE SOFTWARE WILL DETECT, PREVENT, OR REMOVE ANY PARTICULAR THREAT.
+
+7. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE AUTHORS, COPYRIGHT HOLDERS, CONTRIBUTORS, AND DISTRIBUTORS OF CLAMSHIELD WILL NOT BE LIABLE FOR INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL DAMAGES, OR FOR LOSS OF DATA, FILES, PROFITS, BUSINESS, SECURITY, PRIVACY, OR USE, ARISING FROM OR RELATED TO CLAMSHIELD OR ITS INTERACTION WITH THIRD-PARTY SOFTWARE.
+
+NOTHING IN THIS NOTICE EXCLUDES OR LIMITS LIABILITY OR CONSUMER RIGHTS THAT CANNOT LAWFULLY BE EXCLUDED OR LIMITED UNDER APPLICABLE LAW.
+
+8. USER RESPONSIBILITY
+
+ClamShield is one security tool and should not be your sole protection or your sole basis for deciding whether a file or system is safe. You remain responsible for system administration, backups, access controls, updates, security configuration, incident response, and decisions made from scan results.
+
+If you accept this notice, select the acceptance option below to continue.

@@ -1,4 +1,12 @@
+!ifndef BUILD_UNINSTALLER
+  Var clamShieldFreshInstall
+!endif
+
 !macro customInit
+  StrCpy $clamShieldFreshInstall "1"
+  IfFileExists "$INSTDIR\ClamShield.exe" 0 +2
+  StrCpy $clamShieldFreshInstall "0"
+
   DetailPrint "Checking for running ClamShield process..."
   ; Do not use taskkill /T here. App-triggered installers are descendants of
   ; ClamShield.exe, so killing the whole tree can terminate the installer too.
@@ -9,12 +17,15 @@
 
 !macro customInstall
   ExecWait `"$SYSDIR\schtasks.exe" /create /tn "ClamShield" /tr "\"$INSTDIR\ClamShield.exe\"" /sc onlogon /rl highest /f`
+  ${if} $clamShieldFreshInstall == "1"
+    ${ifNot} ${Silent}
+      DetailPrint "Recording installer notice acceptance..."
+      ExecWait `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$$consentDir = Join-Path $$env:ProgramData 'ClamShield'; $$consentPath = Join-Path $$consentDir 'installer-consent.txt'; New-Item -ItemType Directory -Path $$consentDir -Force | Out-Null; @('noticeVersion=2026-06-25', ('acceptedAt=' + [DateTime]::UtcNow.ToString('o')), 'installerVersion=${VERSION}') | Set-Content -LiteralPath $$consentPath -Encoding UTF8"`
+    ${endif}
+  ${endif}
   ${if} ${Silent}
     DetailPrint "Launching ClamShield after silent install or update..."
     Exec `"$INSTDIR\ClamShield.exe" --minimized`
-  ${else}
-    DetailPrint "Launching ClamShield after install..."
-    Exec `"$INSTDIR\ClamShield.exe"`
   ${endif}
 !macroend
 

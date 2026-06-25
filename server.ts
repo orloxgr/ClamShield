@@ -29,6 +29,8 @@ const yaraBaseDir = path.join(programDataDir, "yara");
 const yaraForgeRulesDir = path.join(yaraBaseDir, "rules", "forge");
 const yaraCustomRulesDir = path.join(yaraBaseDir, "rules", "custom");
 const yaraCacheDir = path.join(yaraBaseDir, "cache");
+const legalNoticeVersion = "2026-06-25";
+const installerConsentPath = path.join(programDataDir, "installer-consent.txt");
 let debugLoggingEnabled = false;
 let currentLogsDir = defaultLogsDir;
 
@@ -143,10 +145,12 @@ const defaultSettings = {
     runOnStartup: true,
     startMinimized: false,
     eulaAccepted: false,
+    eulaVersion: "",
+    eulaAcceptedAt: "",
     playSoundOnAlert: false,
     enableDebugLog: false,
     logRetentionDays: 7,
-    autoDisableDefender: true,
+    autoDisableDefender: false,
     defenderEnforceIntervalMinutes: 5
 };
 
@@ -239,6 +243,12 @@ $result = [ordered]@{
     DisableBehaviorMonitoring = if ($prefs) { $prefs.DisableBehaviorMonitoring } else { $null }
     DisableIOAVProtection = if ($prefs) { $prefs.DisableIOAVProtection } else { $null }
     DisableScriptScanning = if ($prefs) { $prefs.DisableScriptScanning } else { $null }
+    DisableBlockAtFirstSeen = if ($prefs) { $prefs.DisableBlockAtFirstSeen } else { $null }
+    MAPSReporting = if ($prefs) { [int]$prefs.MAPSReporting } else { $null }
+    SubmitSamplesConsent = if ($prefs) { [int]$prefs.SubmitSamplesConsent } else { $null }
+    ScanScheduleDay = if ($prefs) { [int]$prefs.ScanScheduleDay } else { $null }
+    DisableCatchupFullScan = if ($prefs) { $prefs.DisableCatchupFullScan } else { $null }
+    DisableCatchupQuickScan = if ($prefs) { $prefs.DisableCatchupQuickScan } else { $null }
 }
 'CLAMSHIELD_JSON_START'
 $result | ConvertTo-Json -Compress
@@ -264,25 +274,12 @@ Set-ClamShieldMpPreference 'DisableRealtimeMonitoring' $true
 Set-ClamShieldMpPreference 'DisableBehaviorMonitoring' $true
 Set-ClamShieldMpPreference 'DisableIOAVProtection' $true
 Set-ClamShieldMpPreference 'DisableScriptScanning' $true
-try {
-    New-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
-    $operations['SecurityAndMaintenanceNotifications'] = 'ok'
-} catch {
-    $operations['SecurityAndMaintenanceNotifications'] = $_.Exception.Message
-}
-try {
-    $WMI = [wmiclass]"root\\SecurityCenter2:AntiVirusProduct"
-    $New = $WMI.CreateInstance()
-    $New.displayName = "ClamShield Antivirus"
-    $New.instanceGuid = "{F6DB11CF-FA62-4C3D-AA9F-44F4FD9D77AA}"
-    $New.pathToSignedProductExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $New.pathToSignedReportingExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $New.productState = 397568
-    $New.Put() | Out-Null
-    $operations['SecurityCenterRegistration'] = 'ok'
-} catch {
-    $operations['SecurityCenterRegistration'] = $_.Exception.Message
-}
+Set-ClamShieldMpPreference 'DisableBlockAtFirstSeen' $true
+Set-ClamShieldMpPreference 'MAPSReporting' 'Disabled'
+Set-ClamShieldMpPreference 'SubmitSamplesConsent' 'NeverSend'
+Set-ClamShieldMpPreference 'ScanScheduleDay' 'Never'
+Set-ClamShieldMpPreference 'DisableCatchupFullScan' $true
+Set-ClamShieldMpPreference 'DisableCatchupQuickScan' $true
 Start-Sleep -Milliseconds 800
 $status = $null
 $prefs = $null
@@ -290,7 +287,10 @@ $errorText = $null
 try { $status = Get-MpComputerStatus -ErrorAction Stop } catch { $errorText = $_.Exception.Message }
 try { $prefs = Get-MpPreference -ErrorAction Stop } catch {}
 $realTimeEnabled = if ($status) { [bool]$status.RealTimeProtectionEnabled } else { $null }
-$success = ($realTimeEnabled -eq $false)
+$cloudProtectionDisabled = if ($prefs) { ([int]$prefs.MAPSReporting -eq 0) } else { $false }
+$sampleSubmissionDisabled = if ($prefs) { ([int]$prefs.SubmitSamplesConsent -eq 2) } else { $false }
+$scheduledScansDisabled = if ($prefs) { ([int]$prefs.ScanScheduleDay -eq 8) -and [bool]$prefs.DisableCatchupFullScan -and [bool]$prefs.DisableCatchupQuickScan } else { $false }
+$success = ($realTimeEnabled -eq $false) -and $cloudProtectionDisabled -and $sampleSubmissionDisabled -and $scheduledScansDisabled
 $result = [ordered]@{
     Supported = $true
     Success = $success
@@ -305,8 +305,17 @@ $result = [ordered]@{
     DisableBehaviorMonitoring = if ($prefs) { $prefs.DisableBehaviorMonitoring } else { $null }
     DisableIOAVProtection = if ($prefs) { $prefs.DisableIOAVProtection } else { $null }
     DisableScriptScanning = if ($prefs) { $prefs.DisableScriptScanning } else { $null }
+    DisableBlockAtFirstSeen = if ($prefs) { $prefs.DisableBlockAtFirstSeen } else { $null }
+    MAPSReporting = if ($prefs) { [int]$prefs.MAPSReporting } else { $null }
+    SubmitSamplesConsent = if ($prefs) { [int]$prefs.SubmitSamplesConsent } else { $null }
+    ScanScheduleDay = if ($prefs) { [int]$prefs.ScanScheduleDay } else { $null }
+    DisableCatchupFullScan = if ($prefs) { $prefs.DisableCatchupFullScan } else { $null }
+    DisableCatchupQuickScan = if ($prefs) { $prefs.DisableCatchupQuickScan } else { $null }
+    CloudProtectionDisabled = $cloudProtectionDisabled
+    SampleSubmissionDisabled = $sampleSubmissionDisabled
+    ScheduledScansDisabled = $scheduledScansDisabled
     NeedsManualAction = (-not $success)
-    Message = if ($success) { 'Microsoft Defender real-time protection is paused.' } else { 'Microsoft Defender did not remain paused. Windows Tamper Protection, policy, or Security Center registration may be preventing programmatic disable.' }
+    Message = if ($success) { 'Microsoft Defender scanning, cloud-delivered protection, automatic sample submission, and scheduled catch-up scans are paused.' } else { 'One or more Microsoft Defender protections remained active. Windows Tamper Protection, administrator access, or device policy may be blocking the change.' }
 }
 'CLAMSHIELD_JSON_START'
 $result | ConvertTo-Json -Depth 5 -Compress
@@ -332,6 +341,12 @@ Set-ClamShieldMpPreference 'DisableRealtimeMonitoring' $false
 Set-ClamShieldMpPreference 'DisableBehaviorMonitoring' $false
 Set-ClamShieldMpPreference 'DisableIOAVProtection' $false
 Set-ClamShieldMpPreference 'DisableScriptScanning' $false
+Set-ClamShieldMpPreference 'DisableBlockAtFirstSeen' $false
+Set-ClamShieldMpPreference 'MAPSReporting' 'Advanced'
+Set-ClamShieldMpPreference 'SubmitSamplesConsent' 'SendSafeSamples'
+Set-ClamShieldMpPreference 'ScanScheduleDay' 'Everyday'
+Set-ClamShieldMpPreference 'DisableCatchupFullScan' $false
+Set-ClamShieldMpPreference 'DisableCatchupQuickScan' $false
 try {
     Remove-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\Windows.SystemToast.SecurityAndMaintenance" -Name "Enabled" -Force -ErrorAction SilentlyContinue
     $operations['SecurityAndMaintenanceNotifications'] = 'ok'
@@ -344,12 +359,14 @@ $prefs = $null
 $errorText = $null
 try { $status = Get-MpComputerStatus -ErrorAction Stop } catch { $errorText = $_.Exception.Message }
 try { $prefs = Get-MpPreference -ErrorAction Stop } catch {}
+$realTimeEnabled = if ($status) { [bool]$status.RealTimeProtectionEnabled } else { $null }
+$success = ($realTimeEnabled -eq $true)
 $result = [ordered]@{
     Supported = $true
-    Success = $true
+    Success = $success
     Error = $errorText
     Operations = $operations
-    RealTimeProtectionEnabled = if ($status) { $status.RealTimeProtectionEnabled } else { $null }
+    RealTimeProtectionEnabled = $realTimeEnabled
     BehaviorMonitorEnabled = if ($status) { $status.BehaviorMonitorEnabled } else { $null }
     IoavProtectionEnabled = if ($status) { $status.IoavProtectionEnabled } else { $null }
     OnAccessProtectionEnabled = if ($status) { $status.OnAccessProtectionEnabled } else { $null }
@@ -358,7 +375,14 @@ $result = [ordered]@{
     DisableBehaviorMonitoring = if ($prefs) { $prefs.DisableBehaviorMonitoring } else { $null }
     DisableIOAVProtection = if ($prefs) { $prefs.DisableIOAVProtection } else { $null }
     DisableScriptScanning = if ($prefs) { $prefs.DisableScriptScanning } else { $null }
-    Message = 'Microsoft Defender preferences were restored where Windows allowed it.'
+    DisableBlockAtFirstSeen = if ($prefs) { $prefs.DisableBlockAtFirstSeen } else { $null }
+    MAPSReporting = if ($prefs) { [int]$prefs.MAPSReporting } else { $null }
+    SubmitSamplesConsent = if ($prefs) { [int]$prefs.SubmitSamplesConsent } else { $null }
+    ScanScheduleDay = if ($prefs) { [int]$prefs.ScanScheduleDay } else { $null }
+    DisableCatchupFullScan = if ($prefs) { $prefs.DisableCatchupFullScan } else { $null }
+    DisableCatchupQuickScan = if ($prefs) { $prefs.DisableCatchupQuickScan } else { $null }
+    NeedsManualAction = (-not $success)
+    Message = if ($success) { 'Microsoft Defender real-time protection is active.' } else { 'Microsoft Defender did not return to active real-time protection. Open Windows Security and review its protection settings or device policy.' }
 }
 'CLAMSHIELD_JSON_START'
 $result | ConvertTo-Json -Depth 5 -Compress
@@ -386,7 +410,14 @@ function defenderTamperProtectedResult(status: any) {
         DisableBehaviorMonitoring: status?.DisableBehaviorMonitoring ?? null,
         DisableIOAVProtection: status?.DisableIOAVProtection ?? null,
         DisableScriptScanning: status?.DisableScriptScanning ?? null,
-        Message: "Windows Tamper Protection is ON. Defender cannot be paused automatically. ClamShield will keep running side-by-side."
+        DisableBlockAtFirstSeen: status?.DisableBlockAtFirstSeen ?? null,
+        MAPSReporting: status?.MAPSReporting ?? null,
+        SubmitSamplesConsent: status?.SubmitSamplesConsent ?? null,
+        ScanScheduleDay: status?.ScanScheduleDay ?? null,
+        DisableCatchupFullScan: status?.DisableCatchupFullScan ?? null,
+        DisableCatchupQuickScan: status?.DisableCatchupQuickScan ?? null,
+        ActionRequired: "disable-tamper-protection",
+        Message: "Windows Tamper Protection is on. Open Windows Security, go to Virus & threat protection → Manage settings, turn Tamper Protection off, then return to ClamShield and check again. Until then, ClamShield will run side-by-side with Defender."
     };
 }
 
@@ -2172,19 +2203,51 @@ async function ensureDirs(settings: any) {
 }
 
 // Load configurations
+async function loadInstallerConsent() {
+    try {
+        const content = await fs.readFile(installerConsentPath, "utf8");
+        const values = Object.fromEntries(
+            content
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(Boolean)
+                .map(line => {
+                    const separator = line.indexOf("=");
+                    return separator > 0
+                        ? [line.slice(0, separator), line.slice(separator + 1)]
+                        : [line, ""];
+                })
+        );
+        if (values.noticeVersion !== legalNoticeVersion) return null;
+        return {
+            version: values.noticeVersion,
+            acceptedAt: values.acceptedAt || ""
+        };
+    } catch {
+        return null;
+    }
+}
+
 async function loadConfig() {
     const configPath = path.join(programDataDir, "settings.json");
+    const installerConsent = await loadInstallerConsent();
     try {
         const data = await fs.readFile(configPath, "utf8");
         const parsed = JSON.parse(data);
         const actionOnDetection = parsed.actionOnDetection === "warn" ? "ask" : (parsed.actionOnDetection || defaultSettings.actionOnDetection);
         const scanDetectionAction = parsed.scanDetectionAction || (parsed.actionOnDetection === "quarantine" || parsed.autoQuarantine ? "quarantine" : defaultSettings.scanDetectionAction);
+        const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
+        const eulaAccepted = settingsConsentAccepted || Boolean(installerConsent);
         const loadedSettings = {
             ...defaultSettings,
             ...parsed,
             actionOnDetection,
             scanDetectionAction,
-            eulaAccepted: parsed.eulaAccepted !== false
+            eulaAccepted,
+            eulaVersion: eulaAccepted ? legalNoticeVersion : "",
+            eulaAcceptedAt: settingsConsentAccepted
+                ? String(parsed.eulaAcceptedAt || "")
+                : String(installerConsent?.acceptedAt || "")
         };
         currentLogsDir = loadedSettings.logsDir || defaultLogsDir;
         debugLoggingEnabled = loadedSettings.enableDebugLog === true;
@@ -2192,7 +2255,14 @@ async function loadConfig() {
     } catch {
         currentLogsDir = defaultLogsDir;
         debugLoggingEnabled = defaultSettings.enableDebugLog;
-        return defaultSettings;
+        return installerConsent
+            ? {
+                ...defaultSettings,
+                eulaAccepted: true,
+                eulaVersion: legalNoticeVersion,
+                eulaAcceptedAt: installerConsent.acceptedAt
+            }
+            : defaultSettings;
     }
 }
 
@@ -3360,7 +3430,9 @@ async function startServer() {
             await fs.writeFile(clamdConfPath, clamdConfContent);
             
             await saveConfig(settings);
-            await autoDisableDefender();
+            if (settings.autoDisableDefender === true) {
+                await autoDisableDefender();
+            }
 
             // Clean up zip
             try {
@@ -3554,7 +3626,12 @@ async function startServer() {
     });
 
     app.post("/api/accept-eula", async (req, res) => {
-        settings = { ...settings, eulaAccepted: true };
+        settings = {
+            ...settings,
+            eulaAccepted: true,
+            eulaVersion: legalNoticeVersion,
+            eulaAcceptedAt: new Date().toISOString()
+        };
         await saveConfig(settings);
         res.json({ success: true, settings });
     });
@@ -3576,12 +3653,12 @@ async function startServer() {
     });
 
     app.post("/api/alert-defender", async (req, res) => {
-        try {
-            const result = await requestDefenderPause();
-            res.status(result.Success ? 200 : 409).json({ success: result.Success, ...result });
-        } catch (e: any) {
-            res.status(500).json({ error: e.message });
-        }
+        res.status(409).json({
+            success: false,
+            Success: false,
+            SideBySideMode: true,
+            Message: "ClamShield is a user interface for ClamAV and YARA, not an independent antivirus provider, so it does not register itself as one in Windows Security. Use side-by-side mode or the separate Pause Defender action."
+        });
     });
 
     app.post("/api/stop-defender", async (req, res) => {
@@ -3596,7 +3673,7 @@ async function startServer() {
     app.post("/api/restore-defender", async (req, res) => {
         try {
             const result = await restoreDefenderPreferences();
-            res.json({ success: result.Success, ...result });
+            res.status(result.Success ? 200 : 409).json({ success: result.Success, ...result });
         } catch (e: any) {
             res.status(500).json({ error: e.message });
         }

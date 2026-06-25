@@ -2,6 +2,7 @@ node_modules/
 dist/
 build/*
 !build/installer.nsh
+!build/eula.txt
 release/
 coverage/
 .DS_Store

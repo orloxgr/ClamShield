@@ -3,7 +3,7 @@
   "description": "ClamShield - Windows GUI for ClamAV",
   "author": "Byron Iniotakis",
   "private": true,
-  "version": "1.0.84",
+  "version": "1.0.86",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -28,6 +28,14 @@
       "allowToChangeInstallationDirectory": true,
       "perMachine": true,
       "runAfterFinish": true,
+      "license": "build/eula.txt",
+      "installerLanguages": [
+        "en_US"
+      ],
+      "language": "1033",
+      "multiLanguageInstaller": false,
+      "uninstallDisplayName": "ClamShield",
+      "artifactName": "ClamShield-Setup-${version}.${ext}",
       "include": "build/installer.nsh"
     },
     "win": {

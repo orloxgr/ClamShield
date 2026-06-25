@@ -102,7 +102,7 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
   const needsYara = status.settings?.yaraEnabled !== false && (!status.hasYaraEngine || !status.hasYaraRules) && !status.isSimulated;
 
   useEffect(() => {
-    const storedAcceptance = localStorage.getItem("clamshield_eula") === "true";
+    const storedAcceptance = localStorage.getItem("clamshield_notice_2026-06-25") === "true";
     if (status?.settings?.eulaAccepted || storedAcceptance) {
       setEulaAccepted(true);
       if (!status?.settings?.eulaAccepted && storedAcceptance) {
@@ -116,7 +116,7 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
   if (eulaAccepted && !needsEngine && !needsDb && !needsYara) return null;
 
   const acceptEula = async () => {
-    localStorage.setItem("clamshield_eula", "true");
+    localStorage.setItem("clamshield_notice_2026-06-25", "true");
     await fetch("/api/accept-eula", { method: "POST" });
     setEulaAccepted(true);
     if (!needsEngine && !needsDb && !needsYara) {
@@ -265,11 +265,13 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
           {!eulaAccepted ? (
              <div className="w-full space-y-4">
                 <div className="bg-slate-950 rounded-lg p-4 border border-slate-800 text-left h-48 overflow-auto text-sm text-slate-300">
-                  <p className="font-semibold mb-2">Terms of Service and Disclaimer</p>
-                  <p className="mb-2">This application (ClamShield) downloads, wraps, and utilizes the ClamAV® engine.</p>
-                  <p className="mb-2"><strong>ClamAV® is licensed under the GNU General Public License v2 (GPL-2.0).</strong></p>
-                  <p className="mb-2">This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages or other liability, whether in an action of contract, tort or otherwise, arising from, out of or in connection with the software or the use or other dealings in the software.</p>
-                  <p>By clicking "I Agree", you acknowledge and agree to these terms, and agree to abide by the ClamAV® licensing terms.</p>
+                  <p className="font-semibold mb-2">Software Notice and Disclaimer</p>
+                  <p className="mb-2"><strong>ClamShield is a Windows user interface and orchestration layer for third-party malware detection tools.</strong> It manages and invokes ClamAV for signature-based scanning and YARA for rule-based pattern matching. ClamShield is not an independent antivirus engine or a complete endpoint security suite.</p>
+                  <p className="mb-2">No security product can detect, block, or remove every threat. False negatives, false positives, outdated signatures, unavailable engines, configuration choices, encrypted content, unsupported formats, and malware designed to evade analysis may affect results.</p>
+                  <p className="mb-2">If enabled in Settings, ClamShield may attempt to pause or manage Microsoft Defender. Reducing or disabling another security product may reduce overall protection. You are responsible for reviewing this setting and maintaining appropriate security controls and backups.</p>
+                  <p className="mb-2">ClamShield is provided "as is" and without warranties, to the maximum extent permitted by applicable law. Liability is limited to the maximum extent permitted by applicable law. Nothing in this notice excludes rights or liabilities that cannot legally be excluded.</p>
+                  <p className="mb-2">ClamAV is provided by Cisco and licensed under GPL-2.0. YARA is a third-party pattern-matching tool. Their names and trademarks belong to their respective owners. ClamShield is not endorsed by or affiliated with those projects or their owners.</p>
+                  <p>By clicking "I Agree", you confirm that you have read and accepted this notice.</p>
                 </div>
                 <button 
                   onClick={acceptEula}

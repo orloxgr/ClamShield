@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
-import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart } from "lucide-react";
+import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw } from "lucide-react";
+
+type ActionNotice = {
+  kind: "success" | "warning" | "error" | "info";
+  text: string;
+};
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   const [defenderStatus, setDefenderStatus] = useState<any>(null);
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [notice, setNotice] = useState<ActionNotice | null>(null);
+  const [defenderActionPending, setDefenderActionPending] = useState<"pause" | "restore" | "refresh" | null>(null);
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
@@ -16,27 +22,74 @@ export default function SettingsPage() {
     try {
       const res = await fetch("/api/defender-status");
       const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Could not read Microsoft Defender status.");
       setDefenderStatus(data);
       return data;
-    } catch {
+    } catch (e: any) {
+      setNotice({ kind: "error", text: e?.message || "Could not read Microsoft Defender status." });
       return null;
     }
   };
 
-  const defenderResultMessage = (data: any, fallback: string) => {
-    if (data?.success || data?.Success) return data.Message || fallback;
-    if (data?.SideBySideMode) return data.Message || "Windows Tamper Protection is ON. ClamShield will keep running side-by-side.";
-    return data?.Message || data?.error || "Windows 10/11 blocked the Defender change. Check Tamper Protection or policy.";
+  const defenderResultNotice = (data: any, fallback: string): ActionNotice => {
+    if (data?.success || data?.Success) {
+      return { kind: "success", text: data.Message || fallback };
+    }
+    if (data?.SideBySideMode || data?.NeedsManualAction) {
+      return {
+        kind: "warning",
+        text: data.Message || "Windows Tamper Protection is on. Open Windows Security, turn it off, then check again."
+      };
+    }
+    return {
+      kind: "error",
+      text: data?.Message || data?.error || "Windows blocked the Defender change. Check Tamper Protection, administrator access, or device policy."
+    };
   };
 
   const openWindowsSecurity = async () => {
     try {
       const res = await fetch("/api/open-windows-security", { method: "POST" });
       const data = await res.json();
-      setMsg(data.success ? "Windows Security virus protection settings opened." : data.error || "Windows Security could not be opened.");
+      setNotice(data.success
+        ? { kind: "info", text: "Windows Security opened. Go to Virus & threat protection → Manage settings → Tamper Protection." }
+        : { kind: "error", text: data.error || "Windows Security could not be opened." });
     } catch (e: any) {
-      setMsg("Error: " + e.message);
+      setNotice({ kind: "error", text: "Could not open Windows Security: " + e.message });
     }
+  };
+
+  const runDefenderAction = async (action: "pause" | "restore") => {
+    setDefenderActionPending(action);
+    try {
+      const endpoint = action === "pause" ? "/api/stop-defender" : "/api/restore-defender";
+      const res = await fetch(endpoint, { method: "POST" });
+      const data = await res.json();
+      setNotice(defenderResultNotice(
+        data,
+        action === "pause"
+          ? "Microsoft Defender real-time protection is paused."
+          : "Microsoft Defender preferences were restored."
+      ));
+      await refreshDefenderStatus();
+    } catch (e: any) {
+      setNotice({ kind: "error", text: `Could not ${action} Microsoft Defender: ${e.message}` });
+    } finally {
+      setDefenderActionPending(null);
+    }
+  };
+
+  const checkTamperProtection = async () => {
+    setDefenderActionPending("refresh");
+    const status = await refreshDefenderStatus();
+    if (status) {
+      setNotice(status.IsTamperProtected === true
+        ? { kind: "warning", text: "Tamper Protection is still on. Windows will block Defender pause requests." }
+        : status.IsTamperProtected === false
+          ? { kind: "success", text: "Tamper Protection is off. You can now try Pause Defender." }
+          : { kind: "info", text: "Windows did not report the Tamper Protection state. You may still try the action below." });
+    }
+    setDefenderActionPending(null);
   };
 
   const updateNumberSetting = (key: string, rawValue: string, fallback: number, min: number, max: number) => {
@@ -47,22 +100,31 @@ export default function SettingsPage() {
 
   const saveSettings = async () => {
     setSaving(true);
-    setMsg("");
+    setNotice(null);
     try {
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settings)
       });
-      setMsg("Settings saved successfully.");
+      setNotice({ kind: "success", text: "Settings saved successfully." });
     } catch (e: any) {
-      setMsg("Failed to save settings: " + e.message);
+      setNotice({ kind: "error", text: "Failed to save settings: " + e.message });
     }
     setSaving(false);
-    setTimeout(() => setMsg(""), 3000);
+    setTimeout(() => setNotice(null), 3000);
   };
 
   if (!settings) return <div className="p-8">Loading...</div>;
+
+  const tamperProtectionOn = defenderStatus?.IsTamperProtected === true;
+  const noticeClass = notice?.kind === "success"
+    ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300"
+    : notice?.kind === "warning"
+      ? "bg-amber-500/15 border-amber-500/30 text-amber-200"
+      : notice?.kind === "error"
+        ? "bg-rose-500/15 border-rose-500/30 text-rose-200"
+        : "bg-indigo-500/15 border-indigo-500/30 text-indigo-200";
 
   return (
     <div className="p-8 max-w-4xl mx-auto space-y-8 pb-20">
@@ -81,7 +143,7 @@ export default function SettingsPage() {
          </button>
       </header>
       
-      {msg && <div className="p-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-md text-sm">{msg}</div>}
+      {notice && <div className={`p-3 border rounded-md text-sm ${noticeClass}`}>{notice.text}</div>}
 
       <div className="space-y-6">
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -119,24 +181,31 @@ export default function SettingsPage() {
 
             <h3 className="text-slate-200 font-medium pt-2 block">Windows Security</h3>
             <p className="text-sm text-slate-400">
-              Register ClamShield to alert Windows Defender that another antivirus software is installed. 
-              If Windows allows it, this pauses Defender real-time protection to avoid duplicate scanning. If Tamper Protection is on, ClamShield runs side-by-side and shows a manual action state.
+              ClamShield runs alongside Microsoft Defender by default. ClamShield is a user interface for ClamAV and YARA,
+              so it does not claim to be an independent antivirus provider or register itself as one in Windows Security.
+              You may optionally request that Defender real-time protection be paused to reduce duplicate scanning.
             </p>
-            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
+            <label
+              className={`flex items-center justify-between py-2 border-t border-slate-800 pt-4 ${
+                tamperProtectionOn ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+              }`}
+              title={tamperProtectionOn ? "Open Windows Security and disable Tamper Protection first." : undefined}
+            >
               <div>
                 <span className="text-slate-200 font-medium block">Automatically keep Defender paused</span>
-                <span className="text-slate-500 text-xs">Runs once on startup, verifies the result, and re-applies at the interval below if Windows turns it back on.</span>
+                <span className="text-slate-500 text-xs">Optional. Only works when Windows permits the change and Tamper Protection is off.</span>
               </div>
               <input
                 type="checkbox"
-                checked={settings.autoDisableDefender !== false}
+                checked={settings.autoDisableDefender === true}
+                disabled={tamperProtectionOn}
                 onChange={e => setSettings({...settings, autoDisableDefender: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800 disabled:cursor-not-allowed"
               />
             </label>
-            {settings.autoDisableDefender !== false && (
+            {settings.autoDisableDefender === true && (
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-slate-400 block w-1/3">Re-apply every minutes</label>
+                <label className="text-sm font-medium text-slate-400 block w-1/3">Re-apply every (minutes)</label>
                 <input
                   type="number"
                   min={1}
@@ -150,15 +219,50 @@ export default function SettingsPage() {
             <div className="flex items-start gap-2 bg-slate-800/50 p-3 rounded-lg border border-indigo-500/20 text-indigo-200/80 text-xs">
               <ShieldAlert className="w-4 h-4 shrink-0 text-indigo-400 mt-0.5" />
               <p>
-                <strong>Note:</strong> Windows 10/11 Tamper Protection blocks third-party apps from pausing Microsoft Defender. When it is on, ClamShield avoids repeated pause attempts and keeps protecting in side-by-side mode.
+                <strong>Windows controls this setting:</strong> Tamper Protection blocks apps from changing protected Microsoft Defender settings.
+                Keeping Defender and ClamShield in side-by-side mode is supported and avoids leaving the computer without Defender protection.
               </p>
             </div>
+            {tamperProtectionOn && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-sm text-amber-100 space-y-3">
+                <div className="flex items-start gap-3">
+                  <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-amber-300">Action required before Defender can be paused</p>
+                    <ol className="mt-2 list-decimal list-inside space-y-1 text-amber-100/80">
+                      <li>Open Windows Security.</li>
+                      <li>Select Virus & threat protection, then Manage settings.</li>
+                      <li>Turn Tamper Protection off.</li>
+                      <li>Return here and click Check again.</li>
+                    </ol>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={openWindowsSecurity}
+                    className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg font-semibold transition-colors text-xs"
+                  >
+                    Open Tamper Protection Settings
+                  </button>
+                  <button
+                    onClick={checkTamperProtection}
+                    disabled={defenderActionPending !== null}
+                    className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors text-xs"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${defenderActionPending === "refresh" ? "animate-spin" : ""}`} />
+                    {defenderActionPending === "refresh" ? "Checking..." : "Check again"}
+                  </button>
+                </div>
+              </div>
+            )}
             {defenderStatus?.Supported !== false && (
-              <div className="grid sm:grid-cols-3 gap-3 text-xs">
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
                 <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
                   <span className="text-slate-500 block mb-1">Defender real-time protection</span>
                   <span className={defenderStatus?.RealTimeProtectionEnabled === false ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
-                    {defenderStatus?.RealTimeProtectionEnabled === false ? "Paused" : "Active or unknown"}
+                    {defenderStatus?.RealTimeProtectionEnabled === false
+                      ? "Paused"
+                      : defenderStatus?.RealTimeProtectionEnabled === true ? "Active" : "Unknown"}
                   </span>
                 </div>
                 <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
@@ -171,43 +275,55 @@ export default function SettingsPage() {
                 </div>
                 <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
                   <span className="text-slate-500 block mb-1">ClamShield mode</span>
-                  <span className={defenderStatus?.IsTamperProtected ? "text-amber-400 font-medium" : "text-emerald-400 font-medium"}>
-                    {defenderStatus?.IsTamperProtected ? "Side-by-side" : "Can pause Defender"}
+                  <span className={defenderStatus?.RealTimeProtectionEnabled === false ? "text-emerald-400 font-medium" : "text-indigo-300 font-medium"}>
+                    {defenderStatus?.RealTimeProtectionEnabled === false ? "Defender paused" : "Side-by-side"}
+                  </span>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <span className="text-slate-500 block mb-1">Cloud-delivered protection</span>
+                  <span className={defenderStatus?.MAPSReporting === 0 ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+                    {defenderStatus?.MAPSReporting === 0
+                      ? "Off"
+                      : defenderStatus?.MAPSReporting === null || defenderStatus?.MAPSReporting === undefined ? "Unknown" : "On"}
+                  </span>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <span className="text-slate-500 block mb-1">Automatic sample submission</span>
+                  <span className={defenderStatus?.SubmitSamplesConsent === 2 ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+                    {defenderStatus?.SubmitSamplesConsent === 2
+                      ? "Never send"
+                      : defenderStatus?.SubmitSamplesConsent === null || defenderStatus?.SubmitSamplesConsent === undefined ? "Unknown" : "Enabled or prompt"}
+                  </span>
+                </div>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                  <span className="text-slate-500 block mb-1">Scheduled Defender scans</span>
+                  <span className={defenderStatus?.ScanScheduleDay === 8 ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+                    {defenderStatus?.ScanScheduleDay === 8
+                      ? "Off"
+                      : defenderStatus?.ScanScheduleDay === null || defenderStatus?.ScanScheduleDay === undefined ? "Unknown" : "Enabled"}
                   </span>
                 </div>
               </div>
             )}
             <div className="flex flex-wrap items-center gap-3 pt-2">
-              <button
-                onClick={async () => {
-                  try {
-                    const res = await fetch("/api/alert-defender", { method: "POST" });
-                    const data = await res.json();
-                    setMsg(defenderResultMessage(data, "Windows Defender paused successfully."));
-                    await refreshDefenderStatus();
-                  } catch (e: any) {
-                    setMsg("Error: " + e.message);
-                  }
-                }}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors text-sm"
-              >
-                Register w/ Windows Security
-              </button>
-              <button
-                onClick={async () => {
-                   try {
-                    const res = await fetch("/api/stop-defender", { method: "POST" });
-                    const data = await res.json();
-                    setMsg(defenderResultMessage(data, "Windows Defender Real-Time Protection paused."));
-                    await refreshDefenderStatus();
-                  } catch (e: any) {
-                    setMsg("Error: " + e.message);
-                  }
-                }}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium transition-colors text-sm"
-              >
-                Pause Defender
-              </button>
+              <div className="relative group">
+                <button
+                  onClick={() => runDefenderAction("pause")}
+                  disabled={tamperProtectionOn || defenderActionPending !== null}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:bg-slate-700 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors text-sm"
+                >
+                  {defenderActionPending === "pause" ? "Pausing..." : "Pause Defender"}
+                </button>
+                {tamperProtectionOn && (
+                  <div
+                    role="tooltip"
+                    className="pointer-events-none absolute left-1/2 bottom-full z-20 mb-2 w-64 -translate-x-1/2 rounded-lg border border-amber-500/30 bg-slate-950 px-3 py-2 text-center text-xs leading-relaxed text-amber-200 opacity-0 shadow-xl transition-opacity group-hover:opacity-100"
+                  >
+                    Open Windows Security and disable Tamper Protection first.
+                    <span className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-slate-950" />
+                  </div>
+                )}
+              </div>
               <button
                 onClick={openWindowsSecurity}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors text-sm"
@@ -215,19 +331,11 @@ export default function SettingsPage() {
                 Open Defender Settings
               </button>
               <button
-                onClick={async () => {
-                   try {
-                    const res = await fetch("/api/restore-defender", { method: "POST" });
-                    const data = await res.json();
-                    setMsg(defenderResultMessage(data, "Windows Defender real-time protection restored."));
-                    await refreshDefenderStatus();
-                  } catch (e: any) {
-                    setMsg("Error: " + e.message);
-                  }
-                }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-medium transition-colors text-sm"
+                onClick={() => runDefenderAction("restore")}
+                disabled={defenderActionPending !== null}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors text-sm"
               >
-                Restore Defender
+                {defenderActionPending === "restore" ? "Restoring..." : "Restore Defender"}
               </button>
             </div>
           </div>
