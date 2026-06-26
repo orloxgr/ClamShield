@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw } from "lucide-react";
+import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown } from "lucide-react";
 
 type ActionNotice = {
   kind: "success" | "warning" | "error" | "info";
   text: string;
 };
+
+type SettingsSection = "system" | "notifications" | "diagnostics" | "paths" | "shield" | "scanner" | "support";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -12,6 +14,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<ActionNotice | null>(null);
   const [defenderActionPending, setDefenderActionPending] = useState<"pause" | "restore" | "refresh" | null>(null);
+  const [openSection, setOpenSection] = useState<SettingsSection | null>("system");
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
@@ -125,34 +128,47 @@ export default function SettingsPage() {
       : notice?.kind === "error"
         ? "bg-rose-500/15 border-rose-500/30 text-rose-200"
         : "bg-indigo-500/15 border-indigo-500/30 text-indigo-200";
+  const toggleSection = (section: SettingsSection) => {
+    setOpenSection(current => current === section ? null : section);
+  };
 
   return (
-    <div className="p-8 max-w-4xl mx-auto space-y-8 pb-20">
-      <header className="flex items-center justify-between">
-         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
-          <p className="text-slate-400">Configure ClamAV paths and scanner options</p>
-         </div>
-         <button 
-           onClick={saveSettings}
-           disabled={saving}
-           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors"
-         >
-           <Save className="w-4 h-4" />
-           {saving ? "Saving..." : "Save Config"}
-         </button>
-      </header>
-      
-      {notice && <div className={`p-3 border rounded-md text-sm ${noticeClass}`}>{notice.text}</div>}
+    <div className="px-8 max-w-4xl mx-auto space-y-6 pb-20">
+      <div className="sticky top-0 z-30 -mx-8 px-8 py-5 bg-slate-950/95 backdrop-blur border-b border-slate-800/80 space-y-3">
+        <header className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-white mb-1">Settings</h1>
+            <p className="text-slate-400">Configure ClamAV paths and scanner options</p>
+          </div>
+          <button
+            onClick={saveSettings}
+            disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors shrink-0"
+          >
+            <Save className="w-4 h-4" />
+            {saving ? "Saving..." : "Save Config"}
+          </button>
+        </header>
+        {notice && <div className={`p-3 border rounded-md text-sm ${noticeClass}`}>{notice.text}</div>}
+      </div>
 
       <div className="space-y-6">
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between font-medium text-slate-200">
+          <button
+            type="button"
+            onClick={() => toggleSection("system")}
+            aria-expanded={openSection === "system"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "system" ? "border-b border-slate-800" : ""
+            }`}
+          >
             <div className="flex items-center gap-2">
               <Shield className="w-5 h-5 text-indigo-400" />
               System Integration
             </div>
-          </div>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "system" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "system" && (
           <div className="p-6 space-y-4">
             <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
               <div>
@@ -339,15 +355,25 @@ export default function SettingsPage() {
               </button>
             </div>
           </div>
+          )}
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between font-medium text-slate-200">
+          <button
+            type="button"
+            onClick={() => toggleSection("notifications")}
+            aria-expanded={openSection === "notifications"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "notifications" ? "border-b border-slate-800" : ""
+            }`}
+          >
             <div className="flex items-center gap-2">
               <ShieldAlert className="w-5 h-5 text-indigo-400" />
               Notifications & Alerts
             </div>
-          </div>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "notifications" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "notifications" && (
           <div className="p-6 space-y-4">
             <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
               <div>
@@ -362,15 +388,25 @@ export default function SettingsPage() {
               />
             </label>
           </div>
+          )}
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between font-medium text-slate-200">
+          <button
+            type="button"
+            onClick={() => toggleSection("diagnostics")}
+            aria-expanded={openSection === "diagnostics"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "diagnostics" ? "border-b border-slate-800" : ""
+            }`}
+          >
             <div className="flex items-center gap-2">
               <Bug className="w-5 h-5 text-indigo-400" />
               Diagnostics
             </div>
-          </div>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "diagnostics" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "diagnostics" && (
           <div className="p-6 space-y-4">
             <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
               <div>
@@ -402,13 +438,25 @@ export default function SettingsPage() {
               Main app, popup, renderer, and service errors are written to the logs folder. Turn on debug log only while investigating a problem.
             </div>
           </div>
+          )}
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
-            <Folder className="w-5 h-5 text-indigo-400" />
-            ClamAV Paths
-          </div>
+          <button
+            type="button"
+            onClick={() => toggleSection("paths")}
+            aria-expanded={openSection === "paths"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "paths" ? "border-b border-slate-800" : ""
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Folder className="w-5 h-5 text-indigo-400" />
+              ClamAV Paths
+            </span>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "paths" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "paths" && (
           <div className="p-6 space-y-4">
             {['clamavDir', 'clamscanPath', 'freshclamPath', 'freshclamConf', 'clamdPath', 'clamdscanPath', 'clamdConf', 'yaraDir', 'yaraPath', 'yaraRulesDir', 'yaraCustomRulesDir', 'yaraCacheDir', 'databaseDir', 'quarantineDir', 'logsDir'].map((key) => (
               <div key={key}>
@@ -424,13 +472,25 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
+          )}
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-           <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
-            <Shield className="w-5 h-5 text-indigo-400" />
-            Real-Time Shield Setup
-          </div>
+          <button
+            type="button"
+            onClick={() => toggleSection("shield")}
+            aria-expanded={openSection === "shield"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "shield" ? "border-b border-slate-800" : ""
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Shield className="w-5 h-5 text-indigo-400" />
+              Real-Time Shield Setup
+            </span>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "shield" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "shield" && (
           <div className="p-6 space-y-4">
             {['monitorDesktop', 'monitorDocuments', 'monitorDownloads'].map(key => (
               <label key={key} className="flex items-center justify-between cursor-pointer py-2">
@@ -514,13 +574,25 @@ export default function SettingsPage() {
               />
             </div>
           </div>
+          )}
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-           <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
-            <Sliders className="w-5 h-5 text-indigo-400" />
-            Scanner Options
-          </div>
+          <button
+            type="button"
+            onClick={() => toggleSection("scanner")}
+            aria-expanded={openSection === "scanner"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "scanner" ? "border-b border-slate-800" : ""
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Sliders className="w-5 h-5 text-indigo-400" />
+              Scanner Options
+            </span>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "scanner" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "scanner" && (
           <div className="p-6 space-y-4">
             <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
               <div>
@@ -739,13 +811,25 @@ export default function SettingsPage() {
               </label>
             ))}
           </div>
+          )}
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-           <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
-            <Heart className="w-5 h-5 text-rose-500" />
-            Support Us
-          </div>
+          <button
+            type="button"
+            onClick={() => toggleSection("support")}
+            aria-expanded={openSection === "support"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "support" ? "border-b border-slate-800" : ""
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Heart className="w-5 h-5 text-rose-500" />
+              Support Us
+            </span>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "support" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "support" && (
           <div className="p-6 space-y-6">
             <div>
               <p className="text-sm text-slate-300 mb-4">
@@ -773,6 +857,7 @@ export default function SettingsPage() {
               </a>
             </div>
           </div>
+          )}
         </section>
       </div>
     </div>

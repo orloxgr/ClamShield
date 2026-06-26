@@ -8,9 +8,14 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 
 - Automatic ClamAV engine download and setup on Windows.
 - One-click FreshClam signature updates.
+- Optional SecuriteInfo third-party signatures using an account-specific FreshClam URL stored with Windows encryption.
+- Optional SaneSecurity signatures downloaded from public rsync mirrors and verified with the provider's official GPG key.
+- Optional Windows DNS protection using public, account-free filtering resolvers from Cloudflare, AdGuard, CleanBrowsing, or Control D, with saved settings for restoration.
 - Optional YARA scanning powered by ready-to-use YARA Forge rule packages.
 - YARA Forge Core rules are enabled by default, with Extended and Full profiles available for advanced coverage.
-- Separate update controls for ClamAV signatures, YARA Forge rules, and ClamShield releases.
+- Separate update controls for ClamAV, SecuriteInfo, SaneSecurity, YARA Forge, and ClamShield releases.
+- Persistent weekly or monthly scheduled scans with saved disk, directory, and running-process targets.
+- Optional idle-only scheduling based on Windows keyboard and mouse inactivity; an active scheduled scan stops when activity resumes.
 - Manual full system, folder, file, and memory scans.
 - Windows process scan checks executable images used by running processes.
 - Low-impact real-time shield for watched folders.
@@ -20,6 +25,8 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 - User-controlled shield depth and concurrent scan count.
 - Quarantine management and threat action prompts.
 - Exceptions list for trusted files and folders.
+- Results page actions for per-file quarantine, exception, VirusTotal MD5 hash checks, and user-controlled VirusTotal file upload checks.
+- One-click false-positive reporting helpers for exceptions with provider-specific routing for ClamAV, SecuriteInfo, SaneSecurity, and YARA Forge detections.
 - Tray app with background monitoring and threat popup alerts.
 - Clean NSIS installer and uninstaller.
 
@@ -114,10 +121,77 @@ On Windows, ClamShield writes YARA scan lists as UTF-16LE without BOM so the ups
 The Updates page has separate actions:
 
 - `Update ClamAV`: runs FreshClam for virus signatures.
+- `Update SecuriteInfo`: updates optional account-linked SecuriteInfo databases through FreshClam.
+- `Update SaneSecurity`: downloads and verifies the selected public SaneSecurity database profile.
 - `Update YARA Rules`: checks the local YARA engine and downloads the selected YARA Forge ruleset.
 - `Check ClamShield`: checks GitHub Releases for a newer ClamShield installer.
 
 ClamShield update checks can be enabled weekly from Settings. Silent app install is available as an explicit setting; when enabled, ClamShield downloads the latest installer, launches it, and closes itself so the installer can replace application files.
+
+### Optional SecuriteInfo signatures
+
+SecuriteInfo integration is disabled by default and requires an account-specific `DatabaseCustomURL` from the user's SecuriteInfo account.
+
+- Basic mode configures `securiteinfo.ign2` and `securiteinfoold.hdb`.
+- Paid mode configures all supported databases supplied in the account instructions, including the 0-hour databases.
+- The private account token is encrypted with Electron `safeStorage` on Windows.
+- The token is not stored in `settings.json`, returned by the API, written to source control, or placed on the FreshClam command line.
+- ClamShield generates a temporary FreshClam configuration for the update and deletes it afterward.
+
+SecuriteInfo is an independent third-party provider. Detection-rate statements shown in ClamShield are attributed provider claims and are not guarantees by ClamShield.
+
+### Optional SaneSecurity signatures
+
+SaneSecurity integration is disabled by default and does not require an account.
+
+- Malware Protection installs 9 malware, phishing, macro, hash, whitelist, and exploit-focused databases.
+- Complete installs 20 databases, adding spam, scam, URL, attachment, image, and spear-phishing signatures.
+- Databases and detached signatures are downloaded from SaneSecurity's public rsync mirrors.
+- ClamShield verifies every database with SaneSecurity's official GPG signing key and asks ClamAV to load-test it before installation.
+- First-time setup downloads the official signed Cygwin installer and installs the `rsync` and GnuPG packages inside `C:\ProgramData\ClamShield\tools`. This requires approximately 185 MB and outbound TCP port 873.
+- Subsequent automatic updates follow ClamShield's configured ClamAV signature update interval.
+
+SaneSecurity is an independent third-party provider. Its signatures can improve detection coverage but may also increase false positives. ClamShield does not guarantee provider availability or detection results.
+
+### Results, second opinions, and false positives
+
+The Results page is the decision queue for detections that were not automatically quarantined. Each result shows the detection name, original file path, engine, source, and date, with actions directly under the file path:
+
+- `MD5 check`: opens a VirusTotal report by hash only. The file is not uploaded by ClamShield.
+- `File upload check`: opens VirusTotal's upload page and copies the local file path so the user can choose whether to upload the file manually.
+- `Exception`: trusts the item and records detection metadata for later false-positive reporting.
+- `Quarantine`: moves the file into ClamShield quarantine.
+
+The page also includes a bulk `Check all MD5` action. It prepares VirusTotal hash report links for all available results and copies the MD5 list to the clipboard. ClamShield does not silently upload files to VirusTotal.
+
+When an exception was created from a detection, the Exceptions page can prepare a false-positive report for the likely source:
+
+- ClamAV detections open the ClamAV false-positive report form.
+- SecuriteInfo detections open a pre-filled email/contact flow.
+- SaneSecurity detections open a pre-filled false-positive email.
+- YARA detections open a pre-filled YARA Forge GitHub issue.
+
+Report details are copied to the clipboard, but the user must still review and send the report manually.
+
+### Scheduled scanner
+
+The Scheduled Scanner page supports weekly schedules using selected weekdays or monthly schedules using selected calendar days. The start time and scan targets are stored in `settings.json`, including Full disk, reusable directory selections, and running-process scanning.
+
+When **Scan only if the computer is not being used** is enabled, ClamShield begins reading Windows keyboard and mouse inactivity 15 minutes before the scheduled time. It continues only while waiting for the idle threshold or while the scheduled scan is running. If user activity resumes during the scan, the active job is stopped and its temporary resume state is discarded. ClamShield must remain running in the tray for its internal scheduler to operate.
+
+### Optional DNS protection
+
+The DNS Protection page can apply a selected public resolver profile to active Windows adapters that have an internet gateway. Both IPv4 and IPv6 addresses are configured to prevent an IPv6 DNS bypass.
+
+- Cloudflare: malware-only or malware plus adult-content filtering.
+- AdGuard: ads, tracking, and security filtering, with an optional family profile.
+- CleanBrowsing: security or family filtering.
+- Control D: malware, ads-and-tracking, or family-friendly filtering.
+- No account or registration is required for the listed public profiles.
+- ClamShield saves the resolver list that was active before protection was enabled and provides a restore action.
+- Manual uninstall also attempts to restore the saved resolver list before removing ClamShield.
+
+DNS filtering does not inspect files and cannot replace ClamAV, YARA, browser security, or safe browsing habits. VPNs, captive portals, organization policy, and browsers with independent Secure DNS settings may bypass or conflict with Windows DNS settings.
 
 ## Uninstall Behavior
 
@@ -126,11 +200,13 @@ The Windows uninstaller is configured to clean up ClamShield state:
 - closes `ClamShield.exe`
 - removes the scheduled startup task
 - removes legacy startup registry entry if present
-- restores Windows Defender real-time monitoring
+- restores the Microsoft Defender settings managed by ClamShield
+- restores the DNS resolver list saved before ClamShield DNS protection was enabled
 - removes the Windows Security notification override used by ClamShield
+- removes the encrypted SecuriteInfo account token
 - can optionally remove `C:\ProgramData\ClamShield` during manual uninstall
 
-`C:\ProgramData\ClamShield` contains the downloaded engine, signature databases, settings, logs, quarantine metadata, and shield cache.
+`C:\ProgramData\ClamShield` contains the downloaded engine, optional SaneSecurity helper tools, signature databases, settings, logs, quarantine metadata, and shield cache.
 
 The shield cache is stored in:
 

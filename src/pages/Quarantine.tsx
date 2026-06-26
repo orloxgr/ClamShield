@@ -1,5 +1,6 @@
 import { ArchiveX, FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
+import PageHeader from "../components/PageHeader";
 
 export default function Quarantine() {
   const [items, setItems] = useState<any[]>([]);
@@ -59,12 +60,11 @@ export default function Quarantine() {
   };
 
   return (
-    <div className="p-8 max-w-5xl mx-auto space-y-8">
-      <header className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Quarantine</h1>
-          <p className="text-slate-400">Isolated threats that cannot harm your system</p>
-        </div>
+    <div className="px-8 max-w-5xl mx-auto space-y-8 pb-20">
+      <PageHeader
+        title="Quarantine"
+        description="Isolated threats that cannot harm your system"
+        actions={(
         <div className="flex items-center gap-3">
           {items.length > 0 && (
             <button 
@@ -83,7 +83,8 @@ export default function Quarantine() {
             <span>Open Folder</span>
           </button>
         </div>
-      </header>
+        )}
+      />
 
       {message && (
         <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">

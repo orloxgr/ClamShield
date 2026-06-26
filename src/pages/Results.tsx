@@ -1,10 +1,11 @@
-import { AlertTriangle, Archive, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Archive, ListChecks, SearchCheck, ShieldCheck, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
+import PageHeader from "../components/PageHeader";
 
 export default function ResultsPage() {
   const [items, setItems] = useState<any[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState<"md5" | "quarantine" | null>(null);
   const [message, setMessage] = useState("");
 
   const fetchItems = async () => {
@@ -43,7 +44,7 @@ export default function ResultsPage() {
 
   const quarantineAll = async () => {
     if (!items.length || !confirm("Quarantine all undecided suspicious files?")) return;
-    setBulkBusy(true);
+    setBulkBusy("quarantine");
     setMessage("");
     try {
       const res = await fetch("/api/results/quarantine-all", { method: "POST" });
@@ -56,7 +57,7 @@ export default function ResultsPage() {
     } catch (e: any) {
       setMessage(e.message || "Bulk quarantine failed.");
     } finally {
-      setBulkBusy(false);
+      setBulkBusy(null);
     }
   };
 
@@ -73,33 +74,101 @@ export default function ResultsPage() {
     }
   };
 
+  const checkMd5 = async (id: string) => {
+    setBusyId(id);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/results/${encodeURIComponent(id)}/virustotal-hash?algorithm=md5`);
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare the VirusTotal report.");
+      window.open(data.url, "_blank", "noopener,noreferrer");
+      setMessage("Opened the VirusTotal MD5 hash report. ClamShield did not upload the file.");
+    } catch (error: any) {
+      setMessage(error.message || "Could not open VirusTotal.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const openUploadCheck = async (id: string) => {
+    setBusyId(id);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/results/${encodeURIComponent(id)}/virustotal-upload`);
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare the VirusTotal upload check.");
+      await navigator.clipboard?.writeText(data.filePath).catch(() => {});
+      window.open(data.url, "_blank", "noopener,noreferrer");
+      setMessage("Opened VirusTotal's upload page and copied the file path. ClamShield did not upload the file automatically.");
+    } catch (error: any) {
+      setMessage(error.message || "Could not open VirusTotal upload.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const checkAllMd5 = async () => {
+    if (!items.length) return;
+    setBulkBusy("md5");
+    setMessage("");
+    try {
+      const response = await fetch("/api/results/virustotal-md5-all", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare MD5 checks.");
+      if (!data.items?.length) {
+        setMessage("No available files or saved MD5 hashes were found for VirusTotal checking.");
+        return;
+      }
+      if (data.items.length > 8 && !confirm(`Open ${data.items.length} VirusTotal MD5 report tabs? ClamShield will only send hashes, not files.`)) {
+        await navigator.clipboard?.writeText(data.items.map((item: any) => item.md5).join("\n")).catch(() => {});
+        setMessage(`Copied ${data.items.length} MD5 hashes to the clipboard. No files were uploaded.`);
+        return;
+      }
+      await navigator.clipboard?.writeText(data.items.map((item: any) => item.md5).join("\n")).catch(() => {});
+      data.items.forEach((item: any) => window.open(item.url, "_blank", "noopener,noreferrer"));
+      setMessage(`Opened ${data.items.length} VirusTotal MD5 report${data.items.length === 1 ? "" : "s"}. Copied the MD5 list. ClamShield did not upload files.${data.skippedCount ? ` Skipped ${data.skippedCount} unavailable item(s).` : ""}`);
+      fetchItems();
+    } catch (error: any) {
+      setMessage(error.message || "Could not check all results.");
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <header className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Results</h1>
-          <p className="text-slate-400">Suspicious files waiting for your decision</p>
-        </div>
-        {items.length > 0 && (
+    <div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
+      <PageHeader
+        title="Results"
+        description="Suspicious files waiting for your decision"
+        actions={items.length > 0 ? (
           <div className="flex items-center gap-3">
             <button
+              onClick={checkAllMd5}
+              disabled={bulkBusy !== null}
+              title="Opens VirusTotal reports by MD5 hash only. Files are not uploaded."
+              className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+            >
+              <ListChecks className="w-4 h-4" />
+              {bulkBusy === "md5" ? "Checking..." : "Check all MD5"}
+            </button>
+            <button
               onClick={clearMissing}
-              disabled={bulkBusy}
+              disabled={bulkBusy !== null}
               className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700"
             >
               Clear unavailable
             </button>
             <button
               onClick={quarantineAll}
-              disabled={bulkBusy}
+              disabled={bulkBusy !== null}
               className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
               <Archive className="w-4 h-4" />
-              {bulkBusy ? "Quarantining..." : "Quarantine all"}
+              {bulkBusy === "quarantine" ? "Quarantining..." : "Quarantine all"}
             </button>
           </div>
-        )}
-      </header>
+        ) : null}
+      />
 
       {message && (
         <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">
@@ -117,15 +186,19 @@ export default function ResultsPage() {
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <table className="w-full text-left text-sm">
+          <table className="w-full table-fixed text-left text-sm">
+            <colgroup>
+              <col className="w-[58%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+              <col className="w-[18%]" />
+            </colgroup>
             <thead className="bg-slate-800/50 text-slate-400">
               <tr>
                 <th className="px-6 py-4 font-medium">Detection</th>
-                <th className="px-6 py-4 font-medium">File</th>
                 <th className="px-6 py-4 font-medium">Engine</th>
                 <th className="px-6 py-4 font-medium">Source</th>
                 <th className="px-6 py-4 font-medium">Date</th>
-                <th className="px-6 py-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
@@ -136,8 +209,49 @@ export default function ResultsPage() {
                       <AlertTriangle className="w-4 h-4" />
                       {item.threatName || "Unknown Threat"}
                     </span>
+                    <div
+                      className="mt-2 max-w-full overflow-x-auto whitespace-nowrap font-mono text-xs font-normal text-slate-400 pb-1"
+                      title={item.originalPath}
+                    >
+                      {item.originalPath}
+                    </div>
+                    <div className="mt-3 grid grid-cols-4 gap-2 max-w-2xl">
+                      <button
+                        onClick={() => checkMd5(item.id)}
+                        disabled={busyId === item.id || (item.available === false && !item.md5)}
+                        title="Checks VirusTotal by MD5 hash only. ClamShield does not upload the file."
+                        className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors"
+                      >
+                        <SearchCheck className="w-3.5 h-3.5" />
+                        MD5 check
+                      </button>
+                      <button
+                        onClick={() => openUploadCheck(item.id)}
+                        disabled={busyId === item.id || item.available === false}
+                        title="Opens VirusTotal's upload page. You choose whether to upload the file."
+                        className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        File upload check
+                      </button>
+                      <button
+                        onClick={() => handleAction(item.id, "exception")}
+                        disabled={busyId === item.id}
+                        className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded text-[11px] font-medium transition-colors border border-slate-700"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        Exception
+                      </button>
+                      <button
+                        onClick={() => handleAction(item.id, "quarantine")}
+                        disabled={busyId === item.id}
+                        className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors"
+                      >
+                        <Archive className="w-3.5 h-3.5" />
+                        Quarantine
+                      </button>
+                    </div>
                   </td>
-                  <td className="px-6 py-4 text-slate-400 font-mono text-xs break-all">{item.originalPath}</td>
                   <td className="px-6 py-4 text-slate-400">
                     <div className="flex flex-col gap-1">
                       <span>{item.engine || "ClamAV"}</span>
@@ -149,24 +263,6 @@ export default function ResultsPage() {
                     <div className="flex flex-col gap-1">
                       <span>{new Date(item.timestamp).toLocaleString()}</span>
                       {item.available === false && <span className="text-xs text-amber-400">Original file unavailable</span>}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => handleAction(item.id, "exception")}
-                        disabled={busyId === item.id}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-300 rounded text-xs font-medium transition-colors border border-slate-700"
-                      >
-                        Add to exceptions
-                      </button>
-                      <button
-                        onClick={() => handleAction(item.id, "quarantine")}
-                        disabled={busyId === item.id}
-                        className="px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white rounded text-xs font-medium transition-colors"
-                      >
-                        Quarantine
-                      </button>
                     </div>
                   </td>
                 </tr>

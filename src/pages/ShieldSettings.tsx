@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Bell, Plus, RotateCcw, SlidersHorizontal, X } from "lucide-react";
+import PageHeader from "../components/PageHeader";
 
 export default function ShieldSettings() {
   const [settings, setSettings] = useState<any>(null);
@@ -79,12 +80,11 @@ export default function ShieldSettings() {
   const browserDownloads = Array.isArray(systemPaths?.BrowserDownloads) ? systemPaths.BrowserDownloads : [];
 
   return (
-    <div className="p-8 max-w-4xl mx-auto space-y-8">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Real-Time Shield</h1>
-          <p className="text-slate-400">Background protection against new and modified files</p>
-        </div>
+    <div className="px-8 max-w-4xl mx-auto space-y-8 pb-20">
+      <PageHeader
+        title="Real-Time Shield"
+        description="Background protection against new and modified files"
+        actions={(
         <div className="flex items-center gap-3">
           <span className={settings.shieldEnabled ? "text-emerald-400 font-medium" : "text-slate-500 font-medium"}>
             {settings.shieldEnabled ? "ON" : "OFF"}
@@ -96,7 +96,8 @@ export default function ShieldSettings() {
             <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${settings.shieldEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
           </button>
         </div>
-      </header>
+        )}
+      />
 
       {message && (
         <div className="p-3 bg-slate-900 border border-slate-800 text-slate-300 rounded-md text-sm">

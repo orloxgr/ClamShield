@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, session, shell, powerMonitor } = require('electron');
 const path = require('path');
 const { spawn, fork } = require('child_process');
 const fs = require('fs');
@@ -20,6 +20,8 @@ let debugLoggingEnabled = false;
 let appUpdatePromptVersion = null;
 let lastAppUpdateCheckAt = 0;
 let appUpdateChecking = false;
+let scheduledScanChecking = false;
+let scheduledScanRun = null;
 const apiSessionToken = randomBytes(32).toString('hex');
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -416,6 +418,337 @@ function pollAppUpdates(port) {
   }, 60000);
 }
 
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getScheduledScanTiming(settings, now) {
+  const frequency = settings.scheduledScanFrequency === 'monthly' ? 'monthly' : 'weekly';
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(settings.scheduledScanTime || '')
+    ? settings.scheduledScanTime
+    : '03:00';
+  const [hours, minutes] = time.split(':').map(Number);
+  const dueAt = new Date(now);
+  dueAt.setHours(hours, minutes, 0, 0);
+
+  if (frequency === 'monthly') {
+    const monthDays = Array.isArray(settings.scheduledScanMonthDays) ? settings.scheduledScanMonthDays.map(Number) : [1];
+    if (!monthDays.includes(now.getDate())) return null;
+  } else {
+    const weekdays = Array.isArray(settings.scheduledScanWeekdays) ? settings.scheduledScanWeekdays.map(Number) : [0];
+    if (!weekdays.includes(now.getDay())) return null;
+  }
+
+  const idleThresholdSeconds = Math.max(1, Number(settings.scheduledScanIdleMinutes || 15)) * 60;
+  return {
+    frequency,
+    time,
+    dueAt,
+    monitorFrom: new Date(dueAt.getTime() - idleThresholdSeconds * 1000),
+    idleThresholdSeconds,
+    runKey: `${frequency}:${localDateKey(now)}:${time}`
+  };
+}
+
+function getScheduledRunKey(settings, now) {
+  const timing = getScheduledScanTiming(settings, now);
+  if (!timing || now < timing.dueAt) return null;
+  return timing.runKey;
+}
+
+function buildScheduledScanQueue(settings) {
+  const queue = [];
+  if (settings.scheduledScanFullDisk === true) {
+    queue.push({ type: 'disk', label: 'Full disk scan' });
+  }
+  if (settings.scheduledScanFullDisk !== true && Array.isArray(settings.scheduledScanDirectories)) {
+    const seen = new Set();
+    for (const directory of settings.scheduledScanDirectories) {
+      const target = String(directory || '').trim();
+      const key = target.toLowerCase();
+      if (!target || seen.has(key)) continue;
+      seen.add(key);
+      queue.push({ type: 'folder', target, label: target });
+    }
+  }
+  if (settings.scheduledScanMemory === true) {
+    queue.push({ type: 'memory', label: 'Running process memory' });
+  }
+  return queue;
+}
+
+async function publishScheduledScanRuntime(port, payload) {
+  try {
+    await requestJson(port, '/api/scheduled-scan/runtime', 'POST', payload);
+  } catch (error) {
+    console.warn('Failed to publish scheduled scan status', error.message);
+  }
+}
+
+async function startScheduledScanTarget(port) {
+  if (!scheduledScanRun || scheduledScanRun.index >= scheduledScanRun.queue.length) return false;
+  const target = scheduledScanRun.queue[scheduledScanRun.index];
+  const response = await requestJson(port, '/api/scan', 'POST', {
+    type: target.type,
+    target: target.target,
+    source: 'scheduled'
+  });
+  scheduledScanRun.jobId = response.jobId;
+  scheduledScanRun.currentTarget = target;
+  await publishScheduledScanRuntime(port, {
+    state: 'running',
+    message: `Scanning ${target.label}`,
+    activeJobId: response.jobId,
+    currentTarget: target.label,
+    queueIndex: scheduledScanRun.index + 1,
+    totalTargets: scheduledScanRun.queue.length,
+    idleSeconds: scheduledScanRun.idleOnly ? powerMonitor.getSystemIdleTime() : 0
+  });
+  return true;
+}
+
+async function stopScheduledScan(port, reason, resultLabel) {
+  if (scheduledScanRun?.jobId) {
+    await requestJson(port, `/api/scan/${encodeURIComponent(scheduledScanRun.jobId)}/cancel`, 'POST', {
+      discard: true,
+      reason
+    }).catch(error => console.warn('Failed to stop scheduled scan job', error.message));
+  }
+  const completedAt = new Date().toISOString();
+  await publishScheduledScanRuntime(port, {
+    state: 'stopped',
+    message: reason,
+    activeJobId: '',
+    currentTarget: scheduledScanRun?.currentTarget?.label || '',
+    queueIndex: scheduledScanRun ? scheduledScanRun.index + 1 : 0,
+    totalTargets: scheduledScanRun?.queue?.length || 0,
+    idleSeconds: scheduledScanRun?.idleOnly ? powerMonitor.getSystemIdleTime() : 0,
+    lastRunAt: completedAt,
+    lastResult: resultLabel,
+    persist: true
+  });
+  scheduledScanRun = null;
+}
+
+function pollScheduledScans(port) {
+  const tick = async () => {
+    if (scheduledScanChecking) return;
+    scheduledScanChecking = true;
+    try {
+      const status = await requestJson(port, '/api/status');
+      const settings = status.settings || {};
+
+      if (scheduledScanRun) {
+        const idleSeconds = scheduledScanRun.idleOnly ? powerMonitor.getSystemIdleTime() : 0;
+        if (settings.scheduledScanEnabled !== true) {
+          await stopScheduledScan(port, 'Scheduled scanning was disabled.', 'Stopped because scheduled scanning was disabled');
+          return;
+        }
+        const previousIdleSeconds = Number(scheduledScanRun.lastIdleSeconds || idleSeconds);
+        const userActivityResumed = idleSeconds + 2 < previousIdleSeconds;
+        scheduledScanRun.lastIdleSeconds = idleSeconds;
+        if (settings.scheduledScanIdleOnly !== false && userActivityResumed) {
+          await stopScheduledScan(port, 'User activity resumed; the scheduled scan was stopped.', 'Stopped when user activity resumed');
+          return;
+        }
+
+        const job = await requestJson(port, `/api/scan/${encodeURIComponent(scheduledScanRun.jobId)}`);
+        if (job.status !== 'done') {
+          await publishScheduledScanRuntime(port, {
+            state: 'running',
+            message: `Scanning ${scheduledScanRun.currentTarget.label}`,
+            activeJobId: scheduledScanRun.jobId,
+            currentTarget: scheduledScanRun.currentTarget.label,
+            queueIndex: scheduledScanRun.index + 1,
+            totalTargets: scheduledScanRun.queue.length,
+            idleSeconds
+          });
+          return;
+        }
+
+        if (Number(job.result || 0) < 0) {
+          await stopScheduledScan(port, 'The scheduled scan stopped because the scanner returned an error.', 'Scanner error');
+          return;
+        }
+        if (Number(job.result || 0) === 1) scheduledScanRun.detections = true;
+        scheduledScanRun.index += 1;
+        scheduledScanRun.jobId = '';
+
+        if (scheduledScanRun.index < scheduledScanRun.queue.length) {
+          await startScheduledScanTarget(port);
+          return;
+        }
+
+        const completedAt = new Date().toISOString();
+        const lastResult = scheduledScanRun.detections ? 'Completed with detections' : 'Completed with no detections';
+        await publishScheduledScanRuntime(port, {
+          state: 'complete',
+          message: lastResult,
+          activeJobId: '',
+          currentTarget: '',
+          queueIndex: scheduledScanRun.queue.length,
+          totalTargets: scheduledScanRun.queue.length,
+          idleSeconds,
+          lastRunAt: completedAt,
+          lastResult,
+          persist: true
+        });
+        scheduledScanRun = null;
+        return;
+      }
+
+      if (settings.scheduledScanEnabled !== true) {
+        if (status.scheduledScanRuntime?.state !== 'disabled') {
+          await publishScheduledScanRuntime(port, {
+            state: 'disabled',
+            message: 'Scheduled scanning is disabled.',
+            idleSeconds: 0
+          });
+        }
+        return;
+      }
+
+      if (settings.lastScheduledScanResult === 'Running') {
+        await publishScheduledScanRuntime(port, {
+          state: 'stopped',
+          message: 'The previous scheduled scan ended when ClamShield closed.',
+          idleSeconds: 0,
+          lastRunAt: new Date().toISOString(),
+          lastResult: 'Interrupted when ClamShield closed',
+          persist: true
+        });
+        return;
+      }
+
+      const now = new Date();
+      const timing = getScheduledScanTiming(settings, now);
+      if (!timing) {
+        if (status.scheduledScanRuntime?.state === 'waiting-idle') {
+          await publishScheduledScanRuntime(port, {
+            state: 'idle',
+            message: 'Waiting for the next scheduled scan.',
+            idleSeconds: 0
+          });
+        }
+        return;
+      }
+
+      if (settings.scheduledScanIdleOnly === false && now < timing.dueAt) {
+        return;
+      }
+
+      if (settings.scheduledScanIdleOnly !== false && now < timing.monitorFrom) {
+        if (status.scheduledScanRuntime?.state === 'waiting-idle') {
+          await publishScheduledScanRuntime(port, {
+            state: 'idle',
+            message: `Inactivity monitoring starts ${Math.round(timing.idleThresholdSeconds / 60)} minutes before the scheduled scan.`,
+            idleSeconds: 0
+          });
+        }
+        return;
+      }
+
+      const idleSeconds = settings.scheduledScanIdleOnly !== false ? powerMonitor.getSystemIdleTime() : 0;
+      if (settings.scheduledScanIdleOnly !== false && now < timing.dueAt) {
+        const minutesUntilStart = Math.max(1, Math.ceil((timing.dueAt.getTime() - now.getTime()) / 60000));
+        await publishScheduledScanRuntime(port, {
+          state: 'waiting-idle',
+          message: `Monitoring keyboard and mouse inactivity for the scheduled scan in ${minutesUntilStart} minute${minutesUntilStart === 1 ? '' : 's'}.`,
+          idleSeconds
+        });
+        return;
+      }
+
+      const runKey = getScheduledRunKey(settings, now);
+      if (!runKey || settings.lastScheduledScanRunKey === runKey) return;
+
+      const queue = buildScheduledScanQueue(settings);
+      if (queue.length === 0) {
+        await publishScheduledScanRuntime(port, {
+          state: 'error',
+          message: 'The scheduled scan has no selected targets.',
+          idleSeconds,
+          lastRunKey: runKey,
+          lastRunAt: new Date().toISOString(),
+          lastResult: 'No scan targets selected',
+          persist: true
+        });
+        return;
+      }
+
+      if (Array.isArray(status.activeScanJobIds) && status.activeScanJobIds.length > 0) {
+        await publishScheduledScanRuntime(port, {
+          state: 'waiting-scan',
+          message: 'Waiting for the current on-demand scan to finish.',
+          idleSeconds
+        });
+        return;
+      }
+
+      if (settings.scheduledScanIdleOnly !== false && idleSeconds < timing.idleThresholdSeconds) {
+        const remainingMinutes = Math.max(1, Math.ceil((timing.idleThresholdSeconds - idleSeconds) / 60));
+        await publishScheduledScanRuntime(port, {
+          state: 'waiting-idle',
+          message: `Waiting for ${remainingMinutes} more minute${remainingMinutes === 1 ? '' : 's'} of keyboard and mouse inactivity.`,
+          idleSeconds
+        });
+        return;
+      }
+
+      scheduledScanRun = {
+        runKey,
+        queue,
+        index: 0,
+        jobId: '',
+        currentTarget: null,
+        detections: false,
+        lastIdleSeconds: idleSeconds,
+        idleOnly: settings.scheduledScanIdleOnly !== false
+      };
+      await publishScheduledScanRuntime(port, {
+        state: 'running',
+        message: 'Starting scheduled scan...',
+        activeJobId: '',
+        currentTarget: '',
+        queueIndex: 0,
+        totalTargets: queue.length,
+        idleSeconds,
+        lastRunKey: runKey,
+        lastRunAt: new Date().toISOString(),
+        lastResult: 'Running',
+        persist: true
+      });
+      await startScheduledScanTarget(port);
+    } catch (error) {
+      console.warn('Scheduled scan check failed', error.message);
+      if (scheduledScanRun) {
+        await publishScheduledScanRuntime(port, {
+          state: 'error',
+          message: `Scheduled scan error: ${error.message}`,
+          activeJobId: scheduledScanRun.jobId || '',
+          currentTarget: scheduledScanRun.currentTarget?.label || '',
+          queueIndex: scheduledScanRun.index + 1,
+          totalTargets: scheduledScanRun.queue.length,
+          idleSeconds: scheduledScanRun.idleOnly ? powerMonitor.getSystemIdleTime() : 0,
+          lastRunAt: new Date().toISOString(),
+          lastResult: `Error: ${error.message}`,
+          persist: true
+        });
+        scheduledScanRun = null;
+      }
+    } finally {
+      scheduledScanChecking = false;
+    }
+  };
+
+  const timer = setInterval(tick, 10000);
+  timer.unref?.();
+  setTimeout(tick, 3000);
+}
+
 function createWindow(port, startHidden = false) {
   let rendererRecovering = false;
   mainWindow = new BrowserWindow({
@@ -431,6 +764,20 @@ function createWindow(port, startHidden = false) {
     icon: path.join(__dirname, 'public/icon.png')
   });
   attachWindowLogging(mainWindow, 'Main window');
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^(https?:\/\/|mailto:)/i.test(url)) {
+      shell.openExternal(url).catch(error => console.warn('Failed to open external link', error.message));
+    }
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    const localOrigin = `http://127.0.0.1:${port}`;
+    if (targetUrl.startsWith(localOrigin)) return;
+    event.preventDefault();
+    if (/^(https?:\/\/|mailto:)/i.test(targetUrl)) {
+      shell.openExternal(targetUrl).catch(error => console.warn('Failed to open external link', error.message));
+    }
+  });
 
   // Wait a moment for server to start, then load
   const loadURL = () => {
@@ -538,6 +885,7 @@ app.on('ready', async () => {
   createWindow(port, startHidden);
   connectApiEvents(port);
   pollAppUpdates(port);
+  pollScheduledScans(port);
 });
 
 app.on('second-instance', () => {

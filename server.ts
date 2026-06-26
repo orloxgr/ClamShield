@@ -7,6 +7,7 @@ import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import { createHash, randomBytes } from "crypto";
 import { createRequire } from "module";
+import { resolve4 } from "dns/promises";
 import axios from "axios";
 import unzipper from "unzipper";
 import chokidar from "chokidar";
@@ -31,6 +32,172 @@ const yaraCustomRulesDir = path.join(yaraBaseDir, "rules", "custom");
 const yaraCacheDir = path.join(yaraBaseDir, "cache");
 const legalNoticeVersion = "2026-06-25";
 const installerConsentPath = path.join(programDataDir, "installer-consent.txt");
+const securiteInfoSecretPath = path.join(programDataDir, "securiteinfo-token.bin");
+const dnsProtectionBackupPath = path.join(programDataDir, "dns-protection-backup.json");
+const exceptionReportsPath = path.join(programDataDir, "exception-reports.json");
+const securiteInfoSignupUrl = "https://www.securiteinfo.com/clients/customers/signup";
+const securiteInfoAccountUrl = "https://www.securiteinfo.com/clients/customers/";
+const securiteInfoBaseUrl = "https://www.securiteinfo.com/get/signatures";
+const securiteInfoBasicDatabases = [
+    "securiteinfo.ign2",
+    "securiteinfoold.hdb"
+];
+const securiteInfoPaidDatabases = [
+    ...securiteInfoBasicDatabases,
+    "securiteinfo.hdb",
+    "javascript.ndb",
+    "spam_marketing.ndb",
+    "securiteinfohtml.hdb",
+    "securiteinfoascii.hdb",
+    "securiteinfoandroid.hdb",
+    "securiteinfopdf.hdb",
+    "securiteinfo0hour.hdb",
+    "securiteinfo.mdb",
+    "securiteinfo.yara",
+    "securiteinfo.pdb",
+    "securiteinfo.wdb",
+    "securiteinfo-pua-app-and-vulnerabilities.ndb"
+];
+const saneSecurityWebsiteUrl = "https://sanesecurity.com/";
+const saneSecurityUsageUrl = "https://sanesecurity.com/usage/signatures/";
+const saneSecurityDonateUrl = "https://sanesecurity.com/donate/";
+const saneSecurityPublicKeyUrl = "https://www.sanesecurity.com/publickey.gpg";
+const saneSecurityMirrorHost = "rsync.sanesecurity.net";
+const saneSecurityCygwinSetupUrl = "https://cygwin.com/setup-x86_64.exe";
+const saneSecurityCygwinMirrorUrls = [
+    "https://mirrors.kernel.org/sourceware/cygwin/",
+    "https://cygwin.mirror.constant.com/"
+];
+const saneSecuritySigningKeyFingerprint = "4E025A1CBA90A0653F38D2D8D691DED931EA4D9E";
+const saneSecurityToolsDir = path.join(programDataDir, "tools", "sanesecurity-cygwin");
+const saneSecurityToolsCacheDir = path.join(programDataDir, "tools", "sanesecurity-cygwin-cache");
+const saneSecuritySetupPath = path.join(programDataDir, "tools", "cygwin-setup-x86_64.exe");
+const saneSecurityWorkingDir = path.join(programDataDir, "sanesecurity");
+const saneSecurityGpgHomeDir = path.join(saneSecurityWorkingDir, "gnupg");
+const saneSecurityRsyncPath = path.join(saneSecurityToolsDir, "bin", "rsync.exe");
+const saneSecurityGpgPath = path.join(saneSecurityToolsDir, "bin", "gpg.exe");
+const saneSecurityCygpathPath = path.join(saneSecurityToolsDir, "bin", "cygpath.exe");
+const saneSecurityRequiredDatabases = [
+    "sanesecurity.ftm",
+    "sigwhitelist.ign2"
+];
+const saneSecurityMalwareDatabases = [
+    ...saneSecurityRequiredDatabases,
+    "phish.ndb",
+    "badmacro.ndb",
+    "rogue.hdb",
+    "foxhole_filename.cdb",
+    "foxhole_generic.cdb",
+    "malwarehash.hsb",
+    "shelter.ldb"
+];
+const saneSecurityCompleteDatabases = [
+    ...saneSecurityMalwareDatabases,
+    "blurl.ndb",
+    "junk.ndb",
+    "jurlbl.ndb",
+    "scam.ndb",
+    "spamattach.hdb",
+    "spamimg.hdb",
+    "jurlbla.ndb",
+    "lott.ndb",
+    "spam.ldb",
+    "spear.ndb",
+    "spearl.ndb"
+];
+const saneSecurityAllDatabases = Array.from(new Set(saneSecurityCompleteDatabases));
+const dnsProtectionProfiles = [
+    {
+        id: "cloudflare-malware",
+        provider: "Cloudflare",
+        name: "Malware Blocking",
+        description: "Blocks domains associated with malware and phishing.",
+        ipv4: ["1.1.1.2", "1.0.0.2"],
+        ipv6: ["2606:4700:4700::1112", "2606:4700:4700::1002"],
+        websiteUrl: "https://developers.cloudflare.com/1.1.1.1/setup/",
+        category: "security"
+    },
+    {
+        id: "cloudflare-family",
+        provider: "Cloudflare",
+        name: "Malware + Adult Content",
+        description: "Blocks malware, phishing, and adult content.",
+        ipv4: ["1.1.1.3", "1.0.0.3"],
+        ipv6: ["2606:4700:4700::1113", "2606:4700:4700::1003"],
+        websiteUrl: "https://developers.cloudflare.com/1.1.1.1/setup/",
+        category: "family"
+    },
+    {
+        id: "adguard-default",
+        provider: "AdGuard",
+        name: "Default Protection",
+        description: "Blocks ads, trackers, malware, phishing, and fraudulent domains.",
+        ipv4: ["94.140.14.14", "94.140.15.15"],
+        ipv6: ["2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"],
+        websiteUrl: "https://adguard-dns.io/en/public-dns.html",
+        category: "privacy"
+    },
+    {
+        id: "adguard-family",
+        provider: "AdGuard",
+        name: "Family Protection",
+        description: "Adds adult-content blocking and Safe Search to AdGuard's default filtering.",
+        ipv4: ["94.140.14.15", "94.140.15.16"],
+        ipv6: ["2a10:50c0::bad1:ff", "2a10:50c0::bad2:ff"],
+        websiteUrl: "https://adguard-dns.io/en/public-dns.html",
+        category: "family"
+    },
+    {
+        id: "cleanbrowsing-security",
+        provider: "CleanBrowsing",
+        name: "Security Filter",
+        description: "Blocks phishing, spam, malware, and other malicious domains.",
+        ipv4: ["185.228.168.9", "185.228.169.9"],
+        ipv6: ["2a0d:2a00:1::2", "2a0d:2a00:2::2"],
+        websiteUrl: "https://cleanbrowsing.org/filters",
+        category: "security"
+    },
+    {
+        id: "cleanbrowsing-family",
+        provider: "CleanBrowsing",
+        name: "Family Filter",
+        description: "Blocks malicious and adult domains, mixed-content sites, proxy/VPN bypass domains, and enforces SafeSearch.",
+        ipv4: ["185.228.168.168", "185.228.169.168"],
+        ipv6: ["2a0d:2a00:1::", "2a0d:2a00:2::"],
+        websiteUrl: "https://cleanbrowsing.org/filters",
+        category: "family"
+    },
+    {
+        id: "controld-malware",
+        provider: "Control D",
+        name: "Malware Blocking",
+        description: "Uses Control D's free public malware-filtering resolver.",
+        ipv4: ["76.76.2.1", "76.76.10.1"],
+        ipv6: ["2606:1a40::1", "2606:1a40:1::1"],
+        websiteUrl: "https://docs.controld.com/docs/free-dns",
+        category: "security"
+    },
+    {
+        id: "controld-ads",
+        provider: "Control D",
+        name: "Ads + Tracking",
+        description: "Uses Control D's free public ads-and-tracking resolver.",
+        ipv4: ["76.76.2.2", "76.76.10.2"],
+        ipv6: ["2606:1a40::2", "2606:1a40:1::2"],
+        websiteUrl: "https://docs.controld.com/docs/free-dns",
+        category: "privacy"
+    },
+    {
+        id: "controld-family",
+        provider: "Control D",
+        name: "Family Friendly",
+        description: "Uses Control D's free public family-friendly resolver.",
+        ipv4: ["76.76.2.4", "76.76.10.4"],
+        ipv6: ["2606:1a40::4", "2606:1a40:1::4"],
+        websiteUrl: "https://docs.controld.com/docs/free-dns",
+        category: "family"
+    }
+];
 let debugLoggingEnabled = false;
 let currentLogsDir = defaultLogsDir;
 
@@ -111,6 +278,14 @@ const defaultSettings = {
     autoQuarantine: false,
     autoUpdateEnabled: true,
     updateIntervalHours: 24,
+    securiteInfoEnabled: false,
+    securiteInfoPlan: "basic",
+    lastSecuriteInfoUpdate: "",
+    lastSecuriteInfoUpdateResult: "",
+    saneSecurityEnabled: false,
+    saneSecurityProfile: "malware",
+    lastSaneSecurityUpdate: "",
+    lastSaneSecurityUpdateResult: "",
     yaraEnabled: true,
     yaraRuleset: "core",
     yaraAutoUpdateEnabled: true,
@@ -151,7 +326,23 @@ const defaultSettings = {
     enableDebugLog: false,
     logRetentionDays: 7,
     autoDisableDefender: false,
-    defenderEnforceIntervalMinutes: 5
+    defenderEnforceIntervalMinutes: 5,
+    dnsProtectionEnabled: false,
+    dnsProtectionProfile: "",
+    dnsProtectionAppliedAt: "",
+    scheduledScanEnabled: false,
+    scheduledScanFrequency: "weekly",
+    scheduledScanWeekdays: [0],
+    scheduledScanMonthDays: [1],
+    scheduledScanTime: "03:00",
+    scheduledScanIdleOnly: true,
+    scheduledScanIdleMinutes: 15,
+    scheduledScanFullDisk: true,
+    scheduledScanDirectories: [],
+    scheduledScanMemory: false,
+    lastScheduledScanRunKey: "",
+    lastScheduledScanAt: "",
+    lastScheduledScanResult: ""
 };
 
 const apiSessionToken = process.env.CLAMSHIELD_API_TOKEN || randomBytes(32).toString("hex");
@@ -162,6 +353,8 @@ let scanResultsChangedHandler: (() => void | Promise<void>) | null = null;
 let appUpdateInstallPromise: Promise<any> | null = null;
 let queuedAppUpdateResult: any | null = null;
 const appUpdateInstallLoggers = new Set<(message: string) => void>();
+let freshclamUpdateInProgress = false;
+let saneSecurityUpdateInProgress = false;
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -219,6 +412,516 @@ async function runPowerShellJson(script: string) {
         throw new Error((stderr || stdout || "PowerShell did not return JSON.").trim());
     }
     return JSON.parse(match[1]);
+}
+
+function normalizeSecuriteInfoPlan(value: any) {
+    return String(value || "").toLowerCase() === "paid" ? "paid" : "basic";
+}
+
+function getSecuriteInfoDatabaseNames(plan: any) {
+    return normalizeSecuriteInfoPlan(plan) === "paid"
+        ? securiteInfoPaidDatabases
+        : securiteInfoBasicDatabases;
+}
+
+function extractSecuriteInfoToken(input: any) {
+    const text = String(input || "").trim();
+    if (!text) throw new Error("Paste the DatabaseCustomURL instructions from your SecuriteInfo account.");
+    if (text.length > 50000) throw new Error("The pasted SecuriteInfo configuration is too large.");
+
+    const urlMatch = text.match(/https:\/\/www\.securiteinfo\.com\/get\/signatures\/([a-f0-9]{64,256})\//i);
+    if (urlMatch?.[1]) return urlMatch[1];
+    if (/^[a-f0-9]{64,256}$/i.test(text)) return text;
+    throw new Error("No valid SecuriteInfo personal signature URL was found.");
+}
+
+function getElectronSafeStorage() {
+    try {
+        const electron = nodeRequire("electron");
+        const safeStorage = electron && typeof electron === "object" ? electron.safeStorage : null;
+        if (safeStorage?.isEncryptionAvailable?.()) return safeStorage;
+    } catch {
+        // Secure storage is unavailable outside the packaged Electron desktop app.
+    }
+    return null;
+}
+
+async function saveSecuriteInfoToken(token: string) {
+    const safeStorage = getElectronSafeStorage();
+    if (!safeStorage) {
+        throw new Error("Windows secure credential storage is unavailable. Open ClamShield through the installed desktop application and try again.");
+    }
+    await fs.mkdir(path.dirname(securiteInfoSecretPath), { recursive: true });
+    await fs.writeFile(securiteInfoSecretPath, safeStorage.encryptString(token), { mode: 0o600 });
+}
+
+async function loadSecuriteInfoToken() {
+    const safeStorage = getElectronSafeStorage();
+    if (!safeStorage) return "";
+    try {
+        const encrypted = await fs.readFile(securiteInfoSecretPath);
+        return safeStorage.decryptString(encrypted);
+    } catch {
+        return "";
+    }
+}
+
+function redactSecuriteInfoSecret(value: any, token = "") {
+    let text = String(value ?? "");
+    text = text.replace(
+        /https:\/\/www\.securiteinfo\.com\/get\/signatures\/[^/\s]+/gi,
+        `${securiteInfoBaseUrl}/[redacted]`
+    );
+    if (token) text = text.split(token).join("[redacted]");
+    return text;
+}
+
+async function removeSecuriteInfoDatabaseFiles(databaseDir: string, keep: string[] = []) {
+    const keepSet = new Set(keep.map(name => name.toLowerCase()));
+    const removed: string[] = [];
+    for (const fileName of securiteInfoPaidDatabases) {
+        if (keepSet.has(fileName.toLowerCase())) continue;
+        try {
+            await fs.unlink(path.join(databaseDir, fileName));
+            removed.push(fileName);
+        } catch (e: any) {
+            if (e?.code !== "ENOENT") console.warn(`Failed to remove SecuriteInfo database ${fileName}:`, e?.message || e);
+        }
+    }
+    return removed;
+}
+
+async function getSecuriteInfoStatus(settings: any) {
+    const connected = Boolean(await loadSecuriteInfoToken());
+    const plan = normalizeSecuriteInfoPlan(settings.securiteInfoPlan);
+    const expectedFiles = getSecuriteInfoDatabaseNames(plan);
+    const downloadedFiles: Array<{ name: string, size: number, updatedAt: string }> = [];
+
+    for (const name of securiteInfoPaidDatabases) {
+        try {
+            const stat = await fs.stat(path.join(settings.databaseDir, name));
+            downloadedFiles.push({
+                name,
+                size: stat.size,
+                updatedAt: stat.mtime.toISOString()
+            });
+        } catch {
+            // Missing files are reported below.
+        }
+    }
+
+    const downloadedNames = new Set(downloadedFiles.map(file => file.name.toLowerCase()));
+    const missingFiles = expectedFiles.filter(name => !downloadedNames.has(name.toLowerCase()));
+    const newestFile = [...downloadedFiles].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+
+    return {
+        connected,
+        enabled: connected && settings.securiteInfoEnabled === true,
+        plan,
+        expectedCount: expectedFiles.length,
+        installedCount: expectedFiles.length - missingFiles.length,
+        downloadedFiles,
+        missingFiles,
+        lastUpdated: settings.lastSecuriteInfoUpdate || newestFile?.updatedAt || null,
+        lastResult: settings.lastSecuriteInfoUpdateResult || "",
+        signupUrl: securiteInfoSignupUrl,
+        accountUrl: securiteInfoAccountUrl
+    };
+}
+
+function normalizeSaneSecurityProfile(value: any) {
+    return String(value || "").toLowerCase() === "complete" ? "complete" : "malware";
+}
+
+function getSaneSecurityDatabaseNames(profile: any) {
+    return normalizeSaneSecurityProfile(profile) === "complete"
+        ? saneSecurityCompleteDatabases
+        : saneSecurityMalwareDatabases;
+}
+
+async function removeSaneSecurityDatabaseFiles(databaseDir: string, keep: string[] = []) {
+    const keepSet = new Set(keep.map(name => name.toLowerCase()));
+    const removed: string[] = [];
+    for (const fileName of saneSecurityAllDatabases) {
+        if (keepSet.has(fileName.toLowerCase())) continue;
+        try {
+            await fs.unlink(path.join(databaseDir, fileName));
+            removed.push(fileName);
+        } catch (e: any) {
+            if (e?.code !== "ENOENT") console.warn(`Failed to remove SaneSecurity database ${fileName}:`, e?.message || e);
+        }
+    }
+    return removed;
+}
+
+async function getSaneSecurityStatus(settings: any) {
+    const profile = normalizeSaneSecurityProfile(settings.saneSecurityProfile);
+    const expectedFiles = getSaneSecurityDatabaseNames(profile);
+    const downloadedFiles: Array<{ name: string, size: number, updatedAt: string }> = [];
+
+    for (const name of saneSecurityAllDatabases) {
+        try {
+            const stat = await fs.stat(path.join(settings.databaseDir, name));
+            downloadedFiles.push({
+                name,
+                size: stat.size,
+                updatedAt: stat.mtime.toISOString()
+            });
+        } catch {
+            // Missing files are reported below.
+        }
+    }
+
+    const downloadedNames = new Set(downloadedFiles.map(file => file.name.toLowerCase()));
+    const missingFiles = expectedFiles.filter(name => !downloadedNames.has(name.toLowerCase()));
+    const newestFile = [...downloadedFiles].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const toolsInstalled = await pathExists(saneSecurityRsyncPath) &&
+        await pathExists(saneSecurityGpgPath) &&
+        await pathExists(saneSecurityCygpathPath);
+
+    return {
+        connected: settings.saneSecurityEnabled === true,
+        enabled: settings.saneSecurityEnabled === true,
+        profile,
+        expectedCount: expectedFiles.length,
+        installedCount: expectedFiles.length - missingFiles.length,
+        downloadedFiles,
+        missingFiles,
+        toolsInstalled,
+        helperSizeEstimateMb: 185,
+        lastUpdated: settings.lastSaneSecurityUpdate || newestFile?.updatedAt || null,
+        lastResult: settings.lastSaneSecurityUpdateResult || "",
+        websiteUrl: saneSecurityWebsiteUrl,
+        usageUrl: saneSecurityUsageUrl,
+        donateUrl: saneSecurityDonateUrl
+    };
+}
+
+type ProcessRunOptions = {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    onLine?: (line: string) => void;
+};
+
+async function runHiddenProcess(executable: string, args: string[], options: ProcessRunOptions = {}) {
+    return await new Promise<{ code: number, stdout: string, stderr: string }>((resolve, reject) => {
+        let settled = false;
+        let stdout = "";
+        let stderr = "";
+        let stdoutRemainder = "";
+        let stderrRemainder = "";
+        const child = spawn(executable, args, {
+            cwd: options.cwd,
+            env: options.env,
+            windowsHide: true
+        });
+        const emitLines = (text: string, stream: "stdout" | "stderr") => {
+            const combined = (stream === "stdout" ? stdoutRemainder : stderrRemainder) + text;
+            const lines = combined.split(/\r\n|\n|\r/g);
+            const remainder = lines.pop() || "";
+            if (stream === "stdout") stdoutRemainder = remainder;
+            else stderrRemainder = remainder;
+            for (const line of lines.map(item => item.trim()).filter(Boolean)) {
+                options.onLine?.(line);
+            }
+        };
+        child.stdout?.on("data", data => {
+            const text = data.toString();
+            stdout += text;
+            emitLines(text, "stdout");
+        });
+        child.stderr?.on("data", data => {
+            const text = data.toString();
+            stderr += text;
+            emitLines(text, "stderr");
+        });
+        const timeout = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill();
+            reject(new Error(`${path.basename(executable)} timed out.`));
+        }, options.timeoutMs || 300000);
+        timeout.unref?.();
+        child.on("error", error => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            reject(error);
+        });
+        child.on("close", code => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (stdoutRemainder.trim()) options.onLine?.(stdoutRemainder.trim());
+            if (stderrRemainder.trim()) options.onLine?.(stderrRemainder.trim());
+            resolve({ code: code ?? -1, stdout, stderr });
+        });
+    });
+}
+
+async function downloadFile(url: string, destination: string, onProgress?: (message: string) => void) {
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    const temporaryPath = `${destination}.download`;
+    await fs.unlink(temporaryPath).catch(() => {});
+    const response = await axios({
+        url,
+        method: "GET",
+        responseType: "stream",
+        maxRedirects: 5,
+        timeout: 120000
+    });
+    const totalBytes = Number(response.headers["content-length"] || 0);
+    let downloadedBytes = 0;
+    let lastReportedPercent = -10;
+    const writer = createWriteStream(temporaryPath);
+    response.data.on("data", (chunk: Buffer) => {
+        downloadedBytes += chunk.length;
+        if (totalBytes > 0) {
+            const percent = Math.floor((downloadedBytes / totalBytes) * 100);
+            if (percent >= lastReportedPercent + 10) {
+                lastReportedPercent = percent;
+                onProgress?.(`Download progress: ${Math.min(100, percent)}%`);
+            }
+        }
+    });
+    response.data.pipe(writer);
+    await new Promise<void>((resolve, reject) => {
+        writer.on("finish", resolve);
+        writer.on("error", reject);
+        response.data.on("error", reject);
+    });
+    await fs.unlink(destination).catch(() => {});
+    await fs.rename(temporaryPath, destination);
+}
+
+async function verifyAuthenticodeSignature(filePath: string) {
+    const quotedPath = filePath.replace(/'/g, "''");
+    const result = await runPowerShellJson(`
+$signature = Get-AuthenticodeSignature -LiteralPath '${quotedPath}'
+'CLAMSHIELD_JSON_START'
+[ordered]@{
+  Status = [string]$signature.Status
+  Subject = if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { '' }
+  Thumbprint = if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Thumbprint } else { '' }
+} | ConvertTo-Json -Compress
+'CLAMSHIELD_JSON_END'
+`);
+    if (result?.Status !== "Valid") {
+        throw new Error(`The downloaded helper has an invalid Authenticode signature (${result?.Status || "Unknown"}).`);
+    }
+    return result;
+}
+
+async function ensureSaneSecurityTools(onLog: (line: string) => void) {
+    if (await pathExists(saneSecurityRsyncPath) &&
+        await pathExists(saneSecurityGpgPath) &&
+        await pathExists(saneSecurityCygpathPath)) {
+        onLog("SaneSecurity helper tools are already installed.");
+        return;
+    }
+    if (process.platform !== "win32") {
+        throw new Error("Automatic SaneSecurity helper installation is currently supported only on Windows.");
+    }
+
+    onLog("First-time setup: downloading the official signed Cygwin installer.");
+    await downloadFile(saneSecurityCygwinSetupUrl, saneSecuritySetupPath, onLog);
+    const signature = await verifyAuthenticodeSignature(saneSecuritySetupPath);
+    onLog(`Cygwin installer signature verified: ${signature.Subject || signature.Thumbprint || "valid signer"}.`);
+    await fs.mkdir(saneSecurityToolsDir, { recursive: true });
+    await fs.mkdir(saneSecurityToolsCacheDir, { recursive: true });
+
+    let lastError = "";
+    for (const mirrorUrl of saneSecurityCygwinMirrorUrls) {
+        onLog(`Installing rsync and GnuPG from ${mirrorUrl}`);
+        const result = await runHiddenProcess(saneSecuritySetupPath, [
+            "-q",
+            "-W",
+            "-O",
+            "-B",
+            "-n",
+            "-d",
+            "-N",
+            "-R", saneSecurityToolsDir,
+            "-l", saneSecurityToolsCacheDir,
+            "-s", mirrorUrl,
+            "-P", "rsync,gnupg2"
+        ], {
+            timeoutMs: 15 * 60 * 1000,
+            onLine: line => {
+                if (/error|warning|install|download|package/i.test(line)) onLog(line);
+            }
+        });
+        if (result.code === 0 &&
+            await pathExists(saneSecurityRsyncPath) &&
+            await pathExists(saneSecurityGpgPath) &&
+            await pathExists(saneSecurityCygpathPath)) {
+            onLog("SaneSecurity helper tools installed successfully.");
+            return;
+        }
+        lastError = (result.stderr || result.stdout || `Cygwin setup exited with code ${result.code}`).trim();
+        onLog(`Helper installation failed from this mirror; trying another mirror.`);
+    }
+    throw new Error(lastError || "Could not install the SaneSecurity helper tools.");
+}
+
+async function toCygwinPath(windowsPath: string) {
+    const result = await runHiddenProcess(saneSecurityCygpathPath, ["-u", windowsPath], { timeoutMs: 30000 });
+    if (result.code !== 0 || !result.stdout.trim()) {
+        throw new Error(`Could not convert a Windows path for rsync: ${windowsPath}`);
+    }
+    return result.stdout.trim();
+}
+
+async function ensureSaneSecuritySigningKey(onLog: (line: string) => void) {
+    await fs.mkdir(saneSecurityGpgHomeDir, { recursive: true });
+    const keyPath = path.join(saneSecurityWorkingDir, "publickey.gpg");
+    onLog("Downloading the official SaneSecurity signing key.");
+    await downloadFile(saneSecurityPublicKeyUrl, keyPath);
+    const [gpgHome, keyFile] = await Promise.all([
+        toCygwinPath(saneSecurityGpgHomeDir),
+        toCygwinPath(keyPath)
+    ]);
+    const imported = await runHiddenProcess(saneSecurityGpgPath, [
+        "--batch",
+        "--no-autostart",
+        "--homedir", gpgHome,
+        "--import", keyFile
+    ], { timeoutMs: 60000 });
+    if (imported.code !== 0) {
+        throw new Error((imported.stderr || imported.stdout || "Could not import the SaneSecurity signing key.").trim());
+    }
+    const fingerprints = await runHiddenProcess(saneSecurityGpgPath, [
+        "--batch",
+        "--no-autostart",
+        "--homedir", gpgHome,
+        "--with-colons",
+        "--fingerprint"
+    ], { timeoutMs: 60000 });
+    const normalizedOutput = `${fingerprints.stdout}\n${fingerprints.stderr}`.replace(/\s/g, "").toUpperCase();
+    if (!normalizedOutput.includes(saneSecuritySigningKeyFingerprint)) {
+        throw new Error("The downloaded SaneSecurity signing key fingerprint did not match the expected official key.");
+    }
+    onLog(`SaneSecurity signing key verified (${saneSecuritySigningKeyFingerprint.slice(-16)}).`);
+    return gpgHome;
+}
+
+async function replaceDatabaseFile(sourcePath: string, destinationPath: string) {
+    const temporaryPath = `${destinationPath}.clamshield-new`;
+    const backupPath = `${destinationPath}.clamshield-backup`;
+    await fs.copyFile(sourcePath, temporaryPath);
+    await fs.unlink(backupPath).catch(() => {});
+    let hadExistingFile = false;
+    try {
+        await fs.rename(destinationPath, backupPath);
+        hadExistingFile = true;
+    } catch (e: any) {
+        if (e?.code !== "ENOENT") {
+            await fs.unlink(temporaryPath).catch(() => {});
+            throw e;
+        }
+    }
+    try {
+        await fs.rename(temporaryPath, destinationPath);
+        await fs.unlink(backupPath).catch(() => {});
+    } catch (e) {
+        await fs.unlink(temporaryPath).catch(() => {});
+        if (hadExistingFile) {
+            await fs.rename(backupPath, destinationPath).catch(() => {});
+        }
+        throw e;
+    }
+}
+
+async function downloadAndInstallSaneSecurityDatabases(settings: any, onLog: (line: string) => void) {
+    await ensureSaneSecurityTools(onLog);
+    const gpgHome = await ensureSaneSecuritySigningKey(onLog);
+    const databases = getSaneSecurityDatabaseNames(settings.saneSecurityProfile);
+    const stagingDir = path.join(saneSecurityWorkingDir, "staging");
+    await fs.mkdir(stagingDir, { recursive: true });
+    const includePath = path.join(saneSecurityWorkingDir, "include.txt");
+    const includeLines = databases.flatMap(name => [name, `${name}.sig`]);
+    await fs.writeFile(includePath, `${includeLines.join("\n")}\n`, "ascii");
+    const [includeFile, stagingDirectory] = await Promise.all([
+        toCygwinPath(includePath),
+        toCygwinPath(stagingDir)
+    ]);
+
+    const mirrorAddresses = await resolve4(saneSecurityMirrorHost).catch(() => []);
+    const mirrors = Array.from(new Set([
+        ...mirrorAddresses.map(address => `rsync://${address}/sanesecurity`),
+        `rsync://${saneSecurityMirrorHost}/sanesecurity`
+    ]));
+    let downloaded = false;
+    let lastRsyncError = "";
+    for (const mirror of mirrors) {
+        onLog(`Downloading ${databases.length} SaneSecurity databases from ${mirror}.`);
+        const result = await runHiddenProcess(saneSecurityRsyncPath, [
+            "--no-motd",
+            `--files-from=${includeFile}`,
+            "-tuz",
+            "--timeout=120",
+            mirror,
+            stagingDirectory
+        ], {
+            timeoutMs: 5 * 60 * 1000,
+            onLine: line => {
+                if (/receiving|sent|total size|error|failed/i.test(line)) onLog(line);
+            }
+        });
+        if (result.code === 0 || result.code === 23) {
+            const allFilesPresent = (await Promise.all(databases.flatMap(name => [
+                pathExists(path.join(stagingDir, name)),
+                pathExists(path.join(stagingDir, `${name}.sig`))
+            ]))).every(Boolean);
+            if (allFilesPresent) {
+                downloaded = true;
+                break;
+            }
+        }
+        lastRsyncError = (result.stderr || result.stdout || `rsync exited with code ${result.code}`).trim();
+        onLog("This mirror failed; trying the next SaneSecurity mirror.");
+    }
+    if (!downloaded) {
+        throw new Error(lastRsyncError || "Could not download all SaneSecurity databases. Ensure TCP port 873 is available.");
+    }
+
+    const testFile = path.join(saneSecurityWorkingDir, "scan-test.txt");
+    await fs.writeFile(testFile, "ClamShield SaneSecurity database integrity test\n", "ascii");
+    for (const name of databases) {
+        onLog(`Verifying ${name}...`);
+        const databasePath = path.join(stagingDir, name);
+        const signaturePath = `${databasePath}.sig`;
+        const [databaseFile, signatureFile] = await Promise.all([
+            toCygwinPath(databasePath),
+            toCygwinPath(signaturePath)
+        ]);
+        const signatureResult = await runHiddenProcess(saneSecurityGpgPath, [
+            "--batch",
+            "--no-autostart",
+            "--homedir", gpgHome,
+            "--verify", signatureFile, databaseFile
+        ], { timeoutMs: 60000 });
+        if (signatureResult.code !== 0) {
+            throw new Error(`SaneSecurity GPG verification failed for ${name}.`);
+        }
+        const clamResult = await runHiddenProcess(settings.clamscanPath, [
+            "--quiet",
+            `--database=${databasePath}`,
+            testFile
+        ], { timeoutMs: 120000 });
+        if (clamResult.code !== 0) {
+            throw new Error(`ClamAV rejected the ${name} database during integrity testing.`);
+        }
+    }
+
+    await fs.mkdir(settings.databaseDir, { recursive: true });
+    for (const name of databases) {
+        await replaceDatabaseFile(path.join(stagingDir, name), path.join(settings.databaseDir, name));
+        onLog(`Installed ${name}.`);
+    }
+    await removeSaneSecurityDatabaseFiles(settings.databaseDir, databases);
+    return databases;
 }
 
 function defenderStatusScript() {
@@ -492,6 +1195,193 @@ async function autoDisableDefender() {
     }
 }
 
+function getDnsProtectionProfile(profileId: any) {
+    return dnsProtectionProfiles.find(profile => profile.id === String(profileId || "")) || null;
+}
+
+function normalizeDnsAddresses(value: any) {
+    return Array.isArray(value)
+        ? value.map(item => String(item || "").trim().toLowerCase()).filter(Boolean)
+        : [];
+}
+
+function containsDnsAddresses(actual: any, expected: string[]) {
+    const actualSet = new Set(normalizeDnsAddresses(actual));
+    const expectedList = normalizeDnsAddresses(expected);
+    return expectedList.length > 0 && expectedList.every(value => actualSet.has(value));
+}
+
+function adapterMatchesDnsProfile(adapter: any, profile: any) {
+    const checks: boolean[] = [];
+    if (adapter.hasIpv4Gateway === true) checks.push(containsDnsAddresses(adapter.ipv4, profile.ipv4));
+    if (adapter.hasIpv6Gateway === true) checks.push(containsDnsAddresses(adapter.ipv6, profile.ipv6));
+    if (checks.length === 0) {
+        return containsDnsAddresses(adapter.ipv4, profile.ipv4) || containsDnsAddresses(adapter.ipv6, profile.ipv6);
+    }
+    return checks.every(Boolean);
+}
+
+function adapterPartiallyMatchesDnsProfile(adapter: any, profile: any) {
+    return containsDnsAddresses(adapter.ipv4, profile.ipv4) || containsDnsAddresses(adapter.ipv6, profile.ipv6);
+}
+
+async function getWindowsDnsAdapters() {
+    if (process.platform !== "win32") {
+        return { supported: false, domainJoined: false, adapters: [], error: "DNS protection is currently supported only on Windows." };
+    }
+    return runPowerShellJson(`
+$ErrorActionPreference = 'Stop'
+$computer = Get-CimInstance Win32_ComputerSystem
+$configurations = @(Get-NetIPConfiguration | Where-Object {
+  $_.NetAdapter.Status -eq 'Up' -and ($_.IPv4DefaultGateway -or $_.IPv6DefaultGateway)
+})
+$adapters = @(
+  foreach ($configuration in $configurations) {
+    $index = [int]$configuration.InterfaceIndex
+    $ipv4 = @((Get-DnsClientServerAddress -InterfaceIndex $index -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ })
+    $ipv6 = @((Get-DnsClientServerAddress -InterfaceIndex $index -AddressFamily IPv6 -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ })
+    [ordered]@{
+      interfaceAlias = [string]$configuration.InterfaceAlias
+      interfaceIndex = $index
+      interfaceDescription = [string]$configuration.InterfaceDescription
+      hasIpv4Gateway = [bool]$configuration.IPv4DefaultGateway
+      hasIpv6Gateway = [bool]$configuration.IPv6DefaultGateway
+      ipv4 = $ipv4
+      ipv6 = $ipv6
+    }
+  }
+)
+'CLAMSHIELD_JSON_START'
+[ordered]@{
+  supported = $true
+  domainJoined = [bool]$computer.PartOfDomain
+  adapters = $adapters
+} | ConvertTo-Json -Depth 6 -Compress
+'CLAMSHIELD_JSON_END'
+`);
+}
+
+async function getDnsProtectionStatus(settings: any) {
+    const windowsState = await getWindowsDnsAdapters();
+    const activeProfile = getDnsProtectionProfile(settings.dnsProtectionProfile);
+    const adapters = Array.isArray(windowsState.adapters) ? windowsState.adapters : [];
+    const adapterStatuses = activeProfile
+        ? adapters.map((adapter: any) => ({
+            ...adapter,
+            dnsProtectionApplied: adapterMatchesDnsProfile(adapter, activeProfile),
+            dnsProtectionPartial: adapterPartiallyMatchesDnsProfile(adapter, activeProfile)
+        }))
+        : adapters;
+    const matchingAdapterCount = adapterStatuses.filter((adapter: any) => adapter.dnsProtectionApplied).length;
+    const partialAdapterCount = adapterStatuses.filter((adapter: any) => adapter.dnsProtectionPartial).length;
+    const fullyApplied = Boolean(
+        settings.dnsProtectionEnabled &&
+        activeProfile &&
+        adapterStatuses.length > 0 &&
+        matchingAdapterCount === adapterStatuses.length
+    );
+    const partiallyApplied = Boolean(
+        settings.dnsProtectionEnabled &&
+        activeProfile &&
+        adapterStatuses.length > 0 &&
+        !fullyApplied &&
+        partialAdapterCount > 0
+    );
+    const applied = fullyApplied || partiallyApplied;
+    return {
+        ...windowsState,
+        adapters: adapterStatuses,
+        enabled: settings.dnsProtectionEnabled === true,
+        applied,
+        fullyApplied,
+        partiallyApplied,
+        drifted: settings.dnsProtectionEnabled === true && !fullyApplied,
+        matchingAdapterCount,
+        partialAdapterCount,
+        activeProfileId: activeProfile?.id || "",
+        activeProfileName: activeProfile ? `${activeProfile.provider} ${activeProfile.name}` : "",
+        appliedAt: settings.dnsProtectionAppliedAt || "",
+        backupAvailable: await pathExists(dnsProtectionBackupPath),
+        profiles: dnsProtectionProfiles
+    };
+}
+
+function powershellStringArray(values: string[]) {
+    return `@(${values.map(value => `'${value.replace(/'/g, "''")}'`).join(", ")})`;
+}
+
+async function applyDnsProtectionProfile(settings: any, profileId: any) {
+    const profile = getDnsProtectionProfile(profileId);
+    if (!profile) throw new Error("Unknown DNS protection profile.");
+    const before = await getWindowsDnsAdapters();
+    const adapters = Array.isArray(before.adapters) ? before.adapters : [];
+    if (adapters.length === 0) throw new Error("No active Windows network adapter with an internet gateway was found.");
+
+    if (!settings.dnsProtectionEnabled || !await pathExists(dnsProtectionBackupPath)) {
+        await fs.writeFile(dnsProtectionBackupPath, JSON.stringify({
+            createdAt: new Date().toISOString(),
+            adapters
+        }, null, 2), "utf8");
+    }
+
+    const serverAddresses = powershellStringArray([...profile.ipv4, ...profile.ipv6]);
+    await runPowerShellJson(`
+$ErrorActionPreference = 'Stop'
+$serverAddresses = ${serverAddresses}
+$configurations = @(Get-NetIPConfiguration | Where-Object {
+  $_.NetAdapter.Status -eq 'Up' -and ($_.IPv4DefaultGateway -or $_.IPv6DefaultGateway)
+})
+if ($configurations.Count -eq 0) { throw 'No active Windows network adapter with an internet gateway was found.' }
+$changed = @()
+foreach ($configuration in $configurations) {
+  Set-DnsClientServerAddress -InterfaceIndex $configuration.InterfaceIndex -ServerAddresses $serverAddresses -ErrorAction Stop
+  $changed += [string]$configuration.InterfaceAlias
+}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+'CLAMSHIELD_JSON_START'
+[ordered]@{ success = $true; changedAdapters = $changed } | ConvertTo-Json -Depth 4 -Compress
+'CLAMSHIELD_JSON_END'
+`);
+    return profile;
+}
+
+async function restoreDnsProtectionBackup() {
+    if (!await pathExists(dnsProtectionBackupPath)) {
+        throw new Error("No saved DNS configuration is available to restore.");
+    }
+    const backup = JSON.parse(await fs.readFile(dnsProtectionBackupPath, "utf8"));
+    const adapters = Array.isArray(backup.adapters) ? backup.adapters : [];
+    if (adapters.length === 0) throw new Error("The saved DNS configuration contains no adapters.");
+
+    const restoreBlocks = adapters.map((adapter: any) => {
+        const alias = String(adapter.interfaceAlias || "").replace(/'/g, "''");
+        const addresses = [...normalizeDnsAddresses(adapter.ipv4), ...normalizeDnsAddresses(adapter.ipv6)];
+        const restoreCommand = addresses.length > 0
+            ? `Set-DnsClientServerAddress -InterfaceIndex $index -ServerAddresses ${powershellStringArray(addresses)} -ErrorAction Stop`
+            : "Set-DnsClientServerAddress -InterfaceIndex $index -ResetServerAddresses -ErrorAction Stop";
+        return `
+$networkAdapter = Get-NetAdapter -InterfaceIndex ${Math.max(0, Number(adapter.interfaceIndex) || 0)} -ErrorAction SilentlyContinue
+if (-not $networkAdapter) { $networkAdapter = Get-NetAdapter -Name '${alias}' -ErrorAction SilentlyContinue | Select-Object -First 1 }
+if ($networkAdapter) {
+  $index = [int]$networkAdapter.InterfaceIndex
+  ${restoreCommand}
+  $restored += [string]$networkAdapter.Name
+}`;
+    }).join("\n");
+
+    const result = await runPowerShellJson(`
+$ErrorActionPreference = 'Stop'
+$restored = @()
+${restoreBlocks}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+'CLAMSHIELD_JSON_START'
+[ordered]@{ success = $true; restoredAdapters = $restored } | ConvertTo-Json -Depth 4 -Compress
+'CLAMSHIELD_JSON_END'
+`);
+    await fs.unlink(dnsProtectionBackupPath).catch(() => {});
+    return result;
+}
+
 function readCookie(req: express.Request, name: string) {
     const cookieHeader = req.headers.cookie || "";
     const cookies = cookieHeader.split(";").map(part => part.trim());
@@ -511,6 +1401,44 @@ function normalizePositiveNumber(value: any, fallback: number, min: number, max:
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return fallback;
     return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeIntegerList(value: any, min: number, max: number, fallback: number[]) {
+    if (!Array.isArray(value)) return [...fallback];
+    const normalized = Array.from(new Set(
+        value
+            .map(item => Math.round(Number(item)))
+            .filter(item => Number.isFinite(item) && item >= min && item <= max)
+    )).sort((a, b) => a - b);
+    return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function normalizeScheduledScanSettings(value: any) {
+    const raw = value || {};
+    const time = typeof raw.scheduledScanTime === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(raw.scheduledScanTime)
+        ? raw.scheduledScanTime
+        : defaultSettings.scheduledScanTime;
+    const directories = Array.isArray(raw.scheduledScanDirectories)
+        ? Array.from(new Set(
+            raw.scheduledScanDirectories
+                .map((item: any) => String(item || "").trim())
+                .filter((item: string) => item && path.isAbsolute(item))
+        )).slice(0, 50)
+        : [...defaultSettings.scheduledScanDirectories];
+    return {
+        scheduledScanEnabled: raw.scheduledScanEnabled === true,
+        scheduledScanFrequency: raw.scheduledScanFrequency === "monthly" ? "monthly" : "weekly",
+        scheduledScanWeekdays: normalizeIntegerList(raw.scheduledScanWeekdays, 0, 6, defaultSettings.scheduledScanWeekdays),
+        scheduledScanMonthDays: normalizeIntegerList(raw.scheduledScanMonthDays, 1, 31, defaultSettings.scheduledScanMonthDays),
+        scheduledScanTime: time,
+        scheduledScanIdleOnly: raw.scheduledScanIdleOnly !== false,
+        scheduledScanIdleMinutes: Math.round(normalizePositiveNumber(raw.scheduledScanIdleMinutes, 15, 1, 240)),
+        scheduledScanFullDisk: raw.scheduledScanFullDisk === undefined
+            ? defaultSettings.scheduledScanFullDisk
+            : raw.scheduledScanFullDisk === true,
+        scheduledScanDirectories: directories,
+        scheduledScanMemory: raw.scheduledScanMemory === true
+    };
 }
 
 function formatDuration(totalSeconds: number) {
@@ -1171,8 +2099,8 @@ function titleCase(value: string) {
     return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase() : "";
 }
 
-async function hashFile(filePath: string) {
-    const hash = createHash("sha256");
+async function hashFile(filePath: string, algorithm = "sha256") {
+    const hash = createHash(algorithm);
     await new Promise<void>((resolve, reject) => {
         const stream = createReadStream(filePath);
         stream.on("data", chunk => hash.update(chunk));
@@ -1299,13 +2227,20 @@ function compareVersions(a: string, b: string) {
 }
 
 async function getCurrentAppVersion() {
-    let pkgVersion = process.env.npm_package_version || "1.0.14";
-    try {
-        const pkgPath = path.join(runtimeDir, process.env.NODE_ENV === "production" ? ".." : "", "package.json");
-        const pkgData = await fs.readFile(pkgPath, "utf8");
-        pkgVersion = JSON.parse(pkgData).version || pkgVersion;
-    } catch (e: any) {
-        console.debug("Unable to read package.json for app version; using fallback version:", e?.message || e);
+    let pkgVersion = process.env.npm_package_version || "1.0.92";
+    const candidatePaths = Array.from(new Set([
+        path.join(runtimeDir, "package.json"),
+        path.join(runtimeDir, "..", "package.json"),
+        path.join(process.cwd(), "package.json")
+    ]));
+    for (const pkgPath of candidatePaths) {
+        try {
+            const pkgData = await fs.readFile(pkgPath, "utf8");
+            pkgVersion = JSON.parse(pkgData).version || pkgVersion;
+            break;
+        } catch {
+            // Packaged and development layouts place package.json differently.
+        }
     }
     return normalizeVersion(pkgVersion);
 }
@@ -1904,6 +2839,69 @@ async function ensureFreshclamConfig(settings: any) {
     await fs.writeFile(settings.freshclamConf, confContent);
 }
 
+async function cleanupStaleFreshclamSecretFiles() {
+    try {
+        const entries = await fs.readdir(os.tmpdir(), { withFileTypes: true });
+        await Promise.all(entries
+            .filter(entry => entry.isFile() && entry.name.startsWith("clamshield-freshclam-"))
+            .map(async entry => {
+                const target = path.join(os.tmpdir(), entry.name);
+                try {
+                    const stat = await fs.stat(target);
+                    if (Date.now() - stat.mtimeMs > 6 * 60 * 60 * 1000) {
+                        await fs.unlink(target);
+                    }
+                } catch {
+                    // Ignore stale-file cleanup races.
+                }
+            }));
+    } catch {
+        // Best-effort cleanup for temporary configs that may contain a private URL.
+    }
+}
+
+async function prepareFreshclamConfig(settings: any) {
+    await ensureFreshclamConfig(settings);
+    if (settings.securiteInfoEnabled !== true) {
+        return {
+            configPath: settings.freshclamConf,
+            securiteInfoEnabled: false,
+            redact: (value: any) => String(value ?? ""),
+            cleanup: async () => {}
+        };
+    }
+
+    const token = await loadSecuriteInfoToken();
+    if (!token) {
+        throw new Error("SecuriteInfo is enabled but its encrypted account token is unavailable. Reconnect the account from Dashboard.");
+    }
+
+    await cleanupStaleFreshclamSecretFiles();
+    const suffix = `${Date.now()}-${randomBytes(6).toString("hex")}`;
+    const configPath = path.join(os.tmpdir(), `clamshield-freshclam-${suffix}.conf`);
+    const logPath = path.join(os.tmpdir(), `clamshield-freshclam-${suffix}.log`);
+    const databases = getSecuriteInfoDatabaseNames(settings.securiteInfoPlan);
+    const lines = [
+        `DatabaseDirectory ${settings.databaseDir}`,
+        `UpdateLogFile ${logPath}`,
+        "DatabaseMirror database.clamav.net",
+        ...databases.map(fileName => `DatabaseCustomURL ${securiteInfoBaseUrl}/${token}/${fileName}`)
+    ];
+    await fs.writeFile(configPath, `${lines.join("\n")}\n`, { mode: 0o600 });
+
+    return {
+        configPath,
+        securiteInfoEnabled: true,
+        redact: (value: any) => redactSecuriteInfoSecret(value, token),
+        cleanup: async () => {
+            await Promise.all([
+                fs.unlink(configPath).catch(() => {}),
+                fs.unlink(logPath).catch(() => {})
+            ]);
+        }
+    };
+}
+
 async function retryRemovePath(targetPath: string, attempts = 5) {
     for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
@@ -2128,6 +3126,16 @@ async function manageClamd(settings: any) {
     }
 }
 
+async function reloadClamdDatabases(settings: any) {
+    if (!settings.offloadToMemory || !clamdProcess) return;
+    console.log("Reloading clamd after database update.");
+    clamdProcess.kill();
+    clamdProcess = null;
+    clamdConfSignature = "";
+    await sleep(500);
+    await manageClamd(settings);
+}
+
 async function checkIsAdmin() {
     if (process.platform !== "win32") return false;
     try {
@@ -2241,6 +3249,7 @@ async function loadConfig() {
         const loadedSettings = {
             ...defaultSettings,
             ...parsed,
+            ...normalizeScheduledScanSettings(parsed),
             actionOnDetection,
             scanDetectionAction,
             eulaAccepted,
@@ -2270,7 +3279,11 @@ async function saveConfig(settings: any) {
     const configPath = path.join(programDataDir, "settings.json");
     currentLogsDir = settings.logsDir || defaultLogsDir;
     debugLoggingEnabled = settings.enableDebugLog === true;
-    await fs.writeFile(configPath, JSON.stringify(settings, null, 2));
+    const safeSettings = { ...settings };
+    delete safeSettings.securiteInfoToken;
+    delete safeSettings.securiteInfoUrl;
+    delete safeSettings.securiteInfoSetupText;
+    await fs.writeFile(configPath, JSON.stringify(safeSettings, null, 2));
 }
 
 async function cleanupOldLogs(settings: any) {
@@ -2344,6 +3357,123 @@ async function getExceptions() {
 async function saveExceptions(list: string[]) {
     const excPath = path.join(programDataDir, "exceptions.json");
     await fs.writeFile(excPath, JSON.stringify(list, null, 2));
+    const normalizedPaths = new Set(list.map(item => path.resolve(item).toLowerCase()));
+    const reports = await getExceptionReports();
+    let changed = false;
+    for (const key of Object.keys(reports)) {
+        if (!normalizedPaths.has(key)) {
+            delete reports[key];
+            changed = true;
+        }
+    }
+    if (changed) await saveExceptionReports(reports);
+}
+
+async function getExceptionReports() {
+    try {
+        const data = JSON.parse(await fs.readFile(exceptionReportsPath, "utf8"));
+        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    } catch {
+        return {};
+    }
+}
+
+async function saveExceptionReports(reports: Record<string, any>) {
+    await fs.writeFile(exceptionReportsPath, JSON.stringify(reports, null, 2));
+}
+
+function exceptionReportKey(filePath: string) {
+    return path.resolve(filePath).toLowerCase();
+}
+
+async function rememberExceptionDetection(result: any) {
+    if (!result?.originalPath) return null;
+    const sha256 = result.sha256 || (existsSync(result.originalPath)
+        ? await hashFile(result.originalPath).catch(() => "")
+        : "");
+    const report = {
+        originalPath: path.resolve(result.originalPath),
+        threatName: String(result.threatName || "Unknown Threat"),
+        engine: String(result.engine || (String(result.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV")),
+        source: String(result.source || "scan"),
+        yaraRuleset: result.yaraRuleset ? String(result.yaraRuleset) : "",
+        sha256,
+        detectedAt: Number(result.timestamp || Date.now()),
+        addedAt: Date.now()
+    };
+    const reports = await getExceptionReports();
+    reports[exceptionReportKey(report.originalPath)] = report;
+    await saveExceptionReports(reports);
+    return report;
+}
+
+function getFalsePositiveProvider(report: any) {
+    const threatName = String(report?.threatName || "");
+    const engine = String(report?.engine || "");
+    if (/^yara:/i.test(threatName) || engine.toLowerCase() === "yara") {
+        return {
+            id: "yara-forge",
+            name: "YARA Forge",
+            method: "github",
+            url: "https://github.com/YARAHQ/yara-forge/issues/new"
+        };
+    }
+    if (/^securiteinfo\.com\./i.test(threatName)) {
+        return {
+            id: "securiteinfo",
+            name: "SecuriteInfo",
+            method: "email",
+            email: "info@securiteinfo.com",
+            url: "https://www.securiteinfo.com/services-cybersecurite/contacter-securiteinfo.shtml"
+        };
+    }
+    if (/^sanesecurity\./i.test(threatName)) {
+        return {
+            id: "sanesecurity",
+            name: "SaneSecurity",
+            method: "email",
+            email: "false_positive@sanesecurity.org.uk",
+            url: "https://sanesecurity.com/support/false-positives/"
+        };
+    }
+    return {
+        id: "clamav",
+        name: "ClamAV / Cisco Talos",
+        method: "form",
+        url: "https://www.clamav.net/reports/fp"
+    };
+}
+
+function buildFalsePositiveReport(report: any) {
+    const provider = getFalsePositiveProvider(report);
+    const fileName = path.basename(String(report.originalPath || "unknown-file"));
+    const details = [
+        "ClamShield false-positive report",
+        "",
+        `Detection: ${report.threatName || "Unknown Threat"}`,
+        `Engine: ${report.engine || "ClamAV"}`,
+        `File name: ${fileName}`,
+        `SHA-256: ${report.sha256 || "Unavailable"}`,
+        `Detection source: ${report.source || "scan"}`,
+        report.yaraRuleset ? `YARA ruleset: ${report.yaraRuleset}` : "",
+        "",
+        "The file was added to ClamShield exceptions because the user believes this detection is a false positive.",
+        provider.method === "email" ? "Please attach the detected file or a password-protected archive if the provider requests a sample." : ""
+    ].filter(Boolean).join("\n");
+    const subject = `[False Positive] ${report.threatName || fileName}`;
+    let url = provider.url;
+    if (provider.method === "email") {
+        url = `mailto:${provider.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(details)}`;
+    } else if (provider.method === "github") {
+        url = `${provider.url}?title=${encodeURIComponent(subject)}&body=${encodeURIComponent(details)}`;
+    }
+    return {
+        provider,
+        subject,
+        details,
+        url,
+        requiresSample: provider.id !== "yara-forge"
+    };
 }
 
 function isExcluded(filePath: string, exceptions: string[]) {
@@ -2432,6 +3562,14 @@ async function restoreQuarantinedFileAndAddException(settings: any, fileName: st
         exceptions.push(originalPath);
         await saveExceptions(exceptions);
     }
+    await rememberExceptionDetection({
+        originalPath,
+        threatName: metadata?.threatName || "Unknown Threat",
+        engine: metadata?.engine || "ClamAV",
+        source: "quarantine-restore",
+        sha256: metadata?.sha256 || "",
+        timestamp: metadata?.timestamp || Date.now()
+    });
 
     delete qMap[safeName];
     await saveQuarantineMap(qMap);
@@ -2473,6 +3611,28 @@ async function saveScanResults(results: any[]) {
     if (scanResultsChangedHandler) {
         Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify scan results change:", e));
     }
+}
+
+function normalizeVirusTotalHashAlgorithm(value: any) {
+    const algorithm = String(value || "sha256").toLowerCase();
+    if (["md5", "sha1", "sha256"].includes(algorithm)) return algorithm;
+    throw new Error("Unsupported VirusTotal hash algorithm.");
+}
+
+async function ensureScanResultHash(results: any[], result: any, algorithm: string) {
+    const key = normalizeVirusTotalHashAlgorithm(algorithm);
+    let hash = String(result[key] || "");
+    const expectedLength = key === "md5" ? 32 : key === "sha1" ? 40 : 64;
+    const pattern = new RegExp(`^[a-f0-9]{${expectedLength}}$`, "i");
+    if (!pattern.test(hash)) {
+        if (!result.originalPath || !existsSync(result.originalPath)) {
+            throw new Error(`The original file is unavailable and no saved ${key.toUpperCase()} hash exists.`);
+        }
+        hash = await hashFile(result.originalPath, key);
+        result[key] = hash;
+        await saveScanResults(results);
+    }
+    return hash.toLowerCase();
 }
 
 async function getResultsReminderState() {
@@ -2836,6 +3996,16 @@ async function startServer() {
 
     const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
     const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, lastOutputAt?: number, progress?: ScanProgress }> = {};
+    let scheduledScanRuntime = {
+        state: "idle",
+        message: settings.scheduledScanEnabled ? "Waiting for the next scheduled scan." : "Scheduled scanning is disabled.",
+        activeJobId: "",
+        currentTarget: "",
+        queueIndex: 0,
+        totalTargets: 0,
+        idleSeconds: 0,
+        updatedAt: Date.now()
+    };
     let appUpdateExitScheduled = false;
 
     const scheduleAppExitForUpdate = () => {
@@ -2959,6 +4129,87 @@ async function startServer() {
             if (job.analysisLogs.length > 5000) job.analysisLogs.splice(0, job.analysisLogs.length - 5000);
         }
         broadcastJobEvent(jobId, lines);
+    };
+
+    const startSaneSecurityUpdate = async (source: "manual" | "automatic" = "manual") => {
+        if (!settings.saneSecurityEnabled) {
+            throw new Error("SaneSecurity signatures are not enabled. Install them from Dashboard first.");
+        }
+        if (saneSecurityUpdateInProgress) {
+            throw new Error("A SaneSecurity signature update is already running.");
+        }
+        if (!await pathExists(settings.clamscanPath)) {
+            throw new Error(`ClamScan was not found at ${settings.clamscanPath}. Install the ClamAV engine first.`);
+        }
+
+        const jobId = `sanesecurity-update-${Date.now()}`;
+        const startedAt = Date.now();
+        saneSecurityUpdateInProgress = true;
+        activeJobs[jobId] = { status: "running", logs: [] };
+        appendJobLogs(jobId, [
+            source === "automatic"
+                ? "Starting automatic SaneSecurity signature update..."
+                : "Starting SaneSecurity signature update..."
+        ]);
+
+        void Promise.resolve().then(async () => {
+            try {
+                const installedDatabases = await downloadAndInstallSaneSecurityDatabases(settings, line => {
+                    if (activeJobs[jobId]) appendJobLogs(jobId, [line]);
+                });
+                settings = {
+                    ...settings,
+                    lastSaneSecurityUpdate: new Date().toISOString(),
+                    lastSaneSecurityUpdateResult: "Updated"
+                };
+                await saveConfig(settings);
+                await reloadClamdDatabases(settings);
+                appendJobLogs(jobId, [
+                    `SaneSecurity update complete: ${installedDatabases.length} signed databases installed.`
+                ]);
+                if (activeJobs[jobId]) {
+                    activeJobs[jobId].status = "done";
+                    activeJobs[jobId].result = 0;
+                    broadcastJobEvent(jobId);
+                }
+                await addHistory({
+                    type: "update-sanesecurity",
+                    target: source === "automatic" ? "SaneSecurity (Auto)" : "SaneSecurity",
+                    result: 0,
+                    threatsFound: 0,
+                    scannedFiles: 0,
+                    duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                    actionTaken: `Updated ${installedDatabases.length} databases`
+                });
+            } catch (e: any) {
+                const message = e?.message || String(e);
+                settings = {
+                    ...settings,
+                    lastSaneSecurityUpdateResult: `Update failed: ${message}`.slice(0, 500)
+                };
+                await saveConfig(settings).catch(() => {});
+                if (activeJobs[jobId]) {
+                    appendJobLogs(jobId, [`Error: ${message}`]);
+                    activeJobs[jobId].status = "done";
+                    activeJobs[jobId].result = 1;
+                    broadcastJobEvent(jobId);
+                }
+                await addHistory({
+                    type: "update-sanesecurity",
+                    target: source === "automatic" ? "SaneSecurity (Auto)" : "SaneSecurity",
+                    result: 1,
+                    threatsFound: 0,
+                    scannedFiles: 0,
+                    duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                    actionTaken: "Failed"
+                }).catch(() => {});
+                console.error("SaneSecurity update failed:", message);
+            } finally {
+                saneSecurityUpdateInProgress = false;
+            }
+        });
+
+        return jobId;
     };
 
     app.post("/api/client-log", (req, res) => {
@@ -3308,7 +4559,7 @@ async function startServer() {
 
     app.get("/api/status", async (req, res) => {
         const history = await getHistory();
-        const lastScan = history.find((h: any) => h.type.startsWith("scan")) || null;
+        const lastScan = history.find((h: any) => h.type.startsWith("scan") || h.type.startsWith("scheduled-scan")) || null;
         const lastUpdate = history.find((h: any) => h.type === "update") || null;
         const lastThreat = history.find((h: any) => h.threatsFound > 0) || null;
 
@@ -3324,20 +4575,33 @@ async function startServer() {
         } catch { }
         hasYaraEngine = Boolean(settings.yaraPath && existsSync(settings.yaraPath));
         hasYaraRules = existsSync(getYaraRulesFile(settings));
+        const [securiteInfo, saneSecurity] = await Promise.all([
+            getSecuriteInfoStatus(settings),
+            getSaneSecurityStatus(settings)
+        ]);
 
         const pkgVersion = await getCurrentAppVersion();
+        const activeScanJobIds = Object.entries(activeJobs)
+            .filter(([, job]) => job.status === "running" && ["disk", "folder", "file", "memory"].includes(job.progress?.type || ""))
+            .map(([jobId]) => jobId);
         res.json({
             appVersion: pkgVersion,
             isSimulated,
             isInstalling,
             installProgress,
+            isSignatureUpdateRunning: freshclamUpdateInProgress,
+            isSaneSecurityUpdateRunning: saneSecurityUpdateInProgress,
             platform: process.platform,
             isAdmin: cachedIsAdmin,
             settings,
+            scheduledScanRuntime,
+            activeScanJobIds,
             hasEngine,
             hasDb,
             hasYaraEngine,
             hasYaraRules,
+            securiteInfo,
+            saneSecurity,
             stats: {
                 engineVersion: isSimulated ? "ClamAV (Simulated)" : "ClamAV (Installed)",
                 yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset),
@@ -3478,24 +4742,53 @@ async function startServer() {
                     }
                     
                     if (shouldUpdate) {
+                        if (freshclamUpdateInProgress) {
+                            console.log("Skipping automatic signature update because FreshClam is already running.");
+                            scheduleNextUpdate();
+                            return;
+                        }
                         console.log("Triggering auto-update...");
-                        const args = ["--config-file=" + settings.freshclamConf, "--datadir=" + settings.databaseDir];
+                        const preparedConfig = await prepareFreshclamConfig(settings);
+                        const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
+                        freshclamUpdateInProgress = true;
                         const child = spawn(settings.freshclamPath, args, { windowsHide: true });
                         
                         child.on("error", (err: any) => {
-                            console.error("Auto-update process error:", err.message);
+                            freshclamUpdateInProgress = false;
+                            console.error("Auto-update process error:", preparedConfig.redact(err.message));
+                            preparedConfig.cleanup().catch(() => {});
                         });
 
                         child.on("close", async (code) => {
+                            freshclamUpdateInProgress = false;
+                            await preparedConfig.cleanup();
+                            if (code === 0) await reloadClamdDatabases(settings);
+                            if (preparedConfig.securiteInfoEnabled) {
+                                settings = {
+                                    ...settings,
+                                    lastSecuriteInfoUpdate: code === 0
+                                        ? new Date().toISOString()
+                                        : settings.lastSecuriteInfoUpdate,
+                                    lastSecuriteInfoUpdateResult: code === 0 ? "Updated" : "Update failed"
+                                };
+                                await saveConfig(settings);
+                            }
                             await addHistory({
                                 type: "update",
-                                target: "Databases (Auto)",
+                                target: preparedConfig.securiteInfoEnabled ? "ClamAV + SecuriteInfo (Auto)" : "ClamAV (Auto)",
                                 result: code === 0 ? 0 : 1,
                                 threatsFound: 0,
                                 scannedFiles: 0,
                                 duration: 1, 
                                 actionTaken: code === 0 ? "Updated" : "Failed"
                             });
+                            if (code === 0 && settings.saneSecurityEnabled && !saneSecurityUpdateInProgress) {
+                                try {
+                                    await startSaneSecurityUpdate("automatic");
+                                } catch (e: any) {
+                                    console.error("Could not start automatic SaneSecurity update:", e?.message || e);
+                                }
+                            }
                             console.log(`Auto-update finished with code ${code}`);
                         });
                     }
@@ -3601,7 +4894,27 @@ async function startServer() {
     scheduleNextAppUpdateCheck();
 
     app.post("/api/settings", async (req, res) => {
-        settings = { ...settings, ...req.body };
+        const requestedSettings = { ...(req.body || {}) };
+        delete requestedSettings.securiteInfoToken;
+        delete requestedSettings.securiteInfoUrl;
+        delete requestedSettings.securiteInfoSetupText;
+        delete requestedSettings.dnsProtectionEnabled;
+        delete requestedSettings.dnsProtectionProfile;
+        delete requestedSettings.dnsProtectionAppliedAt;
+        if ("securiteInfoPlan" in requestedSettings) {
+            requestedSettings.securiteInfoPlan = normalizeSecuriteInfoPlan(requestedSettings.securiteInfoPlan);
+        }
+        if ("saneSecurityProfile" in requestedSettings) {
+            requestedSettings.saneSecurityProfile = normalizeSaneSecurityProfile(requestedSettings.saneSecurityProfile);
+        }
+        const hasScheduledScanSettings = Object.keys(requestedSettings).some(key => key.startsWith("scheduledScan"));
+        if (hasScheduledScanSettings) {
+            Object.assign(requestedSettings, normalizeScheduledScanSettings({
+                ...settings,
+                ...requestedSettings
+            }));
+        }
+        settings = { ...settings, ...requestedSettings };
         await saveConfig(settings);
         await ensureDirs(settings);
         await cleanupOldLogs(settings);
@@ -3618,6 +4931,156 @@ async function startServer() {
                 scheduleNextAppUpdateCheck();
             })
             .catch(e => console.error("Failed to apply settings side effects:", e));
+    });
+
+    app.get("/api/scheduled-scan", (req, res) => {
+        res.json({
+            settings: {
+                ...normalizeScheduledScanSettings(settings),
+                lastScheduledScanAt: settings.lastScheduledScanAt || "",
+                lastScheduledScanResult: settings.lastScheduledScanResult || ""
+            },
+            runtime: scheduledScanRuntime
+        });
+    });
+
+    app.post("/api/scheduled-scan/runtime", async (req, res) => {
+        const body = req.body || {};
+        const allowedStates = new Set(["idle", "disabled", "waiting-idle", "waiting-scan", "running", "stopped", "complete", "error"]);
+        scheduledScanRuntime = {
+            state: allowedStates.has(body.state) ? body.state : scheduledScanRuntime.state,
+            message: String(body.message || scheduledScanRuntime.message || "").slice(0, 500),
+            activeJobId: String(body.activeJobId || "").slice(0, 100),
+            currentTarget: String(body.currentTarget || "").slice(0, 1000),
+            queueIndex: Math.max(0, Math.round(Number(body.queueIndex || 0))),
+            totalTargets: Math.max(0, Math.round(Number(body.totalTargets || 0))),
+            idleSeconds: Math.max(0, Math.round(Number(body.idleSeconds || 0))),
+            updatedAt: Date.now()
+        };
+        if (typeof body.lastRunKey === "string" && body.lastRunKey) {
+            settings.lastScheduledScanRunKey = body.lastRunKey.slice(0, 200);
+        }
+        if (typeof body.lastRunAt === "string") {
+            settings.lastScheduledScanAt = body.lastRunAt.slice(0, 100);
+        }
+        if (typeof body.lastResult === "string") {
+            settings.lastScheduledScanResult = body.lastResult.slice(0, 500);
+        }
+        if (body.persist === true) {
+            await saveConfig(settings);
+        }
+        res.json({ success: true, runtime: scheduledScanRuntime });
+    });
+
+    app.post("/api/securiteinfo/configure", async (req, res) => {
+        try {
+            const token = extractSecuriteInfoToken(req.body?.setupText || req.body?.token || "");
+            const plan = normalizeSecuriteInfoPlan(req.body?.plan);
+            await saveSecuriteInfoToken(token);
+            settings = {
+                ...settings,
+                securiteInfoEnabled: true,
+                securiteInfoPlan: plan,
+                lastSecuriteInfoUpdateResult: "Connected; update required"
+            };
+            if (plan === "basic") {
+                await removeSecuriteInfoDatabaseFiles(settings.databaseDir, securiteInfoBasicDatabases);
+                await reloadClamdDatabases(settings);
+            }
+            await ensureFreshclamConfig(settings);
+            await saveConfig(settings);
+            res.json({
+                success: true,
+                message: plan === "paid"
+                    ? "SecuriteInfo paid databases are connected. Run an update to download all configured signatures."
+                    : "SecuriteInfo Basic is connected for securiteinfo.ign2 and securiteinfoold.hdb. Run an update to download them.",
+                securiteInfo: await getSecuriteInfoStatus(settings)
+            });
+        } catch (e: any) {
+            res.status(400).json({ error: redactSecuriteInfoSecret(e?.message || String(e)) });
+        }
+    });
+
+    app.post("/api/securiteinfo/disconnect", async (req, res) => {
+        try {
+            settings = {
+                ...settings,
+                securiteInfoEnabled: false,
+                lastSecuriteInfoUpdateResult: "Disconnected"
+            };
+            await fs.unlink(securiteInfoSecretPath).catch(() => {});
+            const removedFiles = req.body?.removeDatabases === false
+                ? []
+                : await removeSecuriteInfoDatabaseFiles(settings.databaseDir);
+            await ensureFreshclamConfig(settings);
+            await saveConfig(settings);
+            await reloadClamdDatabases(settings);
+            res.json({
+                success: true,
+                removedFiles,
+                securiteInfo: await getSecuriteInfoStatus(settings)
+            });
+        } catch (e: any) {
+            res.status(500).json({ error: redactSecuriteInfoSecret(e?.message || String(e)) });
+        }
+    });
+
+    app.post("/api/sanesecurity/configure", async (req, res) => {
+        try {
+            const profile = normalizeSaneSecurityProfile(req.body?.profile);
+            settings = {
+                ...settings,
+                saneSecurityEnabled: true,
+                saneSecurityProfile: profile,
+                lastSaneSecurityUpdateResult: "Configured; update required"
+            };
+            if (profile === "malware") {
+                await removeSaneSecurityDatabaseFiles(settings.databaseDir, saneSecurityMalwareDatabases);
+                await reloadClamdDatabases(settings);
+            }
+            await saveConfig(settings);
+            res.json({
+                success: true,
+                message: profile === "complete"
+                    ? "SaneSecurity Complete is configured. Run an update to install the malware and email-focused databases."
+                    : "SaneSecurity Malware Protection is configured. Run an update to install its malware-focused databases.",
+                saneSecurity: await getSaneSecurityStatus(settings)
+            });
+        } catch (e: any) {
+            res.status(400).json({ error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/sanesecurity/disconnect", async (req, res) => {
+        try {
+            settings = {
+                ...settings,
+                saneSecurityEnabled: false,
+                lastSaneSecurityUpdateResult: "Disconnected"
+            };
+            const removedFiles = req.body?.removeDatabases === false
+                ? []
+                : await removeSaneSecurityDatabaseFiles(settings.databaseDir);
+            await saveConfig(settings);
+            await reloadClamdDatabases(settings);
+            res.json({
+                success: true,
+                removedFiles,
+                saneSecurity: await getSaneSecurityStatus(settings)
+            });
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/update-sanesecurity", async (_req, res) => {
+        try {
+            const jobId = await startSaneSecurityUpdate("manual");
+            res.json({ jobId, status: "started" });
+        } catch (e: any) {
+            const message = e?.message || String(e);
+            res.status(/already running/i.test(message) ? 409 : 400).json({ error: message });
+        }
     });
 
     app.post("/api/shield-cache/clear", async (req, res) => {
@@ -3641,6 +5104,55 @@ async function startServer() {
             res.json(await getResolvedSystemPaths());
         } catch (e: any) {
             res.status(500).json({ error: e.message || "Failed to resolve system paths." });
+        }
+    });
+
+    app.get("/api/dns-protection/status", async (_req, res) => {
+        try {
+            res.json(await getDnsProtectionStatus(settings));
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/dns-protection/apply", async (req, res) => {
+        try {
+            const profile = await applyDnsProtectionProfile(settings, req.body?.profileId);
+            settings = {
+                ...settings,
+                dnsProtectionEnabled: true,
+                dnsProtectionProfile: profile.id,
+                dnsProtectionAppliedAt: new Date().toISOString()
+            };
+            await saveConfig(settings);
+            const status = await getDnsProtectionStatus(settings);
+            const warning = status.partiallyApplied
+                ? "DNS protection is active on at least one internet adapter. Some adapters still report different DNS settings, which can happen with VPNs, virtual adapters, IPv6 policy, or router-managed DNS."
+                : undefined;
+            res.status(status.applied ? 200 : 409).json({
+                success: status.applied,
+                warning,
+                error: status.applied ? undefined : "Windows accepted the DNS change, but Windows did not report this DNS profile on any active internet adapter. Refresh once; if it still appears, another network tool or policy may be overriding DNS.",
+                status
+            });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/dns-protection/restore", async (_req, res) => {
+        try {
+            await restoreDnsProtectionBackup();
+            settings = {
+                ...settings,
+                dnsProtectionEnabled: false,
+                dnsProtectionProfile: "",
+                dnsProtectionAppliedAt: ""
+            };
+            await saveConfig(settings);
+            res.json({ success: true, status: await getDnsProtectionStatus(settings) });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
         }
     });
 
@@ -3773,6 +5285,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.post("/api/scan", async (req, res) => {
         const { target, type, resumeJobId } = req.body;
+        const scanSource = req.body?.source === "scheduled" ? "scheduled" : "manual";
         const resumeSession = resumeJobId ? scanSessions.getSession(String(resumeJobId)) : null;
         if (resumeJobId && (!resumeSession || !canResumeScanType(resumeSession.type))) {
             return res.status(404).json({ error: "No resumable scan was found." });
@@ -3785,6 +5298,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         if (activeJobs[jobId]?.status === "running") {
             return res.json({ jobId, status: "started", resumed: isResume, progress: activeJobs[jobId].progress || null });
+        }
+        const conflictingScan = Object.entries(activeJobs).find(([activeJobId, job]) =>
+            activeJobId !== jobId &&
+            job.status === "running" &&
+            ["disk", "folder", "file", "memory"].includes(job.progress?.type || "")
+        );
+        if (conflictingScan) {
+            return res.status(409).json({ error: "Another on-demand or scheduled scan is already running." });
         }
 
         if (isSimulated) {
@@ -3803,7 +5324,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     threatsFound = 1;
                     const filePath = path.join(effectiveTarget || "C:\\TestPath", "eicar.com.txt");
                     await addScanResult({
-                        source: "manual",
+                        source: scanSource,
                         scanType,
                         target: scanTarget,
                         originalPath: filePath,
@@ -3826,7 +5347,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     actionTaken
                 });
                 await addHistory({
-                    type: `scan-${scanType}`,
+                    type: scanSource === "scheduled" ? `scheduled-scan-${scanType}` : `scan-${scanType}`,
                     target: scanTarget,
                     result: isThreat ? 1 : 0,
                     threatsFound,
@@ -3973,7 +5494,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     }
                 } else {
                     await addScanResult({
-                        source: "manual",
+                        source: scanSource,
                         scanType,
                         target: scanTarget,
                         originalPath,
@@ -4083,7 +5604,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     activeJobs,
                     appendJobLogs,
                     jobId,
-                    source: "manual",
+                    source: scanSource,
                     scanType,
                     target: scanTarget,
                     action: settings.scanDetectionAction || "results"
@@ -4099,7 +5620,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const duration = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
             appendJobLogs(jobId, [isThreat ? "Scan complete: detections found" : "Scan complete: no active threats found"]);
             await addHistory({
-                type: `scan-${scanType}`,
+                type: scanSource === "scheduled" ? `scheduled-scan-${scanType}` : `scan-${scanType}`,
                 target: scanTarget,
                 result: isThreat ? 1 : 0,
                 threatsFound,
@@ -4513,20 +6034,31 @@ if ($dialog.ShowDialog() -eq 'OK') {
     app.post("/api/scan/:jobId/cancel", (req, res) => {
         const job = activeJobs[req.params.jobId];
         if (job) {
-            const resumable = canResumeScanType(job.progress?.type || "");
+            const discardProgress = req.body?.discard === true;
+            const reason = String(req.body?.reason || "").trim().slice(0, 300);
+            const resumable = !discardProgress && canResumeScanType(job.progress?.type || "");
             if (job.process) {
                 job.process.kill();
             }
             job.status = "done";
+            if (discardProgress && canResumeScanType(job.progress?.type || "")) {
+                scanSessions.discard(req.params.jobId);
+            }
             saveJobProgress(req.params.jobId, {
                 status: resumable ? "paused" : "done",
-                phase: resumable ? "Paused" : "Cancelled",
-                currentFile: resumable ? "Paused" : "Cancelled",
+                phase: resumable ? "Paused" : (reason || "Cancelled"),
+                currentFile: resumable ? "Paused" : (reason || "Cancelled"),
                 completedAt: resumable ? undefined : Date.now(),
                 result: -1,
-                actionTaken: resumable ? "Paused" : "Cancelled"
+                actionTaken: resumable ? "Paused" : (reason || "Cancelled")
             });
-            appendJobLogs(req.params.jobId, [resumable ? "Scan paused. You can resume it later." : "Scan cancelled by user."]);
+            appendJobLogs(req.params.jobId, [
+                resumable
+                    ? "Scan paused. You can resume it later."
+                    : reason
+                        ? `Scan stopped: ${reason}`
+                        : "Scan cancelled by user."
+            ]);
             broadcastJobEvent(req.params.jobId);
             res.json({ status: resumable ? "paused" : "cancelled" });
         } else {
@@ -4536,6 +6068,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.post("/api/update", async (req, res) => {
         const jobId = Date.now().toString();
+        let preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>> | null = null;
+        if (freshclamUpdateInProgress) {
+            return res.status(409).json({ error: "A signature update is already running." });
+        }
         if (isSimulated) {
             setTimeout(async () => {
                 await addHistory({
@@ -4552,53 +6088,84 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
 
         try {
+            freshclamUpdateInProgress = true;
             activeJobs[jobId] = { status: "running", logs: [] };
             if (!await pathExists(settings.freshclamPath)) {
                 throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
             }
             appendJobLogs(jobId, ["Preparing FreshClam configuration..."]);
-            await ensureFreshclamConfig(settings);
+            preparedConfig = await prepareFreshclamConfig(settings);
             await saveConfig(settings);
 
-            const args = ["--config-file=" + settings.freshclamConf, "--datadir=" + settings.databaseDir];
-            appendJobLogs(jobId, ["Downloading ClamAV virus definitions..."]);
+            const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
+            appendJobLogs(jobId, [
+                preparedConfig.securiteInfoEnabled
+                    ? `Downloading official ClamAV and SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases...`
+                    : "Downloading official ClamAV virus definitions..."
+            ]);
             const child = spawn(settings.freshclamPath, args, { windowsHide: true });
             activeJobs[jobId].process = child;
             let processStartFailed = false;
             
             child.on("error", (err: any) => {
                 processStartFailed = true;
-                console.error("Failed to start freshclam process:", err.message);
+                freshclamUpdateInProgress = false;
+                const safeMessage = preparedConfig?.redact(err.message) || err.message;
+                console.error("Failed to start freshclam process:", safeMessage);
+                preparedConfig?.cleanup().catch(() => {});
                 if (activeJobs[jobId]) {
                     activeJobs[jobId].status = "done";
                     activeJobs[jobId].result = -1;
                     activeJobs[jobId].process = null;
-                    appendJobLogs(jobId, ["Process error: " + err.message]);
+                    appendJobLogs(jobId, ["Process error: " + safeMessage]);
                     broadcastJobEvent(jobId);
                 }
             });
 
             child.stdout.on("data", (data) => {
-                const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
+                const lines = data.toString()
+                    .split('\n')
+                    .map((line: string) => preparedConfig?.redact(line.trim()) || line.trim())
+                    .filter(Boolean);
                 if (lines.length) appendJobLogs(jobId, lines);
             });
             
             child.stderr.on("data", (data) => {
-                const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
+                const lines = data.toString()
+                    .split('\n')
+                    .map((line: string) => preparedConfig?.redact(line.trim()) || line.trim())
+                    .filter(Boolean);
                 if (lines.length) appendJobLogs(jobId, lines);
             });
             
             child.on("close", async (code) => {
+                freshclamUpdateInProgress = false;
+                await preparedConfig?.cleanup();
                 if (!activeJobs[jobId]) return;
                 if (processStartFailed) return;
                 if (code === 0) {
-                    appendJobLogs(jobId, ["Virus definitions updated successfully."]);
+                    appendJobLogs(jobId, [
+                        preparedConfig?.securiteInfoEnabled
+                            ? "Official ClamAV and SecuriteInfo databases updated successfully."
+                            : "Virus definitions updated successfully."
+                    ]);
                 } else {
                     appendJobLogs(jobId, [
                         `FreshClam failed with exit code ${code ?? "unknown"}.`,
                         "Check your internet connection, firewall, proxy, or ClamAV mirror access."
                     ]);
                 }
+                if (preparedConfig?.securiteInfoEnabled) {
+                    settings = {
+                        ...settings,
+                        lastSecuriteInfoUpdate: code === 0
+                            ? new Date().toISOString()
+                            : settings.lastSecuriteInfoUpdate,
+                        lastSecuriteInfoUpdateResult: code === 0 ? "Updated" : "Update failed"
+                    };
+                    await saveConfig(settings);
+                }
+                if (code === 0) await reloadClamdDatabases(settings);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = code ?? 0;
                 activeJobs[jobId].process = null;
@@ -4606,7 +6173,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 
                 await addHistory({
                     type: "update",
-                    target: "Databases",
+                    target: preparedConfig?.securiteInfoEnabled ? "ClamAV + SecuriteInfo" : "ClamAV",
                     result: code === 0 ? 0 : 1,
                     threatsFound: 0,
                     scannedFiles: 0,
@@ -4617,13 +6184,16 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             res.json({ jobId, status: "started" });
         } catch(e: any) {
+            freshclamUpdateInProgress = false;
+            await preparedConfig?.cleanup();
+            const safeMessage = preparedConfig?.redact(e.message) || redactSecuriteInfoSecret(e.message);
             if (activeJobs[jobId]) {
-                appendJobLogs(jobId, [`Error: ${e.message}`]);
+                appendJobLogs(jobId, [`Error: ${safeMessage}`]);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = -1;
                 broadcastJobEvent(jobId);
             }
-            res.status(500).json({ error: e.message });
+            res.status(500).json({ error: safeMessage });
         }
     });
 
@@ -4765,6 +6335,103 @@ if ($dialog.ShowDialog() -eq 'OK') {
         })));
     });
 
+    app.post("/api/results/virustotal-md5-all", async (_req, res) => {
+        try {
+            const results = await getScanResults();
+            const checkedItems: any[] = [];
+            const skippedItems: any[] = [];
+            let changed = false;
+            for (const result of results) {
+                try {
+                    const md5 = await ensureScanResultHash(results, result, "md5");
+                    checkedItems.push({
+                        id: result.id,
+                        threatName: result.threatName || "Unknown Threat",
+                        originalPath: result.originalPath || "",
+                        md5,
+                        url: `https://www.virustotal.com/gui/file/${md5}/detection`
+                    });
+                    changed = true;
+                } catch (e: any) {
+                    skippedItems.push({
+                        id: result.id,
+                        originalPath: result.originalPath || "",
+                        error: e?.message || String(e)
+                    });
+                }
+            }
+            if (changed) await saveScanResults(results);
+            res.json({
+                success: true,
+                items: checkedItems,
+                skippedItems,
+                skippedCount: skippedItems.length,
+                uploaded: false,
+                message: "VirusTotal will be queried by MD5 hash only. ClamShield does not upload files."
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.get("/api/results/:id/virustotal-hash", async (req, res) => {
+        try {
+            const results = await getScanResults();
+            const result = results.find((item: any) => item.id === req.params.id);
+            if (!result) throw new Error("Result not found.");
+            const algorithm = normalizeVirusTotalHashAlgorithm(req.query?.algorithm || "sha256");
+            const hash = await ensureScanResultHash(results, result, algorithm);
+            res.json({
+                success: true,
+                algorithm,
+                hash,
+                url: `https://www.virustotal.com/gui/file/${hash}/detection`,
+                uploaded: false,
+                message: `VirusTotal will be queried by ${algorithm.toUpperCase()} only. ClamShield does not upload the file.`
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.get("/api/results/:id/virustotal", async (req, res) => {
+        try {
+            const results = await getScanResults();
+            const result = results.find((item: any) => item.id === req.params.id);
+            if (!result) throw new Error("Result not found.");
+            const sha256 = await ensureScanResultHash(results, result, "sha256");
+            res.json({
+                success: true,
+                sha256,
+                url: `https://www.virustotal.com/gui/file/${sha256}/detection`,
+                uploaded: false,
+                message: "VirusTotal will be queried by SHA-256 only. ClamShield does not upload the file."
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.get("/api/results/:id/virustotal-upload", async (req, res) => {
+        try {
+            const results = await getScanResults();
+            const result = results.find((item: any) => item.id === req.params.id);
+            if (!result) throw new Error("Result not found.");
+            if (!result.originalPath || !existsSync(result.originalPath)) {
+                throw new Error("The original file is unavailable, so it cannot be uploaded for a second opinion.");
+            }
+            res.json({
+                success: true,
+                filePath: result.originalPath,
+                url: "https://www.virustotal.com/gui/home/upload",
+                uploaded: false,
+                message: "ClamShield opens VirusTotal's upload page only. The user must choose the file and upload it manually."
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
     app.post("/api/results/quarantine-all", async (req, res) => {
         const results = await getScanResults();
         const remaining: any[] = [];
@@ -4869,6 +6536,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 exceptions.push(result.originalPath);
                 await saveExceptions(exceptions);
             }
+            const exceptionReport = await rememberExceptionDetection(result);
             await saveScanResults(results.filter((item: any) => item.id !== req.params.id));
             await addHistory({
                 type: "results-exception",
@@ -4879,7 +6547,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 duration: 0,
                 actionTaken: "Added to exceptions from Results"
             });
-            res.json({ success: true });
+            res.json({
+                success: true,
+                falsePositive: exceptionReport ? buildFalsePositiveReport(exceptionReport) : null
+            });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e.message });
         }
@@ -4928,6 +6599,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 exceptions.push(threat.originalPath);
                 await saveExceptions(exceptions);
             }
+            await rememberExceptionDetection(threat);
         } else if (action === "results") {
             await addScanResult({
                 source: "shield",
@@ -4964,6 +6636,48 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json(await getExceptions());
         } catch (e: any) {
             res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get("/api/exceptions/reporting", async (_req, res) => {
+        try {
+            const [exceptions, reports] = await Promise.all([getExceptions(), getExceptionReports()]);
+            res.json(exceptions.map(exceptionPath => {
+                const report = reports[exceptionReportKey(exceptionPath)] || null;
+                return {
+                    path: exceptionPath,
+                    report: report ? {
+                        ...report,
+                        provider: getFalsePositiveProvider(report)
+                    } : null
+                };
+            }));
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/exceptions/report-false-positive", async (req, res) => {
+        try {
+            const exceptionPath = String(req.body?.path || "");
+            if (!exceptionPath) throw new Error("Missing exception path.");
+            const exceptions = await getExceptions();
+            if (!exceptions.some(item => path.resolve(item).toLowerCase() === path.resolve(exceptionPath).toLowerCase())) {
+                throw new Error("This path is not in exceptions.");
+            }
+            const reports = await getExceptionReports();
+            const report = reports[exceptionReportKey(exceptionPath)];
+            if (!report) {
+                throw new Error("No original detection information is available for this manually added exception.");
+            }
+            if (!report.sha256 && existsSync(report.originalPath)) {
+                report.sha256 = await hashFile(report.originalPath).catch(() => "");
+                reports[exceptionReportKey(exceptionPath)] = report;
+                await saveExceptionReports(reports);
+            }
+            res.json({ success: true, ...buildFalsePositiveReport(report) });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
         }
     });
 

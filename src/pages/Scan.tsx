@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { FolderSearch, HardDrive, FileSearch, Loader2, Cpu, Play, Trash2 } from "lucide-react";
 import { useScan } from "../context/ScanContext";
+import PageHeader from "../components/PageHeader";
 
 export default function Scan() {
   const { scanState, output, progressOutput, progress, resumableScan, startScan, resumeScan, discardResumableScan, cancelScan } = useScan();
@@ -63,13 +64,10 @@ export default function Scan() {
   };
 
   return (
-    <div className="p-8 max-w-5xl mx-auto space-y-8">
-      <header>
-        <h1 className="text-3xl font-bold text-white mb-2">Scan your computer</h1>
-        <p className="text-slate-400">Manually check files, folders, or your entire system</p>
-      </header>
+    <div className="px-8 max-w-5xl mx-auto space-y-8 pb-20">
+      <PageHeader title="On-Demand Scan" description="Manually check files, folders, or your entire system" />
       
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[
           { id: "disk", name: "Full Scan", desc: "Scan all local drives", icon: HardDrive },
           { id: "folder", name: "Folder Scan", desc: "Select specific directory", icon: FolderSearch },

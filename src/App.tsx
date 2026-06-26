@@ -4,7 +4,7 @@
  */
 
 import { BrowserRouter as Router, Routes, Route, NavLink } from "react-router-dom";
-import { Shield, Search, Activity, Archive, RefreshCw, History, Settings, Loader2, Download, AlertTriangle, ShieldCheck, FileWarning } from "lucide-react";
+import { Shield, Search, Activity, Archive, RefreshCw, History, Settings, Loader2, Download, AlertTriangle, ShieldCheck, FileWarning, CalendarClock, Globe2 } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Scan from "./pages/Scan";
 import ResultsPage from "./pages/Results";
@@ -14,6 +14,8 @@ import Updates from "./pages/Updates";
 import HistoryPage from "./pages/History";
 import SettingsPage from "./pages/Settings";
 import ExceptionsPage from "./pages/Exceptions";
+import ScheduledScanner from "./pages/ScheduledScanner";
+import DnsProtection from "./pages/DnsProtection";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { ScanProvider, useScan } from "./context/ScanContext";
@@ -352,11 +354,13 @@ function Sidebar({ status }: { status?: any }) {
   const { scanState } = useScan();
   const navItems = [
     { name: "Dashboard", path: "/", icon: Activity },
-    { name: "Scan", path: "/scan", icon: Search },
+    { name: "On-Demand Scan", path: "/scan", icon: Search },
+    { name: "Scheduled Scanner", path: "/scheduled-scanner", icon: CalendarClock },
     { name: "Results", path: "/results", icon: FileWarning },
     { name: "Shield", path: "/shield", icon: Shield },
     { name: "Exceptions", path: "/exceptions", icon: ShieldCheck },
     { name: "Quarantine", path: "/quarantine", icon: Archive },
+    { name: "DNS Protection", path: "/dns-protection", icon: Globe2 },
     { name: "Updates", path: "/updates", icon: RefreshCw },
     { name: "History", path: "/history", icon: History },
     { name: "Settings", path: "/settings", icon: Settings },
@@ -396,7 +400,7 @@ function Sidebar({ status }: { status?: any }) {
         <div className="flex justify-between items-center">
           <span>Powered by ClamAV®</span>
           <span className="bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[10px]">
-            v{status?.appVersion || "1.0.14"}
+            v{status?.appVersion || "—"}
           </span>
         </div>
         <span className="text-slate-600 block mt-1">Made by Byron Iniotakis</span>
@@ -459,10 +463,12 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/scan" element={<Scan />} />
+                <Route path="/scheduled-scanner" element={<ScheduledScanner />} />
                 <Route path="/results" element={<ResultsPage />} />
                 <Route path="/shield" element={<ShieldSettings />} />
                 <Route path="/exceptions" element={<ExceptionsPage />} />
                 <Route path="/quarantine" element={<Quarantine />} />
+                <Route path="/dns-protection" element={<DnsProtection />} />
                 <Route path="/updates" element={<Updates />} />
                 <Route path="/history" element={<HistoryPage />} />
                 <Route path="/settings" element={<SettingsPage />} />

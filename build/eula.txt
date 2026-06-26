@@ -13,7 +13,7 @@ ClamShield is a Windows graphical user interface and orchestration layer that he
 
 ClamShield uses ClamAV for signature-based malware scanning and YARA for rule-based pattern matching. ClamShield is not an independent malware detection engine, and it is not a complete or traditional endpoint security suite.
 
-ClamAV is an open-source malware detection toolkit and antivirus engine provided by Cisco. YARA is a third-party pattern-matching tool commonly used to identify and classify files using rules. ClamShield is an independent project and is not affiliated with, sponsored by, or endorsed by Cisco, ClamAV, VirusTotal, Google, YARA, YARA Forge, Microsoft, or their respective owners or contributors.
+ClamAV is an open-source malware detection toolkit and antivirus engine provided by Cisco. YARA is a third-party pattern-matching tool commonly used to identify and classify files using rules. Optional signature sources may include SecuriteInfo and SaneSecurity. ClamShield is an independent project and is not affiliated with, sponsored by, or endorsed by Cisco, ClamAV, VirusTotal, Google, YARA, YARA Forge, Microsoft, SecuriteInfo, SaneSecurity, Cygwin, or their respective owners or contributors.
 
 2. NO GUARANTEE OF COMPLETE PROTECTION
 
@@ -25,11 +25,13 @@ A clean scan result does not prove that a file, device, or system is safe. A det
 
 3. SYSTEM CHANGES AND MICROSOFT DEFENDER
 
-ClamShield requires administrative privileges for installation and for certain features. It may download and manage ClamAV, YARA, malware signatures, and YARA rules; run background processes; monitor configured folders; create startup or scheduled-task entries; quarantine files; and install application updates.
+ClamShield requires administrative privileges for installation and for certain features. It may download and manage ClamAV, YARA, malware signatures, YARA rules, and helper software used by optional signature sources; run background processes; monitor configured folders; change DNS resolver settings on active network adapters; create startup or scheduled-task entries; quarantine files; and install application updates.
 
 If the relevant option is enabled in ClamShield Settings, ClamShield may attempt to pause or manage Microsoft Defender real-time protection. Disabling, pausing, or reducing another security product may reduce overall system protection and may leave the system exposed if ClamShield, ClamAV, YARA, their databases, or their background processes are unavailable or fail.
 
 You are responsible for deciding whether to enable this option, verifying that effective security protection remains active, maintaining current backups, keeping software and detection data updated, and following safe computing practices.
+
+If DNS protection is enabled, access to domains may be blocked or categorized incorrectly by the selected independent DNS provider. DNS changes may conflict with VPNs, captive portals, organization networks, private domains, browser-specific Secure DNS settings, or device policy. ClamShield attempts to save and restore the previous resolver list, but you remain responsible for verifying network access and restoring network settings when required.
 
 4. QUARANTINE, DELETION, AND FALSE POSITIVES
 
@@ -37,7 +39,7 @@ Security tools can produce false positives. Quarantining, moving, restoring, or 
 
 5. THIRD-PARTY SOFTWARE AND LICENSES
 
-ClamShield and bundled or downloaded components may be governed by separate open-source or third-party licenses. ClamAV is licensed under the GNU General Public License version 2. YARA, YARA rules, and other components remain subject to their respective licenses and notices. Their names, marks, and copyrights remain the property of their respective owners.
+ClamShield and bundled or downloaded components may be governed by separate open-source or third-party licenses. ClamAV is licensed under the GNU General Public License version 2. YARA, YARA rules, optional signature databases, Cygwin packages, and other components remain subject to their respective licenses, terms, and notices. Their names, marks, and copyrights remain the property of their respective owners.
 
 6. WARRANTY DISCLAIMER
 

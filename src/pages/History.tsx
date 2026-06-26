@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { History, Search, ShieldAlert, Cpu, RefreshCw, CheckCircle2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import PageHeader from "../components/PageHeader";
 
 export default function HistoryPage() {
   const [history, setHistory] = useState<any[]>([]);
@@ -22,11 +23,8 @@ export default function HistoryPage() {
   };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <header>
-        <h1 className="text-3xl font-bold text-white mb-2">History</h1>
-        <p className="text-slate-400">Past scans, updates, and threat detections</p>
-      </header>
+    <div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
+      <PageHeader title="History" description="Past scans, updates, and threat detections" />
 
       <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
         {loading ? (

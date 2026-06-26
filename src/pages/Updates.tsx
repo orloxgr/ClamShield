@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
-import { RefreshCw, Database, Loader2, ShieldCheck, DownloadCloud } from "lucide-react";
+import { RefreshCw, Database, Loader2, ShieldCheck, DownloadCloud, KeyRound } from "lucide-react";
+import { Link } from "react-router-dom";
+import PageHeader from "../components/PageHeader";
 
 const MAX_TERMINAL_LINES = 800;
 
@@ -12,6 +14,9 @@ export default function Updates() {
   const [output, setOutput] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
+  const [saneUpdateState, setSaneUpdateState] = useState<"idle" | "running" | "done">("idle");
+  const [saneOutput, setSaneOutput] = useState<string[]>([]);
+  const [saneJobId, setSaneJobId] = useState<string | null>(null);
   const [yaraUpdateState, setYaraUpdateState] = useState<"idle" | "running" | "done">("idle");
   const [yaraOutput, setYaraOutput] = useState<string[]>([]);
   const [yaraJobId, setYaraJobId] = useState<string | null>(null);
@@ -21,6 +26,7 @@ export default function Updates() {
   const [appJobId, setAppJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<any>(null);
   const updateEventSourceRef = useRef<EventSource | null>(null);
+  const saneEventSourceRef = useRef<EventSource | null>(null);
   const yaraEventSourceRef = useRef<EventSource | null>(null);
   const appEventSourceRef = useRef<EventSource | null>(null);
 
@@ -43,6 +49,8 @@ export default function Updates() {
 
   useEffect(() => {
     refreshStatus();
+    const interval = window.setInterval(refreshStatus, 3000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const runUpdate = async () => {
@@ -88,6 +96,22 @@ export default function Updates() {
       setYaraOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
       setYaraUpdateState("done");
       setYaraJobId(null);
+    }
+  };
+
+  const runSaneUpdate = async () => {
+    closeJobStream(saneEventSourceRef);
+    setSaneUpdateState("running");
+    setSaneOutput(["Starting SaneSecurity signature update..."]);
+    try {
+      const res = await fetch("/api/update-sanesecurity", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to start the SaneSecurity update.");
+      setSaneJobId(data.jobId);
+    } catch (e: any) {
+      setSaneOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+      setSaneUpdateState("done");
+      setSaneJobId(null);
     }
   };
 
@@ -158,6 +182,7 @@ export default function Updates() {
           if (data.status === "done" || data.status === "missing") {
             setUpdateState("done");
             setJobId(null);
+            refreshStatus();
             closeJobStream(updateEventSourceRef);
           }
         } catch (e) {
@@ -172,6 +197,35 @@ export default function Updates() {
       closeJobStream(updateEventSourceRef);
     };
   }, [updateState, jobId, isSimulated]);
+
+  useEffect(() => {
+    if (saneUpdateState === "running" && saneJobId) {
+      const source = new EventSource(`/api/scan/${encodeURIComponent(saneJobId)}/events`);
+      saneEventSourceRef.current = source;
+      const handleJobEvent = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.logs && data.logs.length > 0) {
+            setSaneOutput(prev => appendOutput(prev, data.logs));
+          }
+          if (data.status === "done" || data.status === "missing") {
+            setSaneUpdateState("done");
+            setSaneJobId(null);
+            refreshStatus();
+            closeJobStream(saneEventSourceRef);
+          }
+        } catch (e) {
+          console.error("Failed to process SaneSecurity update event:", e);
+        }
+      };
+      source.addEventListener("job", handleJobEvent);
+      source.onerror = () => console.error("SaneSecurity event stream disconnected; waiting for reconnect.");
+    }
+
+    return () => {
+      closeJobStream(saneEventSourceRef);
+    };
+  }, [saneUpdateState, saneJobId]);
 
   useEffect(() => {
     if (yaraUpdateState === "running" && yaraJobId) {
@@ -230,12 +284,35 @@ export default function Updates() {
     };
   }, [appUpdateState, appJobId]);
 
+  const signatureUpdateActive = updateState === "running" || status?.isSignatureUpdateRunning;
+  const signatureUpdateFailed = updateState === "done" && output.some(line => /error|failed/i.test(line));
+  const signatureEvents = output.filter(line =>
+    /updated|up to date|up-to-date|download|database/i.test(line) &&
+    !/triggering|preparing/i.test(line)
+  ).length;
+  const signatureProgress = updateState === "done"
+    ? 100
+    : signatureUpdateActive
+      ? Math.min(92, Math.max(15, 25 + signatureEvents * 7))
+      : 0;
+  const signatureProgressLabel = output.length > 0
+    ? output[output.length - 1]
+    : "FreshClam is checking signature sources...";
+  const saneUpdateActive = saneUpdateState === "running" || status?.isSaneSecurityUpdateRunning;
+  const saneUpdateFailed = saneUpdateState === "done" && saneOutput.some(line => /error|failed/i.test(line));
+  const saneVerificationEvents = saneOutput.filter(line => /verified|verifying|installed|complete|progress/i.test(line)).length;
+  const saneProgress = saneUpdateState === "done"
+    ? 100
+    : saneUpdateActive
+      ? Math.min(94, Math.max(8, 10 + saneVerificationEvents * 4))
+      : 0;
+  const saneProgressLabel = saneOutput.length > 0
+    ? saneOutput[saneOutput.length - 1]
+    : "SaneSecurity is preparing its signed database update...";
+
   return (
-    <div className="p-8 max-w-4xl mx-auto space-y-8">
-      <header>
-        <h1 className="text-3xl font-bold text-white mb-2">Updates</h1>
-        <p className="text-slate-400">Update ClamAV signatures, YARA Forge rules, and ClamShield itself.</p>
-      </header>
+    <div className="px-8 max-w-4xl mx-auto space-y-8 pb-20">
+      <PageHeader title="Updates" description="Update ClamAV, SecuriteInfo, SaneSecurity, YARA Forge, and ClamShield." />
 
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -249,13 +326,147 @@ export default function Updates() {
         </div>
         <button
           onClick={runUpdate}
-          disabled={updateState === "running"}
+          disabled={updateState === "running" || status?.isSignatureUpdateRunning}
           className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <RefreshCw className={`w-5 h-5 ${updateState === "running" ? "animate-spin" : ""}`} />
-          {updateState === "running" ? "Updating..." : "Update ClamAV"}
+          <RefreshCw className={`w-5 h-5 ${updateState === "running" || status?.isSignatureUpdateRunning ? "animate-spin" : ""}`} />
+          {updateState === "running" || status?.isSignatureUpdateRunning ? "Updating..." : "Update ClamAV"}
         </button>
       </div>
+
+      <div className="bg-slate-900 border border-cyan-500/20 rounded-xl p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className="flex items-start gap-4 min-w-0">
+          <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full shrink-0">
+            <Database className="w-8 h-8" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-semibold text-white text-lg">SecuriteInfo Signatures</h3>
+              <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[11px] border border-slate-700">
+                Third-party source
+              </span>
+            </div>
+            <p className="text-slate-400 text-sm mt-1">
+              {status?.securiteInfo?.connected
+                ? `${status.securiteInfo.plan === "paid" ? "Paid" : "Basic"} · ${status.securiteInfo.installedCount || 0}/${status.securiteInfo.expectedCount || 0} databases · ${status.securiteInfo.lastUpdated ? new Date(status.securiteInfo.lastUpdated).toLocaleString() : "Update required"}`
+                : "Not installed"}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {status?.securiteInfo?.connected ? (
+            <button
+              onClick={runUpdate}
+              disabled={updateState === "running" || status?.isSignatureUpdateRunning}
+              className="flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw className={`w-5 h-5 ${updateState === "running" || status?.isSignatureUpdateRunning ? "animate-spin" : ""}`} />
+              {updateState === "running" || status?.isSignatureUpdateRunning ? "Updating..." : "Update SecuriteInfo"}
+            </button>
+          ) : (
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"
+            >
+              <KeyRound className="w-4 h-4" />
+              Configure on Dashboard
+            </Link>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-slate-900 border border-violet-500/20 rounded-xl p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className="flex items-start gap-4 min-w-0">
+          <div className="p-3 bg-violet-500/10 text-violet-400 rounded-full shrink-0">
+            <ShieldCheck className="w-8 h-8" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-semibold text-white text-lg">SaneSecurity Signatures</h3>
+              <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[11px] border border-slate-700">
+                Signed third-party source
+              </span>
+            </div>
+            <p className="text-slate-400 text-sm mt-1">
+              {status?.saneSecurity?.connected
+                ? `${status.saneSecurity.profile === "complete" ? "Complete" : "Malware Protection"} · ${status.saneSecurity.installedCount || 0}/${status.saneSecurity.expectedCount || 0} databases · ${status.saneSecurity.lastUpdated ? new Date(status.saneSecurity.lastUpdated).toLocaleString() : "Update required"}`
+                : "Not installed"}
+            </p>
+          </div>
+        </div>
+        {status?.saneSecurity?.connected ? (
+          <button
+            onClick={runSaneUpdate}
+            disabled={saneUpdateActive}
+            className="flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          >
+            <RefreshCw className={`w-5 h-5 ${saneUpdateActive ? "animate-spin" : ""}`} />
+            {saneUpdateActive ? "Updating..." : "Update SaneSecurity"}
+          </button>
+        ) : (
+          <Link
+            to="/"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors shrink-0"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            Configure on Dashboard
+          </Link>
+        )}
+      </div>
+
+      {(saneUpdateActive || saneUpdateState === "done") && (
+        <div className="bg-slate-900 border border-violet-500/20 rounded-xl px-6 py-5 space-y-3">
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <span className="text-slate-300 font-medium">
+              {saneUpdateActive
+                ? "Downloading and verifying SaneSecurity databases"
+                : saneUpdateFailed
+                  ? "SaneSecurity update failed"
+                  : "SaneSecurity update complete"}
+            </span>
+            <span className="text-slate-500 tabular-nums">{saneProgress}%</span>
+          </div>
+          <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ${
+                saneUpdateFailed
+                  ? "bg-gradient-to-r from-rose-600 to-orange-400"
+                  : "bg-gradient-to-r from-violet-500 to-fuchsia-400"
+              } ${saneUpdateActive ? "animate-pulse" : ""}`}
+              style={{ width: `${saneProgress}%` }}
+            />
+          </div>
+          <p className="text-xs text-slate-500 truncate">{saneProgressLabel}</p>
+        </div>
+      )}
+
+      {(signatureUpdateActive || updateState === "done") && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl px-6 py-5 space-y-3">
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <span className="text-slate-300 font-medium">
+              {signatureUpdateActive
+                ? "Updating signature databases"
+                : signatureUpdateFailed
+                  ? "Signature update failed"
+                  : "Signature update complete"}
+            </span>
+            <span className="text-slate-500 tabular-nums">{signatureProgress}%</span>
+          </div>
+          <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ${
+                signatureUpdateFailed
+                  ? "bg-gradient-to-r from-rose-600 to-orange-400"
+                  : "bg-gradient-to-r from-emerald-500 to-cyan-400"
+              } ${
+                signatureUpdateActive ? "animate-pulse" : ""
+              }`}
+              style={{ width: `${signatureProgress}%` }}
+            />
+          </div>
+          <p className="text-xs text-slate-500 truncate">{signatureProgressLabel}</p>
+        </div>
+      )}
 
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-8 flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -338,6 +549,20 @@ export default function Updates() {
           </div>
           <div className="flex-1 p-4 overflow-auto font-mono text-xs text-emerald-400/80 leading-relaxed space-y-1 flex flex-col justify-end">
             {output.map((line, i) => <div key={i}>{line}</div>)}
+          </div>
+        </div>
+      )}
+
+      {(saneUpdateState === "running" || saneUpdateState === "done") && (
+        <div className="bg-slate-950 border border-violet-500/20 rounded-xl overflow-hidden shadow-2xl flex flex-col h-64">
+          <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2">
+            <span className="font-mono text-sm text-slate-300 flex items-center gap-2">
+              {saneUpdateState === "running" ? <Loader2 className="w-4 h-4 animate-spin text-violet-400" /> : null}
+              SaneSecurity Output
+            </span>
+          </div>
+          <div className="flex-1 p-4 overflow-auto font-mono text-xs text-violet-300/80 leading-relaxed space-y-1 flex flex-col justify-end">
+            {saneOutput.map((line, i) => <div key={i}>{line}</div>)}
           </div>
         </div>
       )}
