@@ -2249,7 +2249,7 @@ function compareVersions(a: string, b: string) {
 }
 
 async function getCurrentAppVersion() {
-    let pkgVersion = process.env.npm_package_version || "1.0.92";
+    let pkgVersion = process.env.npm_package_version || "1.0.93";
     const candidatePaths = Array.from(new Set([
         path.join(runtimeDir, "package.json"),
         path.join(runtimeDir, "..", "package.json"),
