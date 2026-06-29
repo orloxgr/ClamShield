@@ -134,6 +134,7 @@ SecuriteInfo integration is disabled by default and requires an account-specific
 
 - Basic mode configures `securiteinfo.ign2` and `securiteinfoold.hdb`.
 - Paid mode configures supported paid databases, including the 0-hour databases.
+- The mailserver spam-domain database (`spam_marketing.ndb`) is not installed by ClamShield because it is mainly useful for mailserver filtering, not normal Windows folder or disk scans.
 - The PUA and vulnerability database (`securiteinfo-pua-app-and-vulnerabilities.ndb`) is optional and disabled by default because it can generate many false positives.
 - The private account token is encrypted with Electron `safeStorage` on Windows.
 - The token is not stored in `settings.json`, returned by the API, written to source control, or placed on the FreshClam command line.

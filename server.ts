@@ -42,12 +42,12 @@ const securiteInfoBasicDatabases = [
     "securiteinfo.ign2",
     "securiteinfoold.hdb"
 ];
+const securiteInfoSpamMarketingDatabase = "spam_marketing.ndb";
 const securiteInfoPuaDatabase = "securiteinfo-pua-app-and-vulnerabilities.ndb";
 const securiteInfoPaidDatabases = [
     ...securiteInfoBasicDatabases,
     "securiteinfo.hdb",
     "javascript.ndb",
-    "spam_marketing.ndb",
     "securiteinfohtml.hdb",
     "securiteinfoascii.hdb",
     "securiteinfoandroid.hdb",
@@ -60,6 +60,7 @@ const securiteInfoPaidDatabases = [
 ];
 const securiteInfoAllDatabases = [
     ...securiteInfoPaidDatabases,
+    securiteInfoSpamMarketingDatabase,
     securiteInfoPuaDatabase
 ];
 const saneSecurityWebsiteUrl = "https://sanesecurity.com/";

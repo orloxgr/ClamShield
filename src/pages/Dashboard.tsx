@@ -391,7 +391,7 @@ export default function Dashboard() {
                 </p>
                 <p className="text-xs text-slate-500">
                   Basic installs <code className="text-cyan-300">securiteinfo.ign2</code> and{" "}
-                  <code className="text-cyan-300">securiteinfoold.hdb</code>. Paid plans add the remaining supported databases, including 0-hour signatures. PUA signatures are off by default.
+                  <code className="text-cyan-300">securiteinfoold.hdb</code>. Paid plans add the remaining supported databases, including 0-hour signatures. PUA signatures are off by default; mailserver spam-domain signatures are not used for Windows scans.
                 </p>
                 <p className="text-xs text-slate-500">
                   SecuriteInfo reports over 90% and up to 99% zero-day detection in its published measurements. This is a provider claim, not a guarantee by ClamShield.
@@ -430,7 +430,7 @@ export default function Dashboard() {
                     }`}
                   >
                     <span className="block text-white font-medium">Paid</span>
-                    <span className="block text-slate-500 text-xs mt-1">Downloads supported paid databases, including 0-hour signatures. PUA signatures are optional.</span>
+                    <span className="block text-slate-500 text-xs mt-1">Downloads supported paid databases, including 0-hour signatures. PUA signatures are optional; mailserver spam-domain signatures are disabled.</span>
                   </button>
                 </div>
               </div>
