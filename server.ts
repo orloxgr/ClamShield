@@ -42,6 +42,7 @@ const securiteInfoBasicDatabases = [
     "securiteinfo.ign2",
     "securiteinfoold.hdb"
 ];
+const securiteInfoPuaDatabase = "securiteinfo-pua-app-and-vulnerabilities.ndb";
 const securiteInfoPaidDatabases = [
     ...securiteInfoBasicDatabases,
     "securiteinfo.hdb",
@@ -55,8 +56,11 @@ const securiteInfoPaidDatabases = [
     "securiteinfo.mdb",
     "securiteinfo.yara",
     "securiteinfo.pdb",
-    "securiteinfo.wdb",
-    "securiteinfo-pua-app-and-vulnerabilities.ndb"
+    "securiteinfo.wdb"
+];
+const securiteInfoAllDatabases = [
+    ...securiteInfoPaidDatabases,
+    securiteInfoPuaDatabase
 ];
 const saneSecurityWebsiteUrl = "https://sanesecurity.com/";
 const saneSecurityUsageUrl = "https://sanesecurity.com/usage/signatures/";
@@ -280,6 +284,7 @@ const defaultSettings = {
     updateIntervalHours: 24,
     securiteInfoEnabled: false,
     securiteInfoPlan: "basic",
+    securiteInfoIncludePua: false,
     lastSecuriteInfoUpdate: "",
     lastSecuriteInfoUpdateResult: "",
     saneSecurityEnabled: false,
@@ -418,10 +423,19 @@ function normalizeSecuriteInfoPlan(value: any) {
     return String(value || "").toLowerCase() === "paid" ? "paid" : "basic";
 }
 
-function getSecuriteInfoDatabaseNames(plan: any) {
-    return normalizeSecuriteInfoPlan(plan) === "paid"
-        ? securiteInfoPaidDatabases
-        : securiteInfoBasicDatabases;
+function normalizeSecuriteInfoIncludePua(value: any) {
+    return value === true;
+}
+
+function getSecuriteInfoDatabaseNames(plan: any, includePua: any = false) {
+    if (normalizeSecuriteInfoPlan(plan) !== "paid") return securiteInfoBasicDatabases;
+    return normalizeSecuriteInfoIncludePua(includePua)
+        ? [...securiteInfoPaidDatabases, securiteInfoPuaDatabase]
+        : securiteInfoPaidDatabases;
+}
+
+function getConfiguredSecuriteInfoDatabaseNames(settings: any) {
+    return getSecuriteInfoDatabaseNames(settings?.securiteInfoPlan, settings?.securiteInfoIncludePua);
 }
 
 function extractSecuriteInfoToken(input: any) {
@@ -479,7 +493,7 @@ function redactSecuriteInfoSecret(value: any, token = "") {
 async function removeSecuriteInfoDatabaseFiles(databaseDir: string, keep: string[] = []) {
     const keepSet = new Set(keep.map(name => name.toLowerCase()));
     const removed: string[] = [];
-    for (const fileName of securiteInfoPaidDatabases) {
+    for (const fileName of securiteInfoAllDatabases) {
         if (keepSet.has(fileName.toLowerCase())) continue;
         try {
             await fs.unlink(path.join(databaseDir, fileName));
@@ -494,10 +508,11 @@ async function removeSecuriteInfoDatabaseFiles(databaseDir: string, keep: string
 async function getSecuriteInfoStatus(settings: any) {
     const connected = Boolean(await loadSecuriteInfoToken());
     const plan = normalizeSecuriteInfoPlan(settings.securiteInfoPlan);
-    const expectedFiles = getSecuriteInfoDatabaseNames(plan);
+    const includePua = normalizeSecuriteInfoIncludePua(settings.securiteInfoIncludePua);
+    const expectedFiles = getSecuriteInfoDatabaseNames(plan, includePua);
     const downloadedFiles: Array<{ name: string, size: number, updatedAt: string }> = [];
 
-    for (const name of securiteInfoPaidDatabases) {
+    for (const name of securiteInfoAllDatabases) {
         try {
             const stat = await fs.stat(path.join(settings.databaseDir, name));
             downloadedFiles.push({
@@ -512,12 +527,18 @@ async function getSecuriteInfoStatus(settings: any) {
 
     const downloadedNames = new Set(downloadedFiles.map(file => file.name.toLowerCase()));
     const missingFiles = expectedFiles.filter(name => !downloadedNames.has(name.toLowerCase()));
-    const newestFile = [...downloadedFiles].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const expectedNameSet = new Set(expectedFiles.map(name => name.toLowerCase()));
+    const newestFile = downloadedFiles
+        .filter(file => expectedNameSet.has(file.name.toLowerCase()))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 
     return {
         connected,
         enabled: connected && settings.securiteInfoEnabled === true,
         plan,
+        includePua,
+        puaDatabase: securiteInfoPuaDatabase,
+        puaInstalled: downloadedNames.has(securiteInfoPuaDatabase.toLowerCase()),
         expectedCount: expectedFiles.length,
         installedCount: expectedFiles.length - missingFiles.length,
         downloadedFiles,
@@ -2880,7 +2901,7 @@ async function prepareFreshclamConfig(settings: any) {
     const suffix = `${Date.now()}-${randomBytes(6).toString("hex")}`;
     const configPath = path.join(os.tmpdir(), `clamshield-freshclam-${suffix}.conf`);
     const logPath = path.join(os.tmpdir(), `clamshield-freshclam-${suffix}.log`);
-    const databases = getSecuriteInfoDatabaseNames(settings.securiteInfoPlan);
+    const databases = getConfiguredSecuriteInfoDatabaseNames(settings);
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
         `UpdateLogFile ${logPath}`,
@@ -3252,6 +3273,8 @@ async function loadConfig() {
             ...normalizeScheduledScanSettings(parsed),
             actionOnDetection,
             scanDetectionAction,
+            securiteInfoPlan: normalizeSecuriteInfoPlan(parsed.securiteInfoPlan),
+            securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsed.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsed.securiteInfoIncludePua),
             eulaAccepted,
             eulaVersion: eulaAccepted ? legalNoticeVersion : "",
             eulaAcceptedAt: settingsConsentAccepted
@@ -4904,9 +4927,15 @@ async function startServer() {
         if ("securiteInfoPlan" in requestedSettings) {
             requestedSettings.securiteInfoPlan = normalizeSecuriteInfoPlan(requestedSettings.securiteInfoPlan);
         }
+        if ("securiteInfoIncludePua" in requestedSettings) {
+            requestedSettings.securiteInfoIncludePua = normalizeSecuriteInfoIncludePua(requestedSettings.securiteInfoIncludePua);
+        }
         if ("saneSecurityProfile" in requestedSettings) {
             requestedSettings.saneSecurityProfile = normalizeSaneSecurityProfile(requestedSettings.saneSecurityProfile);
         }
+        const securiteInfoDatabaseSelectionChanged =
+            ("securiteInfoPlan" in requestedSettings && requestedSettings.securiteInfoPlan !== settings.securiteInfoPlan) ||
+            ("securiteInfoIncludePua" in requestedSettings && requestedSettings.securiteInfoIncludePua !== settings.securiteInfoIncludePua);
         const hasScheduledScanSettings = Object.keys(requestedSettings).some(key => key.startsWith("scheduledScan"));
         if (hasScheduledScanSettings) {
             Object.assign(requestedSettings, normalizeScheduledScanSettings({
@@ -4915,9 +4944,16 @@ async function startServer() {
             }));
         }
         settings = { ...settings, ...requestedSettings };
+        if (normalizeSecuriteInfoPlan(settings.securiteInfoPlan) !== "paid") {
+            settings.securiteInfoIncludePua = false;
+        }
         await saveConfig(settings);
         await ensureDirs(settings);
         await cleanupOldLogs(settings);
+        if (securiteInfoDatabaseSelectionChanged) {
+            await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
+            await reloadClamdDatabases(settings);
+        }
         res.json({ success: true, settings });
         Promise.resolve()
             .then(async () => {
@@ -4976,23 +5012,23 @@ async function startServer() {
         try {
             const token = extractSecuriteInfoToken(req.body?.setupText || req.body?.token || "");
             const plan = normalizeSecuriteInfoPlan(req.body?.plan);
+            const includePua = plan === "paid" && normalizeSecuriteInfoIncludePua(req.body?.includePua);
             await saveSecuriteInfoToken(token);
             settings = {
                 ...settings,
                 securiteInfoEnabled: true,
                 securiteInfoPlan: plan,
+                securiteInfoIncludePua: includePua,
                 lastSecuriteInfoUpdateResult: "Connected; update required"
             };
-            if (plan === "basic") {
-                await removeSecuriteInfoDatabaseFiles(settings.databaseDir, securiteInfoBasicDatabases);
-                await reloadClamdDatabases(settings);
-            }
+            await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
+            await reloadClamdDatabases(settings);
             await ensureFreshclamConfig(settings);
             await saveConfig(settings);
             res.json({
                 success: true,
                 message: plan === "paid"
-                    ? "SecuriteInfo paid databases are connected. Run an update to download all configured signatures."
+                    ? `SecuriteInfo paid databases are connected${includePua ? ", including optional PUA signatures" : " without optional PUA signatures"}. Run an update to download the configured signatures.`
                     : "SecuriteInfo Basic is connected for securiteinfo.ign2 and securiteinfoold.hdb. Run an update to download them.",
                 securiteInfo: await getSecuriteInfoStatus(settings)
             });

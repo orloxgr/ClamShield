@@ -8,6 +8,7 @@ export default function Dashboard() {
   const [securiteInfoDialogOpen, setSecuriteInfoDialogOpen] = useState(false);
   const [securiteInfoSetupUrl, setSecuriteInfoSetupUrl] = useState("");
   const [securiteInfoPlan, setSecuriteInfoPlan] = useState<"basic" | "paid">("basic");
+  const [securiteInfoIncludePua, setSecuriteInfoIncludePua] = useState(false);
   const [securiteInfoBusy, setSecuriteInfoBusy] = useState(false);
   const [securiteInfoMessage, setSecuriteInfoMessage] = useState("");
   const [saneSecurityDialogOpen, setSaneSecurityDialogOpen] = useState(false);
@@ -43,7 +44,8 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           setupText: securiteInfoSetupUrl,
-          plan: securiteInfoPlan
+          plan: securiteInfoPlan,
+          includePua: securiteInfoIncludePua
         })
       });
       const configureData = await configureRes.json();
@@ -69,10 +71,22 @@ export default function Dashboard() {
     setSecuriteInfoBusy(true);
     setSecuriteInfoMessage("");
     try {
+      const settingsRes = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          securiteInfoPlan,
+          securiteInfoIncludePua
+        })
+      });
+      const settingsData = await settingsRes.json();
+      if (!settingsRes.ok) throw new Error(settingsData.error || "Could not save SecuriteInfo settings.");
+
       const res = await fetch("/api/update", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not start the signature update.");
-      setSecuriteInfoMessage("Signature update started. Open Updates to view detailed FreshClam output.");
+      setSecuriteInfoMessage("SecuriteInfo settings saved. Signature update started. Open Updates to view detailed FreshClam output.");
+      fetchStatus();
     } catch (e: any) {
       setSecuriteInfoMessage(e.message || "Could not start the signature update.");
     } finally {
@@ -173,6 +187,12 @@ export default function Dashboard() {
   const saneSecurity = status.saneSecurity || {};
   const saneSecurityInstalled = saneSecurity.connected && Number(saneSecurity.installedCount || 0) > 0;
   const formatUpdateDate = (value: any) => value ? new Date(value).toLocaleString() : "Never";
+  const openSecuriteInfoDialog = () => {
+    setSecuriteInfoPlan(securiteInfo.plan === "paid" ? "paid" : "basic");
+    setSecuriteInfoIncludePua(securiteInfo.includePua === true);
+    setSecuriteInfoMessage("");
+    setSecuriteInfoDialogOpen(true);
+  };
 
   return (
     <div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
@@ -263,11 +283,7 @@ export default function Dashboard() {
                 <div className="flex items-center gap-3">
                   <span className="font-medium text-slate-200 text-right">{formatUpdateDate(securiteInfo.lastUpdated)}</span>
                   <button
-                    onClick={() => {
-                      setSecuriteInfoPlan(securiteInfo.plan === "paid" ? "paid" : "basic");
-                      setSecuriteInfoMessage("");
-                      setSecuriteInfoDialogOpen(true);
-                    }}
+                    onClick={openSecuriteInfoDialog}
                     className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium"
                   >
                     Manage
@@ -275,11 +291,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <button
-                  onClick={() => {
-                    setSecuriteInfoPlan(securiteInfo.plan === "paid" ? "paid" : "basic");
-                    setSecuriteInfoMessage("");
-                    setSecuriteInfoDialogOpen(true);
-                  }}
+                  onClick={openSecuriteInfoDialog}
                   className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-xs font-medium transition-colors"
                 >
                   {securiteInfo.connected ? "Finish setup" : "Install"}
@@ -379,14 +391,14 @@ export default function Dashboard() {
                 </p>
                 <p className="text-xs text-slate-500">
                   Basic installs <code className="text-cyan-300">securiteinfo.ign2</code> and{" "}
-                  <code className="text-cyan-300">securiteinfoold.hdb</code>. Paid plans add the remaining supplied databases, including 0-hour signatures.
+                  <code className="text-cyan-300">securiteinfoold.hdb</code>. Paid plans add the remaining supported databases, including 0-hour signatures. PUA signatures are off by default.
                 </p>
                 <p className="text-xs text-slate-500">
                   SecuriteInfo reports over 90% and up to 99% zero-day detection in its published measurements. This is a provider claim, not a guarantee by ClamShield.
                 </p>
                 {securiteInfo.connected && (
                   <p className="text-xs text-emerald-400">
-                    Connected as {securiteInfo.plan === "paid" ? "Paid" : "Basic"} · {securiteInfo.installedCount || 0}/{securiteInfo.expectedCount || 0} databases installed
+                    Connected as {securiteInfo.plan === "paid" ? "Paid" : "Basic"} - {securiteInfo.installedCount || 0}/{securiteInfo.expectedCount || 0} databases installed{securiteInfo.plan === "paid" ? ` - PUA ${securiteInfo.includePua ? "on" : "off"}` : ""}
                   </p>
                 )}
               </div>
@@ -394,7 +406,10 @@ export default function Dashboard() {
                 <label className="block text-sm font-medium text-slate-300 mb-2">Account plan</label>
                 <div className="grid sm:grid-cols-2 gap-3">
                   <button
-                    onClick={() => setSecuriteInfoPlan("basic")}
+                    onClick={() => {
+                      setSecuriteInfoPlan("basic");
+                      setSecuriteInfoIncludePua(false);
+                    }}
                     className={`text-left p-4 rounded-xl border transition-colors ${
                       securiteInfoPlan === "basic"
                         ? "border-cyan-500 bg-cyan-500/10"
@@ -415,10 +430,35 @@ export default function Dashboard() {
                     }`}
                   >
                     <span className="block text-white font-medium">Paid</span>
-                    <span className="block text-slate-500 text-xs mt-1">Downloads all supplied databases, including 0-hour signatures.</span>
+                    <span className="block text-slate-500 text-xs mt-1">Downloads supported paid databases, including 0-hour signatures. PUA signatures are optional.</span>
                   </button>
                 </div>
               </div>
+              <label className={`flex items-start justify-between gap-4 rounded-xl border p-4 ${
+                securiteInfoPlan === "paid"
+                  ? "border-amber-500/30 bg-amber-500/10 cursor-pointer"
+                  : "border-slate-800 bg-slate-950/40 opacity-60"
+              }`}>
+                <div className="space-y-1">
+                  <span className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                    <FileWarning className="w-4 h-4 text-amber-300" />
+                    Include PUA and vulnerability signatures
+                  </span>
+                  <span className="block text-xs text-amber-100/80">
+                    Caution: <code>{securiteInfo.puaDatabase || "securiteinfo-pua-app-and-vulnerabilities.ndb"}</code> detects potentially unwanted applications and vulnerable components. It may generate many false positives.
+                  </span>
+                  {securiteInfoPlan !== "paid" && (
+                    <span className="block text-xs text-slate-500">Available for paid SecuriteInfo plans.</span>
+                  )}
+                </div>
+                <input
+                  type="checkbox"
+                  checked={securiteInfoPlan === "paid" && securiteInfoIncludePua}
+                  disabled={securiteInfoPlan !== "paid"}
+                  onChange={event => setSecuriteInfoIncludePua(event.target.checked)}
+                  className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"
+                />
+              </label>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
                   Paste any one of your <code className="text-cyan-300">DatabaseCustomURL</code> lines
@@ -459,7 +499,7 @@ export default function Dashboard() {
                         className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
                       >
                         <RefreshCw className={`w-4 h-4 ${status.isSignatureUpdateRunning ? "animate-spin" : ""}`} />
-                        {status.isSignatureUpdateRunning ? "Updating..." : "Update now"}
+                        {status.isSignatureUpdateRunning ? "Updating..." : "Save & Update"}
                       </button>
                       <button
                         onClick={disconnectSecuriteInfo}

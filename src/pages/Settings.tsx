@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown } from "lucide-react";
+import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown, FileWarning } from "lucide-react";
 
 type ActionNotice = {
   kind: "success" | "warning" | "error" | "info";
@@ -614,6 +614,29 @@ export default function SettingsPage() {
                 checked={settings.autoUpdateEnabled} 
                 onChange={e => setSettings({...settings, autoUpdateEnabled: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            <label className={`flex items-start justify-between gap-4 cursor-pointer py-4 border-t border-slate-800 ${
+              settings.securiteInfoPlan === "paid" ? "" : "opacity-60"
+            }`}>
+              <div>
+                <span className="text-slate-200 font-medium flex items-center gap-2">
+                  <FileWarning className="w-4 h-4 text-amber-300" />
+                  SecuriteInfo PUA signatures
+                </span>
+                <span className="text-slate-500 text-xs block mt-1">
+                  Optional database <code>securiteinfo-pua-app-and-vulnerabilities.ndb</code>. Caution: detects potentially unwanted applications and vulnerable components, and may generate many false positives.
+                </span>
+                {settings.securiteInfoPlan !== "paid" && (
+                  <span className="text-slate-500 text-xs block mt-1">Available for paid SecuriteInfo plans.</span>
+                )}
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.securiteInfoPlan === "paid" && settings.securiteInfoIncludePua === true}
+                disabled={settings.securiteInfoPlan !== "paid"}
+                onChange={e => setSettings({...settings, securiteInfoIncludePua: e.target.checked})}
+                className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>
             {settings.autoUpdateEnabled && (

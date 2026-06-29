@@ -133,7 +133,8 @@ ClamShield update checks can be enabled weekly from Settings. Silent app install
 SecuriteInfo integration is disabled by default and requires an account-specific `DatabaseCustomURL` from the user's SecuriteInfo account.
 
 - Basic mode configures `securiteinfo.ign2` and `securiteinfoold.hdb`.
-- Paid mode configures all supported databases supplied in the account instructions, including the 0-hour databases.
+- Paid mode configures supported paid databases, including the 0-hour databases.
+- The PUA and vulnerability database (`securiteinfo-pua-app-and-vulnerabilities.ndb`) is optional and disabled by default because it can generate many false positives.
 - The private account token is encrypted with Electron `safeStorage` on Windows.
 - The token is not stored in `settings.json`, returned by the API, written to source control, or placed on the FreshClam command line.
 - ClamShield generates a temporary FreshClam configuration for the update and deletes it afterward.
