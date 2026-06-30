@@ -55,6 +55,10 @@ function getLogsDir() {
   return path.join(getProgramDataDir(), 'logs');
 }
 
+function getAppStateDbPath() {
+  return path.join(getProgramDataDir(), 'app_state.sqlite');
+}
+
 function logArgToString(arg) {
   if (arg instanceof Error) return arg.stack || arg.message;
   if (typeof arg === 'string') return arg;
@@ -145,16 +149,96 @@ function attachWindowLogging(win, label) {
   });
 }
 
-function readAppSettings() {
+function parseStoredSettingValue(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeSettingsForStorage(settings) {
+  const safeSettings = { ...(settings || {}) };
+  delete safeSettings.securiteInfoToken;
+  delete safeSettings.securiteInfoUrl;
+  delete safeSettings.securiteInfoSetupText;
+  return safeSettings;
+}
+
+function readSettingsFromSqlite() {
+  let db = null;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    db = new DatabaseSync(getAppStateDbPath());
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    const rows = db.prepare('SELECT key, value FROM settings').all();
+    if (!rows.length) return null;
+    return rows.reduce((settings, row) => {
+      settings[row.key] = parseStoredSettingValue(row.value);
+      return settings;
+    }, {});
+  } catch {
+    return null;
+  } finally {
+    try { db && db.close(); } catch {}
+  }
+}
+
+function writeSettingsToSqlite(settings) {
+  let db = null;
+  try {
+    fs.mkdirSync(getProgramDataDir(), { recursive: true });
+    const { DatabaseSync } = require('node:sqlite');
+    db = new DatabaseSync(getAppStateDbPath());
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    const safeSettings = sanitizeSettingsForStorage(settings);
+    const insert = db.prepare('INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare('DELETE FROM settings').run();
+      for (const [key, value] of Object.entries(safeSettings)) {
+        insert.run(key, JSON.stringify(value ?? null));
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } catch {
+    // Startup settings are best-effort; the server owns normal persistence.
+  } finally {
+    try { db && db.close(); } catch {}
+  }
+}
+
+function readLegacySettings() {
   try {
     const settingsPath = path.join(getProgramDataDir(), 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    debugLoggingEnabled = settings.enableDebugLog === true;
-    return settings;
+    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   } catch {
-    debugLoggingEnabled = false;
-    return {};
+    return null;
   }
+}
+
+function readAppSettings() {
+  const sqliteSettings = readSettingsFromSqlite();
+  const settings = sqliteSettings || readLegacySettings() || {};
+  if (!sqliteSettings && Object.keys(settings).length > 0) {
+    writeSettingsToSqlite(settings);
+  }
+  debugLoggingEnabled = settings.enableDebugLog === true;
+  return settings;
 }
 
 async function handleThreatEvent(threat, port) {

@@ -1,18 +1,49 @@
-import { AlertTriangle, Archive, ListChecks, SearchCheck, ShieldCheck, UploadCloud } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle2, ListChecks, Loader2, SearchCheck, ShieldCheck, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
+
+type VirusTotalAction = "md5" | "upload";
 
 export default function ResultsPage() {
   const [items, setItems] = useState<any[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState<"md5" | "quarantine" | null>(null);
   const [message, setMessage] = useState("");
+  const [virusTotalBusy, setVirusTotalBusy] = useState<{ id: string, action: VirusTotalAction } | null>(null);
+  const [checkedVirusTotal, setCheckedVirusTotal] = useState<Record<string, Partial<Record<VirusTotalAction, boolean>>>>({});
+  const md5CheckableItems = items.filter(item => item.available !== false || item.md5);
+  const allVisibleMd5Checked = md5CheckableItems.length > 0 && md5CheckableItems.every(item => checkedVirusTotal[item.id]?.md5);
+
+  const markVirusTotalChecked = (id: string, action: VirusTotalAction) => {
+    setCheckedVirusTotal(prev => ({
+      ...prev,
+      [id]: {
+        ...prev[id],
+        [action]: true
+      }
+    }));
+  };
 
   const fetchItems = async () => {
     try {
       const res = await fetch("/api/results");
       const data = await res.json();
-      setItems(Array.isArray(data) ? data.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)) : []);
+      const sorted = Array.isArray(data) ? data.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)) : [];
+      setItems(sorted);
+      setCheckedVirusTotal(prev => {
+        const next = { ...prev };
+        sorted.forEach((item: any) => {
+          const checks = item.virusTotalChecks || {};
+          if (item.id && (checks.md5 || checks.upload)) {
+            next[item.id] = {
+              ...next[item.id],
+              md5: Boolean(next[item.id]?.md5 || checks.md5),
+              upload: Boolean(next[item.id]?.upload || checks.upload)
+            };
+          }
+        });
+        return next;
+      });
     } catch {
       setItems([]);
     }
@@ -76,22 +107,26 @@ export default function ResultsPage() {
 
   const checkMd5 = async (id: string) => {
     setBusyId(id);
+    setVirusTotalBusy({ id, action: "md5" });
     setMessage("");
     try {
       const response = await fetch(`/api/results/${encodeURIComponent(id)}/virustotal-hash?algorithm=md5`);
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare the VirusTotal report.");
       window.open(data.url, "_blank", "noopener,noreferrer");
+      markVirusTotalChecked(id, "md5");
       setMessage("Opened the VirusTotal MD5 hash report. ClamShield did not upload the file.");
     } catch (error: any) {
       setMessage(error.message || "Could not open VirusTotal.");
     } finally {
+      setVirusTotalBusy(null);
       setBusyId(null);
     }
   };
 
   const openUploadCheck = async (id: string) => {
     setBusyId(id);
+    setVirusTotalBusy({ id, action: "upload" });
     setMessage("");
     try {
       const response = await fetch(`/api/results/${encodeURIComponent(id)}/virustotal-upload`);
@@ -99,10 +134,12 @@ export default function ResultsPage() {
       if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare the VirusTotal upload check.");
       await navigator.clipboard?.writeText(data.filePath).catch(() => {});
       window.open(data.url, "_blank", "noopener,noreferrer");
+      markVirusTotalChecked(id, "upload");
       setMessage("Opened VirusTotal's upload page and copied the file path. ClamShield did not upload the file automatically.");
     } catch (error: any) {
       setMessage(error.message || "Could not open VirusTotal upload.");
     } finally {
+      setVirusTotalBusy(null);
       setBusyId(null);
     }
   };
@@ -126,6 +163,18 @@ export default function ResultsPage() {
       }
       await navigator.clipboard?.writeText(data.items.map((item: any) => item.md5).join("\n")).catch(() => {});
       data.items.forEach((item: any) => window.open(item.url, "_blank", "noopener,noreferrer"));
+      setCheckedVirusTotal(prev => {
+        const next = { ...prev };
+        data.items.forEach((item: any) => {
+          if (item.id) next[item.id] = { ...next[item.id], md5: true };
+        });
+        return next;
+      });
+      await fetch("/api/results/virustotal-checks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "md5", ids: data.items.map((item: any) => item.id).filter(Boolean) })
+      }).catch(() => {});
       setMessage(`Opened ${data.items.length} VirusTotal MD5 report${data.items.length === 1 ? "" : "s"}. Copied the MD5 list. ClamShield did not upload files.${data.skippedCount ? ` Skipped ${data.skippedCount} unavailable item(s).` : ""}`);
       fetchItems();
     } catch (error: any) {
@@ -145,11 +194,23 @@ export default function ResultsPage() {
             <button
               onClick={checkAllMd5}
               disabled={bulkBusy !== null}
-              title="Opens VirusTotal reports by MD5 hash only. Files are not uploaded."
-              className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+              title={
+                allVisibleMd5Checked
+                  ? "Open VirusTotal MD5 reports again. Files are not uploaded."
+                  : "Opens VirusTotal reports by MD5 hash only. Files are not uploaded."
+              }
+              className={`inline-flex items-center gap-2 px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors ${
+                allVisibleMd5Checked ? "bg-emerald-600 hover:bg-emerald-500" : "bg-indigo-600 hover:bg-indigo-500"
+              }`}
             >
-              <ListChecks className="w-4 h-4" />
-              {bulkBusy === "md5" ? "Checking..." : "Check all MD5"}
+              {bulkBusy === "md5" ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : allVisibleMd5Checked ? (
+                <CheckCircle2 className="w-4 h-4" />
+              ) : (
+                <ListChecks className="w-4 h-4" />
+              )}
+              {bulkBusy === "md5" ? "Checking..." : allVisibleMd5Checked ? "MD5 opened" : "Check all MD5"}
             </button>
             <button
               onClick={clearMissing}
@@ -219,20 +280,44 @@ export default function ResultsPage() {
                       <button
                         onClick={() => checkMd5(item.id)}
                         disabled={busyId === item.id || (item.available === false && !item.md5)}
-                        title="Checks VirusTotal by MD5 hash only. ClamShield does not upload the file."
-                        className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors"
+                        title={
+                          checkedVirusTotal[item.id]?.md5
+                            ? "Open the VirusTotal MD5 hash report again. ClamShield does not upload the file."
+                            : "Checks VirusTotal by MD5 hash only. ClamShield does not upload the file."
+                        }
+                        className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors ${
+                          checkedVirusTotal[item.id]?.md5 ? "bg-emerald-600 hover:bg-emerald-500" : "bg-indigo-600 hover:bg-indigo-500"
+                        }`}
                       >
-                        <SearchCheck className="w-3.5 h-3.5" />
-                        MD5 check
+                        {virusTotalBusy?.id === item.id && virusTotalBusy.action === "md5" ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : checkedVirusTotal[item.id]?.md5 ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        ) : (
+                          <SearchCheck className="w-3.5 h-3.5" />
+                        )}
+                        {virusTotalBusy?.id === item.id && virusTotalBusy.action === "md5" ? "Opening..." : checkedVirusTotal[item.id]?.md5 ? "MD5 opened" : "MD5 check"}
                       </button>
                       <button
                         onClick={() => openUploadCheck(item.id)}
                         disabled={busyId === item.id || item.available === false}
-                        title="Opens VirusTotal's upload page. You choose whether to upload the file."
-                        className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors"
+                        title={
+                          checkedVirusTotal[item.id]?.upload
+                            ? "Open VirusTotal's upload page again. You choose whether to upload the file."
+                            : "Opens VirusTotal's upload page. You choose whether to upload the file."
+                        }
+                        className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors ${
+                          checkedVirusTotal[item.id]?.upload ? "bg-emerald-600 hover:bg-emerald-500" : "bg-sky-600 hover:bg-sky-500"
+                        }`}
                       >
-                        <UploadCloud className="w-3.5 h-3.5" />
-                        File upload check
+                        {virusTotalBusy?.id === item.id && virusTotalBusy.action === "upload" ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : checkedVirusTotal[item.id]?.upload ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        ) : (
+                          <UploadCloud className="w-3.5 h-3.5" />
+                        )}
+                        {virusTotalBusy?.id === item.id && virusTotalBusy.action === "upload" ? "Opening..." : checkedVirusTotal[item.id]?.upload ? "Upload opened" : "File upload check"}
                       </button>
                       <button
                         onClick={() => handleAction(item.id, "exception")}

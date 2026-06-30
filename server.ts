@@ -34,7 +34,14 @@ const legalNoticeVersion = "2026-06-25";
 const installerConsentPath = path.join(programDataDir, "installer-consent.txt");
 const securiteInfoSecretPath = path.join(programDataDir, "securiteinfo-token.bin");
 const dnsProtectionBackupPath = path.join(programDataDir, "dns-protection-backup.json");
-const exceptionReportsPath = path.join(programDataDir, "exception-reports.json");
+const appStateDbPath = path.join(programDataDir, "app_state.sqlite");
+const legacySettingsPath = path.join(programDataDir, "settings.json");
+const legacyHistoryPath = path.join(programDataDir, "history.json");
+const legacyExceptionsPath = path.join(programDataDir, "exceptions.json");
+const legacyExceptionReportsPath = path.join(programDataDir, "exception-reports.json");
+const legacyQuarantineMapPath = path.join(programDataDir, "quarantine_map.json");
+const legacyScanResultsPath = path.join(programDataDir, "scan_results.json");
+const legacyResultsReminderPath = path.join(programDataDir, "results_reminder.json");
 const securiteInfoSignupUrl = "https://www.securiteinfo.com/clients/customers/signup";
 const securiteInfoAccountUrl = "https://www.securiteinfo.com/clients/customers/";
 const securiteInfoBaseUrl = "https://www.securiteinfo.com/get/signatures";
@@ -361,6 +368,7 @@ let queuedAppUpdateResult: any | null = null;
 const appUpdateInstallLoggers = new Set<(message: string) => void>();
 let freshclamUpdateInProgress = false;
 let saneSecurityUpdateInProgress = false;
+let clamAVVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -430,13 +438,16 @@ function normalizeSecuriteInfoIncludePua(value: any) {
 
 function getSecuriteInfoDatabaseNames(plan: any, includePua: any = false) {
     if (normalizeSecuriteInfoPlan(plan) !== "paid") return securiteInfoBasicDatabases;
-    return normalizeSecuriteInfoIncludePua(includePua)
-        ? [...securiteInfoPaidDatabases, securiteInfoPuaDatabase]
-        : securiteInfoPaidDatabases;
+    const databases = [...securiteInfoPaidDatabases];
+    if (normalizeSecuriteInfoIncludePua(includePua)) databases.push(securiteInfoPuaDatabase);
+    return databases;
 }
 
 function getConfiguredSecuriteInfoDatabaseNames(settings: any) {
-    return getSecuriteInfoDatabaseNames(settings?.securiteInfoPlan, settings?.securiteInfoIncludePua);
+    return getSecuriteInfoDatabaseNames(
+        settings?.securiteInfoPlan,
+        settings?.securiteInfoIncludePua
+    );
 }
 
 function extractSecuriteInfoToken(input: any) {
@@ -682,6 +693,47 @@ async function runHiddenProcess(executable: string, args: string[], options: Pro
     });
 }
 
+function parseClamAVVersionOutput(output: string) {
+    const firstLine = output
+        .split(/\r\n|\n|\r/g)
+        .map(line => line.trim())
+        .find(Boolean) || "";
+    const versionMatch = firstLine.match(/\bClamAV\s+([^\s/]+)/i);
+    return versionMatch ? `ClamAV ${versionMatch[1]}` : firstLine;
+}
+
+async function getClamAVEngineVersion(settings: any, hasEngine: boolean) {
+    if (isSimulated) return "Simulated mode";
+    if (!hasEngine) return "Not installed";
+
+    try {
+        const stat = await fs.stat(settings.clamscanPath);
+        const now = Date.now();
+        if (
+            clamAVVersionCache &&
+            clamAVVersionCache.path === settings.clamscanPath &&
+            clamAVVersionCache.mtimeMs === stat.mtimeMs &&
+            clamAVVersionCache.expiresAt > now
+        ) {
+            return clamAVVersionCache.value;
+        }
+
+        const result = await runHiddenProcess(settings.clamscanPath, ["--version"], { timeoutMs: 10000 });
+        const parsedVersion = parseClamAVVersionOutput(`${result.stdout}\n${result.stderr}`);
+        const value = parsedVersion || "Version unavailable";
+        clamAVVersionCache = {
+            path: settings.clamscanPath,
+            mtimeMs: stat.mtimeMs,
+            value,
+            expiresAt: now + 5 * 60 * 1000
+        };
+        return value;
+    } catch (e: any) {
+        console.warn("Could not read ClamAV engine version:", e?.message || e);
+        return "Version unavailable";
+    }
+}
+
 async function downloadFile(url: string, destination: string, onProgress?: (message: string) => void) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
     const temporaryPath = `${destination}.download`;
@@ -881,7 +933,7 @@ async function downloadAndInstallSaneSecurityDatabases(settings: any, onLog: (li
         const result = await runHiddenProcess(saneSecurityRsyncPath, [
             "--no-motd",
             `--files-from=${includeFile}`,
-            "-tuz",
+            "-tu",
             "--timeout=120",
             mirror,
             stagingDirectory
@@ -902,6 +954,9 @@ async function downloadAndInstallSaneSecurityDatabases(settings: any, onLog: (li
             }
         }
         lastRsyncError = (result.stderr || result.stdout || `rsync exited with code ${result.code}`).trim();
+        if (/refuse\s+--compress|\(-z\)|--compress/i.test(lastRsyncError)) {
+            onLog("This mirror refused rsync compression; retrying mirrors without compression.");
+        }
         onLog("This mirror failed; trying the next SaneSecurity mirror.");
     }
     if (!downloaded) {
@@ -1968,6 +2023,69 @@ const windowsLockedScanExclusions = [
     String.raw`^[A-Z]:\\\$Recycle\.Bin(\\|$)`
 ];
 
+const thunderbirdSummaryFileExcludePattern = String.raw`.*\.[Mm][Ss][Ff]$`;
+
+const windowsSecuritySoftwareProgramDirs = [
+    ["Windows Defender"],
+    ["Microsoft Defender"],
+    ["Microsoft Security Client"],
+    ["Malwarebytes"],
+    ["Adaware"],
+    ["Lavasoft"],
+    ["Avast Software"],
+    ["AVAST Software"],
+    ["AVG"],
+    ["Bitdefender"],
+    ["Norton"],
+    ["Norton Security"],
+    ["NortonLifeLock"],
+    ["McAfee"],
+    ["ESET"],
+    ["Kaspersky"],
+    ["Kaspersky Lab"],
+    ["Sophos"],
+    ["Trend Micro"],
+    ["F-Secure"],
+    ["WithSecure"],
+    ["CrowdStrike"],
+    ["SentinelOne"],
+    ["CarbonBlack"],
+    ["VMware", "Carbon Black"],
+    ["Palo Alto Networks"],
+    ["Cylance"],
+    ["Avira"],
+    ["Panda Security"],
+    ["Webroot"],
+    ["Comodo"],
+    ["COMODO"],
+    ["Zone Labs"],
+    ["CheckPoint"],
+    ["Check Point"],
+    ["Quick Heal"],
+    ["G DATA"],
+    ["Doctor Web"],
+    ["DrWeb"],
+    ["Emsisoft"],
+    ["AhnLab"],
+    ["VIPRE"],
+    ["TotalAV"],
+    ["WatchGuard"],
+    ["Trellix"],
+    ["FireEye"],
+    ["Fortinet", "FortiClient"],
+    ["Cisco", "AMP"],
+    ["Cisco", "Secure Endpoint"],
+    ["Cisco", "Cisco Secure Endpoint"]
+];
+
+const windowsSecuritySoftwareDataDirs = [
+    ["Microsoft", "Windows Defender"],
+    ["Microsoft", "Microsoft Defender"],
+    ["Microsoft", "Windows Defender Advanced Threat Protection"],
+    ["Microsoft", "Defender"],
+    ...windowsSecuritySoftwareProgramDirs
+];
+
 function escapeRegex(value: string) {
     return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
@@ -1977,14 +2095,43 @@ function pathToClamExcludePattern(folderPath: string) {
     return `^${escapeRegex(normalized)}(?:[\\\\/]|$)`;
 }
 
+function getWindowsSecuritySoftwareExclusionPaths() {
+    if (process.platform !== "win32") return [];
+
+    const programData = process.env.PROGRAMDATA || process.env.ProgramData || "C:\\ProgramData";
+    const programFiles = process.env.ProgramFiles || process.env.PROGRAMFILES || "C:\\Program Files";
+    const programFilesX86 = process.env["ProgramFiles(x86)"] || process.env.PROGRAMFILES_X86 || "C:\\Program Files (x86)";
+    const programW6432 = process.env.ProgramW6432 || process.env.PROGRAMW6432 || programFiles;
+
+    const programRoots = dedupePaths([programFiles, programFilesX86, programW6432].filter(Boolean));
+    const paths = [
+        ...windowsSecuritySoftwareDataDirs.map(parts => path.join(programData, ...parts)),
+        ...programRoots.flatMap(root => windowsSecuritySoftwareProgramDirs.map(parts => path.join(root, ...parts)))
+    ];
+    return dedupePaths(paths);
+}
+
 function getClamShieldScanExclusionPaths(settings: any) {
     return [
+        settings.clamavDir,
+        settings.databaseDir,
         settings.yaraCacheDir,
         settings.yaraRulesDir,
         settings.yaraCustomRulesDir,
         settings.quarantineDir,
+        saneSecurityToolsDir,
+        saneSecurityToolsCacheDir,
+        saneSecurityWorkingDir,
+        ...getWindowsSecuritySoftwareExclusionPaths(),
         path.join(programDataDir, "updates")
     ].filter(Boolean);
+}
+
+function getClamShieldScanExclusionPatterns(settings: any) {
+    return [
+        thunderbirdSummaryFileExcludePattern,
+        ...getClamShieldScanExclusionPaths(settings).map((folderPath: string) => pathToClamExcludePattern(folderPath))
+    ];
 }
 
 function buildClamdConfContent(settings: any) {
@@ -1998,8 +2145,8 @@ function buildClamdConfContent(settings: any) {
         lines.push("LogTime yes");
         lines.push("LogVerbose yes");
     }
-    getClamShieldScanExclusionPaths(settings)
-        .forEach((folderPath: string) => lines.push(`ExcludePath ${pathToClamExcludePattern(folderPath)}`));
+    getClamShieldScanExclusionPatterns(settings)
+        .forEach((pattern: string) => lines.push(`ExcludePath ${pattern}`));
     return `${lines.join("\n")}\n`;
 }
 
@@ -2046,8 +2193,8 @@ function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, ta
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
-        getClamShieldScanExclusionPaths(scanSettings).forEach((folderPath: string) => {
-            args.push(`--exclude=${pathToClamExcludePattern(folderPath)}`);
+        getClamShieldScanExclusionPatterns(scanSettings).forEach((pattern: string) => {
+            args.push(`--exclude=${pattern}`);
         });
         if (process.platform === "win32" && type === "disk") {
             windowsLockedScanExclusions.forEach(pattern => args.push(`--exclude=${pattern}`));
@@ -2079,8 +2226,8 @@ function buildClamFileListArgs(scanSettings: any, isClamd: boolean, listPath: st
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
-        getClamShieldScanExclusionPaths(scanSettings).forEach((folderPath: string) => {
-            args.push(`--exclude=${pathToClamExcludePattern(folderPath)}`);
+        getClamShieldScanExclusionPatterns(scanSettings).forEach((pattern: string) => {
+            args.push(`--exclude=${pattern}`);
         });
     }
 
@@ -2610,7 +2757,7 @@ function normalizeCachePath(filePath: string) {
 }
 
 interface ShieldScanCacheStore {
-    type: "sqlite" | "json";
+    type: "sqlite" | "memory";
     get(normalizedPath: string): ShieldCacheEntry | undefined;
     set(normalizedPath: string, entry: ShieldCacheEntry): void;
     delete(normalizedPath: string): void;
@@ -2625,7 +2772,6 @@ async function loadLegacyShieldScanCache(): Promise<ShieldScanCache> {
         const stat = await fs.stat(cachePath);
         if (stat.size > 50 * 1024 * 1024) {
             console.warn("Shield scan cache is too large; starting with a fresh cache.");
-            await saveLegacyShieldScanCache({ version: 1, files: {} }).catch(() => {});
             return { version: 1, files: {} };
         }
         const data = await fs.readFile(cachePath, "utf8");
@@ -2639,12 +2785,12 @@ async function loadLegacyShieldScanCache(): Promise<ShieldScanCache> {
     return { version: 1, files: {} };
 }
 
-async function saveLegacyShieldScanCache(cache: ShieldScanCache) {
-    await fs.writeFile(getShieldCachePath(), JSON.stringify(cache));
+async function clearLegacyShieldScanCache() {
+    await fs.unlink(getShieldCachePath()).catch(() => {});
 }
 
-class JsonShieldScanCacheStore implements ShieldScanCacheStore {
-    type: "json" = "json";
+class MemoryShieldScanCacheStore implements ShieldScanCacheStore {
+    type: "memory" = "memory";
     private cache: ShieldScanCache;
 
     constructor(cache: ShieldScanCache) {
@@ -2657,17 +2803,14 @@ class JsonShieldScanCacheStore implements ShieldScanCacheStore {
 
     set(normalizedPath: string, entry: ShieldCacheEntry) {
         this.cache.files[normalizedPath] = entry;
-        saveLegacyShieldScanCache(this.cache).catch(e => console.error("Failed to save shield JSON cache:", e));
     }
 
     delete(normalizedPath: string) {
         delete this.cache.files[normalizedPath];
-        saveLegacyShieldScanCache(this.cache).catch(e => console.error("Failed to save shield JSON cache:", e));
     }
 
     clear() {
         this.cache = { version: 1, files: {} };
-        saveLegacyShieldScanCache(this.cache).catch(e => console.error("Failed to save shield JSON cache:", e));
     }
 
     count() {
@@ -2766,13 +2909,13 @@ async function loadShieldScanCacheStore(): Promise<ShieldScanCacheStore> {
         const legacyCount = Object.keys(legacyCache.files).length;
         if (legacyCount > 0) {
             const importedCount = store.importLegacy(legacyCache);
-            await saveLegacyShieldScanCache({ version: 1, files: {} });
+            await clearLegacyShieldScanCache();
             console.log(`Migrated ${importedCount} shield cache entries to SQLite.`);
         }
         return store;
     } catch (e) {
-        console.warn("SQLite shield cache unavailable; using JSON fallback.", e);
-        return new JsonShieldScanCacheStore(await loadLegacyShieldScanCache());
+        console.warn("SQLite shield cache unavailable; using in-memory shield cache.", e);
+        return new MemoryShieldScanCacheStore(await loadLegacyShieldScanCache());
     }
 }
 
@@ -2848,6 +2991,358 @@ async function pathExists(filePath?: string) {
     } catch {
         return false;
     }
+}
+
+let appStateDb: any = null;
+let appStateReadyPromise: Promise<void> | null = null;
+
+function getAppStateDb() {
+    if (appStateDb) return appStateDb;
+    mkdirSync(path.dirname(appStateDbPath), { recursive: true });
+    const { DatabaseSync } = nodeRequire("node:sqlite");
+    appStateDb = new DatabaseSync(appStateDbPath);
+    appStateDb.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        CREATE TABLE IF NOT EXISTS migrations (
+            name TEXT PRIMARY KEY,
+            applied_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS history (
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            type TEXT,
+            target TEXT,
+            result INTEGER,
+            threats_found INTEGER,
+            scanned_files INTEGER,
+            duration INTEGER,
+            action_taken TEXT,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_history_date ON history(date);
+        CREATE TABLE IF NOT EXISTS exceptions (
+            normalized_path TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            added_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_exceptions_path ON exceptions(path);
+        CREATE TABLE IF NOT EXISTS exception_reports (
+            normalized_path TEXT PRIMARY KEY,
+            original_path TEXT NOT NULL,
+            threat_name TEXT,
+            engine TEXT,
+            source TEXT,
+            yara_ruleset TEXT,
+            sha256 TEXT,
+            detected_at INTEGER,
+            added_at INTEGER,
+            false_positive_opened_at INTEGER,
+            false_positive_last_opened_at INTEGER,
+            false_positive_channels TEXT,
+            payload TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS quarantine_map (
+            file_name TEXT PRIMARY KEY,
+            base_name TEXT,
+            original_path TEXT,
+            threat_name TEXT,
+            sha256 TEXT,
+            timestamp INTEGER,
+            payload TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scan_results (
+            id TEXT PRIMARY KEY,
+            timestamp INTEGER NOT NULL,
+            original_path TEXT,
+            normalized_path TEXT,
+            threat_name TEXT,
+            engine TEXT,
+            source TEXT,
+            scan_type TEXT,
+            target TEXT,
+            yara_ruleset TEXT,
+            md5 TEXT,
+            sha1 TEXT,
+            sha256 TEXT,
+            virus_total_checks TEXT,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scan_results_timestamp ON scan_results(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_normalized_path ON scan_results(normalized_path);
+        CREATE TABLE IF NOT EXISTS results_reminder (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        );
+    `);
+    return appStateDb;
+}
+
+function appStateJson(value: any) {
+    return JSON.stringify(value ?? null);
+}
+
+function parseAppStateJson(value: any, fallback: any) {
+    if (typeof value !== "string" || value.length === 0) return fallback;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function asRecord(value: any) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizedStatePath(filePath: any) {
+    const value = String(filePath || "");
+    if (!value) return "";
+    try {
+        return path.resolve(value).toLowerCase();
+    } catch {
+        return value.toLowerCase();
+    }
+}
+
+function optionalNumber(value: any) {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function runAppStateTransaction<T>(db: any, work: () => T): T {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+        const result = work();
+        db.exec("COMMIT");
+        return result;
+    } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+    }
+}
+
+function appStateRowCount(db: any, tableName: string) {
+    const row = db.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get();
+    return Number(row?.count || 0);
+}
+
+async function readLegacyJsonState(filePath: string, fallback: any) {
+    try {
+        return parseAppStateJson(await fs.readFile(filePath, "utf8"), fallback);
+    } catch {
+        return fallback;
+    }
+}
+
+function isAppStateMigrationApplied(db: any, name: string) {
+    return !!db.prepare("SELECT name FROM migrations WHERE name = ?").get(name);
+}
+
+function markAppStateMigrationApplied(db: any, name: string) {
+    db.prepare("INSERT OR REPLACE INTO migrations(name, applied_at) VALUES (?, ?)").run(name, Date.now());
+}
+
+async function runLegacyAppStateMigration(db: any, name: string, work: () => Promise<void>) {
+    if (isAppStateMigrationApplied(db, name)) return;
+    await work();
+    markAppStateMigrationApplied(db, name);
+}
+
+function saveSettingsRows(settings: any) {
+    const db = getAppStateDb();
+    const insert = db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)");
+    runAppStateTransaction(db, () => {
+        db.prepare("DELETE FROM settings").run();
+        for (const [key, value] of Object.entries(asRecord(settings))) {
+            insert.run(key, appStateJson(value));
+        }
+    });
+}
+
+function insertHistoryRow(db: any, entry: any, fallbackIndex = 0) {
+    const payload = asRecord(entry);
+    const date = String(payload.date || new Date(optionalNumber(payload.timestamp) || Date.now()).toISOString());
+    const id = String(payload.id || `${Date.parse(date) || Date.now()}-${fallbackIndex}-${randomBytes(3).toString("hex")}`);
+    db.prepare(`
+        INSERT OR REPLACE INTO history(
+            id, date, type, target, result, threats_found, scanned_files, duration, action_taken, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        id,
+        date,
+        String(payload.type || ""),
+        String(payload.target || ""),
+        optionalNumber(payload.result),
+        optionalNumber(payload.threatsFound),
+        optionalNumber(payload.scannedFiles),
+        optionalNumber(payload.duration),
+        String(payload.actionTaken || ""),
+        appStateJson({ ...payload, id, date })
+    );
+}
+
+function insertExceptionRow(db: any, exceptionPath: any, addedAt = Date.now()) {
+    const value = String(exceptionPath || "");
+    const normalizedPath = normalizedStatePath(value);
+    if (!value || !normalizedPath) return;
+    db.prepare(`
+        INSERT OR REPLACE INTO exceptions(normalized_path, path, added_at)
+        VALUES (?, ?, ?)
+    `).run(normalizedPath, value, addedAt);
+}
+
+function insertExceptionReportRow(db: any, normalizedPath: string, report: any) {
+    const payload = asRecord(report);
+    const originalPath = String(payload.originalPath || normalizedPath);
+    const key = normalizedPath || normalizedStatePath(originalPath);
+    if (!key) return;
+    db.prepare(`
+        INSERT OR REPLACE INTO exception_reports(
+            normalized_path, original_path, threat_name, engine, source, yara_ruleset, sha256,
+            detected_at, added_at, false_positive_opened_at, false_positive_last_opened_at,
+            false_positive_channels, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        key,
+        originalPath,
+        String(payload.threatName || ""),
+        String(payload.engine || ""),
+        String(payload.source || ""),
+        String(payload.yaraRuleset || ""),
+        String(payload.sha256 || ""),
+        optionalNumber(payload.detectedAt),
+        optionalNumber(payload.addedAt),
+        optionalNumber(payload.falsePositiveOpenedAt),
+        optionalNumber(payload.falsePositiveLastOpenedAt),
+        appStateJson(asRecord(payload.falsePositiveChannels)),
+        appStateJson({ ...payload, originalPath })
+    );
+}
+
+function insertQuarantineMapRow(db: any, fileName: string, metadata: any) {
+    if (!fileName) return;
+    const payload = asRecord(metadata);
+    db.prepare(`
+        INSERT OR REPLACE INTO quarantine_map(
+            file_name, base_name, original_path, threat_name, sha256, timestamp, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        fileName,
+        String(payload.baseName || path.basename(fileName)),
+        String(payload.originalPath || ""),
+        String(payload.threatName || ""),
+        String(payload.sha256 || ""),
+        optionalNumber(payload.timestamp),
+        appStateJson(payload)
+    );
+}
+
+function insertScanResultRow(db: any, result: any, fallbackIndex = 0) {
+    const payload = asRecord(result);
+    const timestamp = optionalNumber(payload.timestamp) || Date.now();
+    const id = String(payload.id || `${timestamp}-${fallbackIndex}-${randomBytes(3).toString("hex")}`);
+    const originalPath = String(payload.originalPath || "");
+    db.prepare(`
+        INSERT OR REPLACE INTO scan_results(
+            id, timestamp, original_path, normalized_path, threat_name, engine, source, scan_type,
+            target, yara_ruleset, md5, sha1, sha256, virus_total_checks, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        id,
+        timestamp,
+        originalPath,
+        normalizedStatePath(originalPath),
+        String(payload.threatName || ""),
+        String(payload.engine || ""),
+        String(payload.source || ""),
+        String(payload.scanType || ""),
+        String(payload.target || ""),
+        String(payload.yaraRuleset || ""),
+        String(payload.md5 || ""),
+        String(payload.sha1 || ""),
+        String(payload.sha256 || ""),
+        appStateJson(asRecord(payload.virusTotalChecks)),
+        appStateJson({ ...payload, id, timestamp })
+    );
+}
+
+async function migrateLegacyAppState(db: any) {
+    await runLegacyAppStateMigration(db, "settings.json", async () => {
+        const settings = asRecord(await readLegacyJsonState(legacySettingsPath, null));
+        if (Object.keys(settings).length > 0 && appStateRowCount(db, "settings") === 0) {
+            saveSettingsRows(settings);
+        }
+    });
+
+    await runLegacyAppStateMigration(db, "history.json", async () => {
+        const history = await readLegacyJsonState(legacyHistoryPath, []);
+        if (!Array.isArray(history) || history.length === 0) return;
+        runAppStateTransaction(db, () => {
+            history.forEach((entry, index) => insertHistoryRow(db, entry, index));
+        });
+    });
+
+    await runLegacyAppStateMigration(db, "exceptions.json", async () => {
+        const exceptions = await readLegacyJsonState(legacyExceptionsPath, []);
+        if (!Array.isArray(exceptions) || exceptions.length === 0) return;
+        runAppStateTransaction(db, () => {
+            exceptions.forEach((exceptionPath, index) => insertExceptionRow(db, exceptionPath, Date.now() + index));
+        });
+    });
+
+    await runLegacyAppStateMigration(db, "exception-reports.json", async () => {
+        const reports = asRecord(await readLegacyJsonState(legacyExceptionReportsPath, {}));
+        if (Object.keys(reports).length === 0) return;
+        runAppStateTransaction(db, () => {
+            for (const [key, report] of Object.entries(reports)) {
+                insertExceptionReportRow(db, normalizedStatePath(key), report);
+            }
+        });
+    });
+
+    await runLegacyAppStateMigration(db, "quarantine_map.json", async () => {
+        const map = asRecord(await readLegacyJsonState(legacyQuarantineMapPath, {}));
+        if (Object.keys(map).length === 0) return;
+        runAppStateTransaction(db, () => {
+            for (const [fileName, metadata] of Object.entries(map)) {
+                insertQuarantineMapRow(db, fileName, metadata);
+            }
+        });
+    });
+
+    await runLegacyAppStateMigration(db, "scan_results.json", async () => {
+        const results = await readLegacyJsonState(legacyScanResultsPath, []);
+        if (!Array.isArray(results) || results.length === 0) return;
+        runAppStateTransaction(db, () => {
+            results.forEach((result, index) => insertScanResultRow(db, result, index));
+        });
+    });
+
+    await runLegacyAppStateMigration(db, "results_reminder.json", async () => {
+        const state = asRecord(await readLegacyJsonState(legacyResultsReminderPath, {}));
+        if (Object.keys(state).length === 0) return;
+        const upsert = db.prepare("INSERT OR REPLACE INTO results_reminder(key, value) VALUES (?, ?)");
+        runAppStateTransaction(db, () => {
+            upsert.run("remindUntil", optionalNumber(state.remindUntil) || 0);
+            upsert.run("forgottenUntil", optionalNumber(state.forgottenUntil) || 0);
+        });
+    });
+}
+
+async function ensureAppStateReady() {
+    const db = getAppStateDb();
+    if (!appStateReadyPromise) {
+        appStateReadyPromise = migrateLegacyAppState(db).catch(e => {
+            appStateReadyPromise = null;
+            throw e;
+        });
+    }
+    await appStateReadyPromise;
 }
 
 async function ensureFreshclamConfig(settings: any) {
@@ -2988,10 +3483,12 @@ function resolveScanTarget(type: string, target?: string) {
     return target;
 }
 
-async function* walkFiles(rootPath: string): AsyncGenerator<string> {
+async function* walkFiles(rootPath: string, shouldSkipPath?: (filePath: string) => boolean): AsyncGenerator<string> {
     const stack = [rootPath];
     while (stack.length) {
         const current = stack.pop()!;
+        if (shouldSkipPath?.(current)) continue;
+
         let stat;
         try {
             stat = await fs.stat(current);
@@ -3016,6 +3513,7 @@ async function* walkFiles(rootPath: string): AsyncGenerator<string> {
         for (const entry of entries) {
             if (entry.name === "." || entry.name === "..") continue;
             const childPath = path.join(current, entry.name);
+            if (shouldSkipPath?.(childPath)) continue;
             if (entry.isDirectory()) stack.push(childPath);
             else if (entry.isFile()) yield childPath;
         }
@@ -3027,14 +3525,44 @@ function isWindowsLockedScanPath(filePath: string) {
     return windowsLockedScanExclusions.some(pattern => new RegExp(pattern, "i").test(filePath));
 }
 
-function shouldSkipManualScanFile(settings: any, type: string, filePath: string) {
-    if (type === "disk" && isWindowsLockedScanPath(filePath)) return true;
-    return getClamShieldScanExclusionPaths(settings).some((excludedPath: string) => isPathInside(filePath, excludedPath));
+function isThunderbirdSummaryFile(filePath: string) {
+    return path.extname(filePath).toLowerCase() === ".msf";
+}
+
+function normalizeComparablePath(filePath: string) {
+    return path.resolve(filePath).replace(/[\\/]+$/, "").toLowerCase();
+}
+
+function isNormalizedPathInside(childPath: string, parentPath: string) {
+    return childPath === parentPath || childPath.startsWith(parentPath + path.sep.toLowerCase()) || childPath.startsWith(parentPath + "/");
+}
+
+function createBuiltInScanPathSkipper(settings: any) {
+    const excludedPaths = getClamShieldScanExclusionPaths(settings).map(normalizeComparablePath);
+    return (filePath: string) => {
+        if (isThunderbirdSummaryFile(filePath)) return true;
+        const normalizedPath = normalizeComparablePath(filePath);
+        return excludedPaths.some(excludedPath => isNormalizedPathInside(normalizedPath, excludedPath));
+    };
+}
+
+function shouldSkipBuiltInScanPath(settings: any, filePath: string) {
+    return createBuiltInScanPathSkipper(settings)(filePath);
+}
+
+function createManualScanPathSkipper(settings: any, type: string) {
+    const shouldSkipBuiltIn = createBuiltInScanPathSkipper(settings);
+    return (filePath: string) => {
+        if (type === "disk" && isWindowsLockedScanPath(filePath)) return true;
+        return shouldSkipBuiltIn(filePath);
+    };
 }
 
 async function enumerateScanTargets(settings: any, type: string, target: string) {
+    const shouldSkipFile = createManualScanPathSkipper(settings, type);
     if (type === "memory" && process.platform === "win32") {
-        return getRunningProcessImagePaths();
+        const processPaths = await getRunningProcessImagePaths();
+        return processPaths.filter(filePath => !shouldSkipFile(filePath));
     }
 
     const files: string[] = [];
@@ -3046,13 +3574,12 @@ async function enumerateScanTargets(settings: any, type: string, target: string)
     }
 
     if (stat.isFile()) {
-        if (!shouldSkipManualScanFile(settings, type, target)) files.push(target);
+        if (!shouldSkipFile(target)) files.push(target);
         return files;
     }
 
     if (!stat.isDirectory()) return files;
-    for await (const filePath of walkFiles(target)) {
-        if (shouldSkipManualScanFile(settings, type, filePath)) continue;
+    for await (const filePath of walkFiles(target, shouldSkipFile)) {
         files.push(filePath);
         if (files.length % 5000 === 0) await sleep(1);
     }
@@ -3074,9 +3601,10 @@ function getAdaptiveScanBatchSize(totalFiles: number) {
     return 100;
 }
 
-async function addTargetToShieldCache(cache: ShieldScanCacheStore, targetPath: string, onProgress?: (count: number) => void) {
+async function addTargetToShieldCache(cache: ShieldScanCacheStore, targetPath: string, settings: any, onProgress?: (count: number) => void) {
     let count = 0;
-    for await (const filePath of walkFiles(targetPath)) {
+    const shouldSkipPath = createBuiltInScanPathSkipper(settings);
+    for await (const filePath of walkFiles(targetPath, shouldSkipPath)) {
         const fingerprint = await getFileFingerprint(filePath);
         if (!fingerprint) continue;
         cache.set(normalizeCachePath(filePath), fingerprint);
@@ -3259,11 +3787,15 @@ async function loadInstallerConsent() {
 }
 
 async function loadConfig() {
-    const configPath = path.join(programDataDir, "settings.json");
     const installerConsent = await loadInstallerConsent();
     try {
-        const data = await fs.readFile(configPath, "utf8");
-        const parsed = JSON.parse(data);
+        await ensureAppStateReady();
+        const rows = getAppStateDb().prepare("SELECT key, value FROM settings").all();
+        if (!rows.length) throw new Error("No settings saved.");
+        const parsed = rows.reduce((settings: any, row: any) => {
+            settings[row.key] = parseAppStateJson(row.value, null);
+            return settings;
+        }, {});
         const actionOnDetection = parsed.actionOnDetection === "warn" ? "ask" : (parsed.actionOnDetection || defaultSettings.actionOnDetection);
         const scanDetectionAction = parsed.scanDetectionAction || (parsed.actionOnDetection === "quarantine" || parsed.autoQuarantine ? "quarantine" : defaultSettings.scanDetectionAction);
         const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
@@ -3300,14 +3832,14 @@ async function loadConfig() {
 }
 
 async function saveConfig(settings: any) {
-    const configPath = path.join(programDataDir, "settings.json");
     currentLogsDir = settings.logsDir || defaultLogsDir;
     debugLoggingEnabled = settings.enableDebugLog === true;
     const safeSettings = { ...settings };
     delete safeSettings.securiteInfoToken;
     delete safeSettings.securiteInfoUrl;
     delete safeSettings.securiteInfoSetupText;
-    await fs.writeFile(configPath, JSON.stringify(safeSettings, null, 2));
+    await ensureAppStateReady();
+    saveSettingsRows(safeSettings);
 }
 
 async function cleanupOldLogs(settings: any) {
@@ -3359,29 +3891,46 @@ async function manageStartup(settings: any) {
     }
 }
 
-// Simple JSON DB for history
 async function getHistory() {
-    const historyPath = path.join(programDataDir, "history.json");
-    try {
-        return JSON.parse(await fs.readFile(historyPath, "utf8"));
-    } catch {
-        return [];
-    }
+    await ensureAppStateReady();
+    const rows = getAppStateDb().prepare(`
+        SELECT id, date, type, target, result, threats_found, scanned_files, duration, action_taken, payload
+        FROM history
+        ORDER BY date DESC
+    `).all();
+    return rows.map((row: any) => {
+        const payload = asRecord(parseAppStateJson(row.payload, {}));
+        return {
+            ...payload,
+            id: row.id,
+            date: row.date,
+            type: row.type || payload.type,
+            target: row.target || payload.target,
+            result: row.result === null || row.result === undefined ? payload.result : Number(row.result),
+            threatsFound: row.threats_found === null || row.threats_found === undefined ? payload.threatsFound : Number(row.threats_found),
+            scannedFiles: row.scanned_files === null || row.scanned_files === undefined ? payload.scannedFiles : Number(row.scanned_files),
+            duration: row.duration === null || row.duration === undefined ? payload.duration : Number(row.duration),
+            actionTaken: row.action_taken || payload.actionTaken
+        };
+    });
 }
 
 async function getExceptions() {
-    const excPath = path.join(programDataDir, "exceptions.json");
-    try {
-        return JSON.parse(await fs.readFile(excPath, "utf8"));
-    } catch {
-        return [];
-    }
+    await ensureAppStateReady();
+    return getAppStateDb()
+        .prepare("SELECT path FROM exceptions ORDER BY path COLLATE NOCASE")
+        .all()
+        .map((row: any) => row.path);
 }
 
 async function saveExceptions(list: string[]) {
-    const excPath = path.join(programDataDir, "exceptions.json");
-    await fs.writeFile(excPath, JSON.stringify(list, null, 2));
-    const normalizedPaths = new Set(list.map(item => path.resolve(item).toLowerCase()));
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    runAppStateTransaction(db, () => {
+        db.prepare("DELETE FROM exceptions").run();
+        list.forEach((item, index) => insertExceptionRow(db, item, Date.now() + index));
+    });
+    const normalizedPaths = new Set(list.map(item => normalizedStatePath(item)).filter(Boolean));
     const reports = await getExceptionReports();
     let changed = false;
     for (const key of Object.keys(reports)) {
@@ -3394,16 +3943,44 @@ async function saveExceptions(list: string[]) {
 }
 
 async function getExceptionReports() {
-    try {
-        const data = JSON.parse(await fs.readFile(exceptionReportsPath, "utf8"));
-        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
-    } catch {
-        return {};
+    await ensureAppStateReady();
+    const rows = getAppStateDb().prepare(`
+        SELECT normalized_path, original_path, threat_name, engine, source, yara_ruleset, sha256,
+               detected_at, added_at, false_positive_opened_at, false_positive_last_opened_at,
+               false_positive_channels, payload
+        FROM exception_reports
+    `).all();
+    const reports: Record<string, any> = {};
+    for (const row of rows) {
+        const payload = asRecord(parseAppStateJson(row.payload, {}));
+        const channels = asRecord(parseAppStateJson(row.false_positive_channels, {}));
+        reports[row.normalized_path] = {
+            ...payload,
+            originalPath: row.original_path || payload.originalPath,
+            threatName: row.threat_name || payload.threatName,
+            engine: row.engine || payload.engine,
+            source: row.source || payload.source,
+            yaraRuleset: row.yara_ruleset || payload.yaraRuleset,
+            sha256: row.sha256 || payload.sha256,
+            detectedAt: row.detected_at === null || row.detected_at === undefined ? payload.detectedAt : Number(row.detected_at),
+            addedAt: row.added_at === null || row.added_at === undefined ? payload.addedAt : Number(row.added_at),
+            falsePositiveOpenedAt: row.false_positive_opened_at === null || row.false_positive_opened_at === undefined ? payload.falsePositiveOpenedAt : Number(row.false_positive_opened_at),
+            falsePositiveLastOpenedAt: row.false_positive_last_opened_at === null || row.false_positive_last_opened_at === undefined ? payload.falsePositiveLastOpenedAt : Number(row.false_positive_last_opened_at),
+            falsePositiveChannels: Object.keys(channels).length > 0 ? channels : payload.falsePositiveChannels
+        };
     }
+    return reports;
 }
 
 async function saveExceptionReports(reports: Record<string, any>) {
-    await fs.writeFile(exceptionReportsPath, JSON.stringify(reports, null, 2));
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    runAppStateTransaction(db, () => {
+        db.prepare("DELETE FROM exception_reports").run();
+        for (const [key, report] of Object.entries(asRecord(reports))) {
+            insertExceptionReportRow(db, normalizedStatePath(key), report);
+        }
+    });
 }
 
 function exceptionReportKey(filePath: string) {
@@ -3442,12 +4019,12 @@ function getFalsePositiveProvider(report: any) {
             url: "https://github.com/YARAHQ/yara-forge/issues/new"
         };
     }
-    if (/^securiteinfo\.com\./i.test(threatName)) {
+    if (/securiteinfo\.com(?:[._-]|$)/i.test(threatName)) {
         return {
             id: "securiteinfo",
             name: "SecuriteInfo",
             method: "email",
-            email: "info@securiteinfo.com",
+            email: "webmaster@securiteinfo.com",
             url: "https://www.securiteinfo.com/services-cybersecurite/contacter-securiteinfo.shtml"
         };
     }
@@ -3468,6 +4045,17 @@ function getFalsePositiveProvider(report: any) {
     };
 }
 
+function buildEmailComposeUrls(email: string, subject: string, body: string) {
+    const encodedEmail = encodeURIComponent(email);
+    const encodedSubject = encodeURIComponent(subject);
+    const encodedBody = encodeURIComponent(body);
+    return {
+        mailto: `mailto:${email}?subject=${encodedSubject}&body=${encodedBody}`,
+        gmail: `https://mail.google.com/mail/?view=cm&fs=1&to=${encodedEmail}&su=${encodedSubject}&body=${encodedBody}`,
+        outlook: `https://outlook.live.com/mail/0/deeplink/compose?to=${encodedEmail}&subject=${encodedSubject}&body=${encodedBody}`
+    };
+}
+
 function buildFalsePositiveReport(report: any) {
     const provider = getFalsePositiveProvider(report);
     const fileName = path.basename(String(report.originalPath || "unknown-file"));
@@ -3482,12 +4070,17 @@ function buildFalsePositiveReport(report: any) {
         report.yaraRuleset ? `YARA ruleset: ${report.yaraRuleset}` : "",
         "",
         "The file was added to ClamShield exceptions because the user believes this detection is a false positive.",
-        provider.method === "email" ? "Please attach the detected file or a password-protected archive if the provider requests a sample." : ""
+        provider.id === "securiteinfo"
+            ? "If the user agrees to share the detected file and it does not contain sensitive information, please attach it as a password-protected zip archive using the password infectedsecuriteinfo. If the file is not shared, please use the SHA-256 value above."
+            : "",
+        provider.method === "email" && provider.id !== "securiteinfo" ? "Please attach the detected file or a password-protected archive if the provider requests a sample." : ""
     ].filter(Boolean).join("\n");
     const subject = `[False Positive] ${report.threatName || fileName}`;
     let url = provider.url;
+    let emailUrls = null;
     if (provider.method === "email") {
-        url = `mailto:${provider.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(details)}`;
+        emailUrls = buildEmailComposeUrls(provider.email, subject, details);
+        url = emailUrls.mailto;
     } else if (provider.method === "github") {
         url = `${provider.url}?title=${encodeURIComponent(subject)}&body=${encodeURIComponent(details)}`;
     }
@@ -3496,6 +4089,7 @@ function buildFalsePositiveReport(report: any) {
         subject,
         details,
         url,
+        emailUrls,
         requiresSample: provider.id !== "yara-forge"
     };
 }
@@ -3510,17 +4104,24 @@ function isExcluded(filePath: string, exceptions: string[]) {
 }
 
 async function getQuarantineMap() {
-    const mapPath = path.join(programDataDir, "quarantine_map.json");
-    try {
-        return JSON.parse(await fs.readFile(mapPath, "utf8"));
-    } catch {
-        return {};
+    await ensureAppStateReady();
+    const rows = getAppStateDb().prepare("SELECT file_name, payload FROM quarantine_map").all();
+    const map: Record<string, any> = {};
+    for (const row of rows) {
+        map[row.file_name] = asRecord(parseAppStateJson(row.payload, {}));
     }
+    return map;
 }
 
 async function saveQuarantineMap(map: Record<string, any>) {
-    const mapPath = path.join(programDataDir, "quarantine_map.json");
-    await fs.writeFile(mapPath, JSON.stringify(map, null, 2));
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    runAppStateTransaction(db, () => {
+        db.prepare("DELETE FROM quarantine_map").run();
+        for (const [fileName, metadata] of Object.entries(asRecord(map))) {
+            insertQuarantineMapRow(db, fileName, metadata);
+        }
+    });
 }
 
 async function getQuarantineItems(quarantineDir: string) {
@@ -3611,27 +4212,44 @@ async function restoreQuarantinedFileAndAddException(settings: any, fileName: st
     return { restoredPath: originalPath };
 }
 
-function getScanResultsPath() {
-    return path.join(programDataDir, "scan_results.json");
-}
-
-function getResultsReminderPath() {
-    return path.join(programDataDir, "results_reminder.json");
-}
-
 async function getScanResults() {
-    try {
-        const data = JSON.parse(await fs.readFile(getScanResultsPath(), "utf8"));
-        return Array.isArray(data)
-            ? data.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
-            : [];
-    } catch {
-        return [];
-    }
+    await ensureAppStateReady();
+    const rows = getAppStateDb().prepare(`
+        SELECT id, timestamp, original_path, threat_name, engine, source, scan_type, target,
+               yara_ruleset, md5, sha1, sha256, virus_total_checks, payload
+        FROM scan_results
+        ORDER BY timestamp DESC
+    `).all();
+    return rows.map((row: any) => {
+        const payload = asRecord(parseAppStateJson(row.payload, {}));
+        const virusTotalChecks = asRecord(parseAppStateJson(row.virus_total_checks, {}));
+        return {
+            ...payload,
+            id: row.id,
+            timestamp: Number(row.timestamp || payload.timestamp || 0),
+            originalPath: row.original_path || payload.originalPath,
+            threatName: row.threat_name || payload.threatName,
+            engine: row.engine || payload.engine,
+            source: row.source || payload.source,
+            scanType: row.scan_type || payload.scanType,
+            target: row.target || payload.target,
+            yaraRuleset: row.yara_ruleset || payload.yaraRuleset,
+            md5: row.md5 || payload.md5,
+            sha1: row.sha1 || payload.sha1,
+            sha256: row.sha256 || payload.sha256,
+            virusTotalChecks: Object.keys(virusTotalChecks).length > 0 ? virusTotalChecks : payload.virusTotalChecks
+        };
+    });
 }
 
 async function saveScanResults(results: any[]) {
-    await fs.writeFile(getScanResultsPath(), JSON.stringify(results.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)), null, 2));
+    await ensureAppStateReady();
+    const sortedResults = [...results].sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    const db = getAppStateDb();
+    runAppStateTransaction(db, () => {
+        db.prepare("DELETE FROM scan_results").run();
+        sortedResults.forEach((result, index) => insertScanResultRow(db, result, index));
+    });
     if (scanResultsChangedHandler) {
         Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify scan results change:", e));
     }
@@ -3641,6 +4259,16 @@ function normalizeVirusTotalHashAlgorithm(value: any) {
     const algorithm = String(value || "sha256").toLowerCase();
     if (["md5", "sha1", "sha256"].includes(algorithm)) return algorithm;
     throw new Error("Unsupported VirusTotal hash algorithm.");
+}
+
+function markVirusTotalCheckOpened(result: any, action: string) {
+    const existing = result.virusTotalChecks && typeof result.virusTotalChecks === "object" && !Array.isArray(result.virusTotalChecks)
+        ? result.virusTotalChecks
+        : {};
+    result.virusTotalChecks = {
+        ...existing,
+        [action]: Date.now()
+    };
 }
 
 async function ensureScanResultHash(results: any[], result: any, algorithm: string) {
@@ -3660,15 +4288,25 @@ async function ensureScanResultHash(results: any[], result: any, algorithm: stri
 }
 
 async function getResultsReminderState() {
-    try {
-        return JSON.parse(await fs.readFile(getResultsReminderPath(), "utf8"));
-    } catch {
-        return { remindUntil: 0, forgottenUntil: 0 };
+    await ensureAppStateReady();
+    const rows = getAppStateDb().prepare("SELECT key, value FROM results_reminder").all();
+    const state = { remindUntil: 0, forgottenUntil: 0 };
+    for (const row of rows) {
+        if (row.key === "remindUntil" || row.key === "forgottenUntil") {
+            state[row.key] = Number(row.value || 0);
+        }
     }
+    return state;
 }
 
 async function saveResultsReminderState(state: any) {
-    await fs.writeFile(getResultsReminderPath(), JSON.stringify(state, null, 2));
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    const upsert = db.prepare("INSERT OR REPLACE INTO results_reminder(key, value) VALUES (?, ?)");
+    runAppStateTransaction(db, () => {
+        upsert.run("remindUntil", optionalNumber(state?.remindUntil) || 0);
+        upsert.run("forgottenUntil", optionalNumber(state?.forgottenUntil) || 0);
+    });
     if (scanResultsChangedHandler) {
         Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify results reminder change:", e));
     }
@@ -3720,10 +4358,13 @@ async function quarantineResultItem(settings: any, result: any) {
 }
 
 async function addHistory(entry: any) {
-    const historyPath = path.join(programDataDir, "history.json");
-    const history = await getHistory();
-    history.unshift({ id: Date.now().toString(), date: new Date().toISOString(), ...entry });
-    await fs.writeFile(historyPath, JSON.stringify(history, null, 2));
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    insertHistoryRow(db, {
+        id: `${Date.now()}-${randomBytes(3).toString("hex")}`,
+        date: new Date().toISOString(),
+        ...asRecord(entry)
+    });
 }
 
 function isPathInside(childPath: string, parentPath: string) {
@@ -3732,10 +4373,11 @@ function isPathInside(childPath: string, parentPath: string) {
     return child === parent || child.startsWith(parent + path.sep.toLowerCase()) || child.startsWith(parent + "/");
 }
 
-function shouldSkipYaraTarget(settings: any, filePath: string, fingerprint: ShieldCacheEntry | null) {
+function shouldSkipYaraTarget(settings: any, filePath: string, fingerprint: ShieldCacheEntry | null, shouldSkipPath = createBuiltInScanPathSkipper(settings)) {
     if (!fingerprint) return true;
     const maxBytes = normalizePositiveNumber(settings.yaraMaxFileSize, 50, 1, 4096) * 1024 * 1024;
     if (fingerprint.size > maxBytes) return true;
+    if (shouldSkipPath(filePath)) return true;
     const ownYaraPaths = [
         settings.yaraDir,
         settings.yaraRulesDir,
@@ -3748,6 +4390,7 @@ function shouldSkipYaraTarget(settings: any, filePath: string, fingerprint: Shie
 async function createYaraTargetList(settings: any, targets: string[], onProgress?: (count: number) => void) {
     const listPath = path.join(os.tmpdir(), `clamshield-yara-list-${Date.now()}-${randomBytes(6).toString("hex")}.txt`);
     const writer = createWriteStream(listPath, { encoding: "utf16le" });
+    const shouldSkipPath = createBuiltInScanPathSkipper(settings);
     let count = 0;
     let unreadablePathCount = 0;
     try {
@@ -3761,16 +4404,16 @@ async function createYaraTargetList(settings: any, targets: string[], onProgress
             }
             if (stat.isFile()) {
                 const fingerprint = await getFileFingerprint(target);
-                if (!shouldSkipYaraTarget(settings, target, fingerprint)) {
+                if (!shouldSkipYaraTarget(settings, target, fingerprint, shouldSkipPath)) {
                     writer.write(`${target}${os.EOL}`);
                     count++;
                 }
                 continue;
             }
             if (!stat.isDirectory()) continue;
-            for await (const filePath of walkFiles(target)) {
+            for await (const filePath of walkFiles(target, shouldSkipPath)) {
                 const fingerprint = await getFileFingerprint(filePath);
-                if (shouldSkipYaraTarget(settings, filePath, fingerprint)) continue;
+                if (shouldSkipYaraTarget(settings, filePath, fingerprint, shouldSkipPath)) continue;
                 writer.write(`${filePath}${os.EOL}`);
                 count++;
                 if (count % 5000 === 0) onProgress?.(count);
@@ -3802,6 +4445,13 @@ function parseYaraMatchLine(line: string) {
 
 async function handleYaraDetection(settings: any, detection: any, options: any) {
     const exceptions = await getExceptions();
+    if (shouldSkipBuiltInScanPath(settings, detection.originalPath)) {
+        options.appendJobLogs(options.jobId, [
+            `YARA threat found: ${displayFileName(detection.originalPath)}`,
+            "Action: Ignored because this path is excluded from provider-safety scans"
+        ]);
+        return "Ignored";
+    }
     if (isExcluded(detection.originalPath, exceptions)) {
         options.appendJobLogs(options.jobId, [
             `YARA threat found: ${displayFileName(detection.originalPath)}`,
@@ -4326,8 +4976,11 @@ async function startServer() {
 
         if (existingWatchPaths.length === 0) return;
 
+        const shouldSkipShieldPath = createBuiltInScanPathSkipper(currentSettings);
         shieldWatcher = chokidar.watch(existingWatchPaths, {
-            ignored: /(^|[\/\\])\../, 
+            ignored: (candidatePath: string) =>
+                /(^|[\/\\])\./.test(candidatePath) ||
+                shouldSkipShieldPath(candidatePath),
             persistent: true,
             ignoreInitial: true,
             depth: normalizePositiveNumber(currentSettings.shieldDepth, 1, 0, 20),
@@ -4364,6 +5017,7 @@ async function startServer() {
         };
 
         const enqueueShieldFile = (filePath: string, reason: "add" | "change") => {
+            if (shouldSkipShieldPath(filePath)) return;
             const normalizedPath = path.resolve(filePath).toLowerCase();
             pendingShieldScans.set(normalizedPath, { filePath, reason });
             processShieldQueue();
@@ -4371,6 +5025,7 @@ async function startServer() {
 
         const scanShieldFile = async (filePath: string, reason: "add" | "change") => {
             const normalizedPath = path.resolve(filePath).toLowerCase();
+            if (shouldSkipShieldPath(filePath)) return;
             if (filesBeingScanned.has(normalizedPath)) return;
             const lockedUntil = lockedFileBackoff.get(normalizedPath) || 0;
             if (lockedUntil > Date.now()) {
@@ -4459,6 +5114,10 @@ async function startServer() {
                             const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
                             if (match) {
                                 const originalPath = match[1];
+                                if (shouldSkipShieldPath(originalPath)) {
+                                    appendJobLogs(jobId, [`Ignored (Provider-safety exclusion): ${originalPath}`]);
+                                    continue;
+                                }
                                 if (isExcluded(originalPath, exceptions)) {
                                     appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
                                     continue;
@@ -4603,6 +5262,7 @@ async function startServer() {
             getSecuriteInfoStatus(settings),
             getSaneSecurityStatus(settings)
         ]);
+        const engineVersion = await getClamAVEngineVersion(settings, hasEngine);
 
         const pkgVersion = await getCurrentAppVersion();
         const activeScanJobIds = Object.entries(activeJobs)
@@ -4627,7 +5287,7 @@ async function startServer() {
             securiteInfo,
             saneSecurity,
             stats: {
-                engineVersion: isSimulated ? "ClamAV (Simulated)" : "ClamAV (Installed)",
+                engineVersion,
                 yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset),
                 yaraRuleCount: settings.lastYaraRuleCount || 0,
                 lastYaraUpdate: settings.lastYaraUpdate || null,
@@ -5029,7 +5689,7 @@ async function startServer() {
             res.json({
                 success: true,
                 message: plan === "paid"
-                    ? `SecuriteInfo paid databases are connected${includePua ? ", including optional PUA signatures" : " without optional PUA signatures"}. Run an update to download the configured signatures.`
+                    ? `SecuriteInfo paid databases are connected${includePua ? " with optional PUA signatures" : " without optional PUA signatures"}. Run an update to download the configured signatures.`
                     : "SecuriteInfo Basic is connected for securiteinfo.ign2 and securiteinfoold.hdb. Run an update to download them.",
                 securiteInfo: await getSecuriteInfoStatus(settings)
             });
@@ -5421,10 +6081,12 @@ if ($dialog.ShowDialog() -eq 'OK') {
             let allScanFiles: string[] = [];
             let scanFiles: string[] = [];
             let scannedFiles = 0;
+            const shouldSkipScanFile = createManualScanPathSkipper(settings, scanType);
 
             if (isResume) {
                 const fileRows = scanSessions.getFiles(jobId);
                 for (const row of fileRows) {
+                    if (shouldSkipScanFile(row.file_path)) continue;
                     allScanFiles.push(row.file_path);
                     const fingerprint = await getFileFingerprint(row.file_path);
                     if (row.status === "done" && fileRecordMatches(row, fingerprint)) {
@@ -5504,6 +6166,13 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
                 if (!match) return;
                 const originalPath = match[1];
+                if (shouldSkipScanFile(originalPath)) {
+                    appendJobLogs(jobId, [
+                        `Threat found: ${displayFileName(originalPath)}`,
+                        "Action: Ignored because this path is excluded from provider-safety scans"
+                    ]);
+                    return;
+                }
                 if (isExcluded(originalPath, exceptions)) {
                     appendJobLogs(jobId, [
                         `Threat found: ${displayFileName(originalPath)}`,
@@ -5670,7 +6339,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 saveJobProgress(jobId, { phase: "Building shield cache", currentFile: "" });
                 appendJobLogs(jobId, ["Updating real-time protection cache..."]);
                 try {
-                    const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, (count) => {
+                    const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, settings, (count) => {
                         console.debug(`Shield cache indexed: ${count} files`);
                     });
                     appendJobLogs(jobId, [`Protection cache updated: ${cachedCount} files`]);
@@ -5715,6 +6384,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
         const { target, type } = req.body;
         const effectiveTarget = resolveScanTarget(type, target);
         const jobId = Date.now().toString();
+        const shouldSkipLegacyScanFile = createManualScanPathSkipper(settings, type);
         // type could be 'file', 'folder', 'disk', 'memory'
         
         if (isSimulated) {
@@ -5787,7 +6457,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
         let memoryYaraTargets: string[] = [];
         let scanTarget = effectiveTarget;
         if (type === "memory" && process.platform === "win32") {
-            const processPaths = await getRunningProcessImagePaths();
+            const processPaths = (await getRunningProcessImagePaths())
+                .filter(filePath => !shouldSkipLegacyScanFile(filePath));
             memoryProcessCount = processPaths.length;
             memoryYaraTargets = processPaths;
             if (processPaths.length === 0) {
@@ -5874,6 +6545,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
                         if (match) {
                             const originalPath = match[1];
+                            if (shouldSkipLegacyScanFile(originalPath)) {
+                                appendJobLogs(jobId, [`Ignored (Provider-safety exclusion): ${originalPath}`]);
+                                continue;
+                            }
                             if (isExcluded(originalPath, exceptions)) {
                                 appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
                                 continue;
@@ -5960,7 +6635,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if ((type === "disk" || type === "folder" || type === "file") && effectiveTarget) {
                     appendJobLogs(jobId, ["Building real-time shield cache for this scan target..."]);
                     try {
-                        const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, (count) => {
+                        const cachedCount = await addTargetToShieldCache(shieldScanCache, effectiveTarget, settings, (count) => {
                             appendJobLogs(jobId, [`Shield cache indexed: ${count} files`]);
                         });
                         appendJobLogs(jobId, [`Shield cache updated: ${cachedCount} files indexed`]);
@@ -6418,6 +7093,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             if (!result) throw new Error("Result not found.");
             const algorithm = normalizeVirusTotalHashAlgorithm(req.query?.algorithm || "sha256");
             const hash = await ensureScanResultHash(results, result, algorithm);
+            markVirusTotalCheckOpened(result, algorithm);
+            await saveScanResults(results);
             res.json({
                 success: true,
                 algorithm,
@@ -6431,12 +7108,38 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
+    app.post("/api/results/virustotal-checks", async (req, res) => {
+        try {
+            const action = req.body?.action === "upload"
+                ? "upload"
+                : normalizeVirusTotalHashAlgorithm(req.body?.action || "md5");
+            const ids = Array.isArray(req.body?.ids)
+                ? new Set(req.body.ids.map((item: any) => String(item || "")).filter(Boolean))
+                : new Set<string>();
+            if (ids.size === 0) throw new Error("No result ids were provided.");
+
+            const results = await getScanResults();
+            let markedCount = 0;
+            for (const result of results) {
+                if (!ids.has(String(result.id || ""))) continue;
+                markVirusTotalCheckOpened(result, action);
+                markedCount++;
+            }
+            if (markedCount > 0) await saveScanResults(results);
+            res.json({ success: true, markedCount });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
     app.get("/api/results/:id/virustotal", async (req, res) => {
         try {
             const results = await getScanResults();
             const result = results.find((item: any) => item.id === req.params.id);
             if (!result) throw new Error("Result not found.");
             const sha256 = await ensureScanResultHash(results, result, "sha256");
+            markVirusTotalCheckOpened(result, "sha256");
+            await saveScanResults(results);
             res.json({
                 success: true,
                 sha256,
@@ -6457,6 +7160,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             if (!result.originalPath || !existsSync(result.originalPath)) {
                 throw new Error("The original file is unavailable, so it cannot be uploaded for a second opinion.");
             }
+            markVirusTotalCheckOpened(result, "upload");
+            await saveScanResults(results);
             res.json({
                 success: true,
                 filePath: result.originalPath,
@@ -6709,9 +7414,19 @@ if ($dialog.ShowDialog() -eq 'OK') {
             }
             if (!report.sha256 && existsSync(report.originalPath)) {
                 report.sha256 = await hashFile(report.originalPath).catch(() => "");
-                reports[exceptionReportKey(exceptionPath)] = report;
-                await saveExceptionReports(reports);
             }
+            const channel = String(req.body?.channel || "default").replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "default";
+            const openedAt = Date.now();
+            report.falsePositiveOpenedAt = report.falsePositiveOpenedAt || openedAt;
+            report.falsePositiveLastOpenedAt = openedAt;
+            report.falsePositiveChannels = {
+                ...(report.falsePositiveChannels && typeof report.falsePositiveChannels === "object" && !Array.isArray(report.falsePositiveChannels)
+                    ? report.falsePositiveChannels
+                    : {}),
+                [channel]: openedAt
+            };
+            reports[exceptionReportKey(exceptionPath)] = report;
+            await saveExceptionReports(reports);
             res.json({ success: true, ...buildFalsePositiveReport(report) });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e?.message || String(e) });

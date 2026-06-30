@@ -187,6 +187,8 @@ export default function Dashboard() {
   const saneSecurity = status.saneSecurity || {};
   const saneSecurityInstalled = saneSecurity.connected && Number(saneSecurity.installedCount || 0) > 0;
   const formatUpdateDate = (value: any) => value ? new Date(value).toLocaleString() : "Never";
+  const metadataValueClass = "font-medium text-slate-200";
+  const attentionValueClass = "font-medium text-amber-400";
   const openSecuriteInfoDialog = () => {
     setSecuriteInfoPlan(securiteInfo.plan === "paid" ? "paid" : "basic");
     setSecuriteInfoIncludePua(securiteInfo.includePua === true);
@@ -256,18 +258,20 @@ export default function Dashboard() {
           </h3>
           <div className="space-y-3 text-sm">
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
-              <span className="text-slate-500">Version</span>
-              <span className="font-medium text-slate-200">{status.stats.engineVersion}</span>
+              <span className="text-slate-500">ClamAV version</span>
+              <span className={`${status.hasEngine && !status.isSimulated ? metadataValueClass : attentionValueClass} text-right`}>
+                {status.stats.engineVersion}
+              </span>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
               <span className="text-slate-500">YARA Engine</span>
-              <span className={status.hasYaraEngine ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+              <span className={status.hasYaraEngine ? metadataValueClass : attentionValueClass}>
                 {status.hasYaraEngine ? "Installed" : "Not installed"}
               </span>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
               <span className="text-slate-500">YARA Rules</span>
-              <span className={status.hasYaraRules ? "text-emerald-400 font-medium" : "text-amber-400 font-medium"}>
+              <span className={`${status.hasYaraRules ? metadataValueClass : attentionValueClass} text-right`}>
                 {status.hasYaraRules
                   ? `${status.stats.yaraRuleset || "core"} · ${status.stats.yaraRuleCount || 0} rules`
                   : "Missing"}

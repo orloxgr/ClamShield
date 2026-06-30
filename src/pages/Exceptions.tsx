@@ -1,18 +1,38 @@
 import { useState, useEffect } from "react";
-import { ShieldCheck, Trash2, FolderPlus, FilePlus, Send, Loader2 } from "lucide-react";
+import { CheckCircle2, ShieldCheck, Trash2, FolderPlus, FilePlus, Send, Loader2 } from "lucide-react";
 import PageHeader from "../components/PageHeader";
+
+type FalsePositiveChannel = "default" | "gmail" | "outlook";
+
+const falsePositiveChannelNames: Record<FalsePositiveChannel, string> = {
+  default: "report channel",
+  gmail: "Gmail compose",
+  outlook: "Outlook compose"
+};
 
 export default function ExceptionsPage() {
   const [exceptions, setExceptions] = useState<Array<{ path: string, report: any | null }>>([]);
   const [addingError, setAddingError] = useState("");
   const [noticeKind, setNoticeKind] = useState<"error" | "info">("error");
-  const [reportingPath, setReportingPath] = useState<string | null>(null);
+  const [reportingTarget, setReportingTarget] = useState<{ path: string, channel: FalsePositiveChannel } | null>(null);
+  const [preparedReports, setPreparedReports] = useState<Record<string, boolean>>({});
 
   const fetchExceptions = async () => {
     try {
       const r = await fetch("/api/exceptions/reporting");
       const data = await r.json();
-      if (Array.isArray(data)) setExceptions(data);
+      if (Array.isArray(data)) {
+        setExceptions(data);
+        setPreparedReports(prev => {
+          const next = { ...prev };
+          data.forEach((item: any) => {
+            if (item?.path && (item.report?.falsePositiveOpenedAt || item.report?.falsePositiveLastOpenedAt)) {
+              next[item.path] = true;
+            }
+          });
+          return next;
+        });
+      }
     } catch {
       setExceptions([]);
     }
@@ -68,22 +88,25 @@ export default function ExceptionsPage() {
     }
   };
 
-  const reportFalsePositive = async (exceptionPath: string) => {
-    setReportingPath(exceptionPath);
+  const reportFalsePositive = async (exceptionPath: string, channel: FalsePositiveChannel = "default") => {
+    setReportingTarget({ path: exceptionPath, channel });
     setAddingError("");
     try {
       const response = await fetch("/api/exceptions/report-false-positive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: exceptionPath })
+        body: JSON.stringify({ path: exceptionPath, channel })
       });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare the false-positive report.");
       await navigator.clipboard?.writeText(data.details).catch(() => {});
-      window.open(data.url, "_blank", "noopener,noreferrer");
+      const targetUrl = channel === "gmail" ? data.emailUrls?.gmail : channel === "outlook" ? data.emailUrls?.outlook : data.url;
+      if (!targetUrl) throw new Error(`${falsePositiveChannelNames[channel]} is not available for this provider.`);
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+      setPreparedReports(prev => ({ ...prev, [exceptionPath]: true }));
       setNoticeKind("info");
       setAddingError(
-        `Opened ${data.provider.name}. Report details were copied to the clipboard.${
+        `Opened ${channel === "default" ? data.provider.name : falsePositiveChannelNames[channel]}. Report details were copied to the clipboard.${
           data.requiresSample ? " Attach or upload the file only if you are comfortable sharing it with that provider." : ""
         }`
       );
@@ -91,7 +114,7 @@ export default function ExceptionsPage() {
       setNoticeKind("error");
       setAddingError(error.message || "Could not prepare the false-positive report.");
     } finally {
-      setReportingPath(null);
+      setReportingTarget(null);
     }
   };
 
@@ -155,13 +178,65 @@ export default function ExceptionsPage() {
                   {exception.report && (
                     <button
                       onClick={() => reportFalsePositive(exception.path)}
-                      disabled={reportingPath !== null}
-                      className="inline-flex items-center gap-2 px-3 py-2 text-xs text-indigo-300 hover:text-white bg-indigo-500/10 hover:bg-indigo-500/20 disabled:opacity-50 rounded-lg transition-colors border border-indigo-500/20"
-                      title={`Open the ${exception.report.provider.name} false-positive channel`}
+                      disabled={reportingTarget !== null}
+                      className={`inline-flex items-center gap-2 px-3 py-2 text-xs hover:text-white disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors border ${
+                        preparedReports[exception.path]
+                          ? "text-emerald-200 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30"
+                          : "text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border-indigo-500/20"
+                      }`}
+                      title={
+                        preparedReports[exception.path]
+                          ? `Open the ${exception.report.provider.name} false-positive channel again`
+                          : `Open the ${exception.report.provider.name} false-positive channel`
+                      }
                     >
-                      {reportingPath === exception.path ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                      Report false positive
+                      {reportingTarget?.path === exception.path && reportingTarget.channel === "default" ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : preparedReports[exception.path] ? (
+                        <CheckCircle2 className="w-4 h-4" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
+                      {reportingTarget?.path === exception.path && reportingTarget.channel === "default" ? "Opening report..." : preparedReports[exception.path] ? "Report opened" : "Report false positive"}
                     </button>
+                  )}
+                  {exception.report?.provider?.method === "email" && (
+                    <>
+                      <button
+                        onClick={() => reportFalsePositive(exception.path, "gmail")}
+                        disabled={reportingTarget !== null}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-2 text-xs hover:text-white disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors border ${
+                          preparedReports[exception.path]
+                            ? "text-emerald-200 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30"
+                            : "text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700"
+                        }`}
+                        title="Open Gmail compose with the false-positive report"
+                      >
+                        {reportingTarget?.path === exception.path && reportingTarget.channel === "gmail" ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : preparedReports[exception.path] ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        ) : null}
+                        Gmail
+                      </button>
+                      <button
+                        onClick={() => reportFalsePositive(exception.path, "outlook")}
+                        disabled={reportingTarget !== null}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-2 text-xs hover:text-white disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors border ${
+                          preparedReports[exception.path]
+                            ? "text-emerald-200 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30"
+                            : "text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700"
+                        }`}
+                        title="Open Outlook compose with the false-positive report"
+                      >
+                        {reportingTarget?.path === exception.path && reportingTarget.channel === "outlook" ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : preparedReports[exception.path] ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        ) : null}
+                        Outlook
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={() => removeException(exception.path)}
