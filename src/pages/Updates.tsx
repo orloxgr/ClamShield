@@ -5,7 +5,9 @@ import PageHeader from "../components/PageHeader";
 import { formatSystemDateTime } from "../lib/dateFormat";
 
 const MAX_TERMINAL_LINES = 800;
-type DetailsPanel = "clamav" | "securiteinfo" | "sanesecurity" | "yara" | "app";
+type DetailsPanel = "clamav" | "securiteinfo" | "sanesecurity" | "yara" | "clamavEngine" | "yaraEngine" | "app";
+type EngineUpdateKind = "clamavEngine" | "yaraEngine";
+type UpdateCheckState = "idle" | "checking" | "available" | "none" | "running" | "done";
 
 function appendOutput(previous: string[], next: string[]) {
   return [...previous, ...next].slice(-MAX_TERMINAL_LINES);
@@ -23,7 +25,15 @@ export default function Updates() {
   const [yaraUpdateState, setYaraUpdateState] = useState<"idle" | "running" | "done">("idle");
   const [yaraOutput, setYaraOutput] = useState<string[]>([]);
   const [yaraJobId, setYaraJobId] = useState<string | null>(null);
-  const [appUpdateState, setAppUpdateState] = useState<"idle" | "checking" | "available" | "none" | "running" | "done">("idle");
+  const [clamavEngineState, setClamavEngineState] = useState<UpdateCheckState>("idle");
+  const [clamavEngineInfo, setClamavEngineInfo] = useState<any>(null);
+  const [clamavEngineOutput, setClamavEngineOutput] = useState<string[]>([]);
+  const [clamavEngineJobId, setClamavEngineJobId] = useState<string | null>(null);
+  const [yaraEngineState, setYaraEngineState] = useState<UpdateCheckState>("idle");
+  const [yaraEngineInfo, setYaraEngineInfo] = useState<any>(null);
+  const [yaraEngineOutput, setYaraEngineOutput] = useState<string[]>([]);
+  const [yaraEngineJobId, setYaraEngineJobId] = useState<string | null>(null);
+  const [appUpdateState, setAppUpdateState] = useState<UpdateCheckState>("idle");
   const [appUpdateInfo, setAppUpdateInfo] = useState<any>(null);
   const [appOutput, setAppOutput] = useState<string[]>([]);
   const [appJobId, setAppJobId] = useState<string | null>(null);
@@ -32,6 +42,8 @@ export default function Updates() {
   const updateEventSourceRef = useRef<EventSource | null>(null);
   const saneEventSourceRef = useRef<EventSource | null>(null);
   const yaraEventSourceRef = useRef<EventSource | null>(null);
+  const clamavEngineEventSourceRef = useRef<EventSource | null>(null);
+  const yaraEngineEventSourceRef = useRef<EventSource | null>(null);
   const appEventSourceRef = useRef<EventSource | null>(null);
 
   const closeJobStream = (ref: { current: EventSource | null }) => {
@@ -147,9 +159,13 @@ export default function Updates() {
       setAppOutput(prev => appendOutput(prev, [
         `Installed: ${data.currentVersion}`,
         `Latest: ${data.latestVersion}`,
-        data.updateAvailable ? `Update available: ${data.assetName || data.releaseUrl}` : "ClamShield is up to date."
+        data.newerVersionAvailable
+          ? data.skipped
+            ? `Skipped ClamShield ${data.latestVersion}. You can still install it manually.`
+            : `Update available: ${data.assetName || data.releaseUrl}`
+          : "ClamShield is up to date."
       ]));
-      setAppUpdateState(data.updateAvailable ? "available" : "none");
+      setAppUpdateState(data.newerVersionAvailable ? "available" : "none");
     } catch (e: any) {
       setAppOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
       setAppUpdateState("done");
@@ -180,14 +196,111 @@ export default function Updates() {
       body: JSON.stringify({ version: appUpdateInfo.latestVersion })
     });
     setAppOutput(prev => appendOutput(prev, [`Skipped ClamShield ${appUpdateInfo.latestVersion}.`]));
-    setAppUpdateState("none");
+    setAppUpdateState("available");
   };
 
-  const disableAppUpdates = async () => {
-    await fetch("/api/app-update/disable", { method: "POST" });
-    setAppOutput(prev => appendOutput(prev, ["ClamShield update checks disabled. You can re-enable them in Updates."]));
-    setAppUpdateState("done");
-    refreshStatus();
+  const remindAppTomorrow = async () => {
+    if (!appUpdateInfo?.latestVersion) return;
+    await fetch("/api/app-update/remind", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remindAfter: Date.now() + 24 * 60 * 60 * 1000 })
+    });
+    setAppOutput(prev => appendOutput(prev, [`Will remind you tomorrow about ClamShield ${appUpdateInfo.latestVersion}.`]));
+    setAppUpdateState("available");
+  };
+
+  const engineConfig = {
+    clamavEngine: {
+      label: "ClamAV Engine",
+      checkPath: "/api/clamav-engine-update",
+      installPath: "/api/clamav-engine-update/install",
+      skipPath: "/api/clamav-engine-update/skip",
+      remindPath: "/api/clamav-engine-update/remind",
+      setState: setClamavEngineState,
+      setInfo: setClamavEngineInfo,
+      setOutput: setClamavEngineOutput,
+      setJobId: setClamavEngineJobId,
+      ref: clamavEngineEventSourceRef
+    },
+    yaraEngine: {
+      label: "YARA Engine",
+      checkPath: "/api/yara-engine-update",
+      installPath: "/api/yara-engine-update/install",
+      skipPath: "/api/yara-engine-update/skip",
+      remindPath: "/api/yara-engine-update/remind",
+      setState: setYaraEngineState,
+      setInfo: setYaraEngineInfo,
+      setOutput: setYaraEngineOutput,
+      setJobId: setYaraEngineJobId,
+      ref: yaraEngineEventSourceRef
+    }
+  };
+
+  const checkEngineUpdate = async (kind: EngineUpdateKind) => {
+    const config = engineConfig[kind];
+    config.setState("checking");
+    config.setOutput([`Checking ${config.label} releases...`]);
+    try {
+      const res = await fetch(config.checkPath);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to check ${config.label} updates.`);
+      config.setInfo(data);
+      config.setOutput(prev => appendOutput(prev, [
+        `Installed: ${data.currentVersion || data.currentLabel || "Unknown"}`,
+        `Latest: ${data.latestVersion || "Unknown"}`,
+        data.newerVersionAvailable
+          ? data.skipped
+            ? `Skipped ${config.label} ${data.latestVersion}. You can still install it manually.`
+            : `Update available: ${data.assetName || data.releaseUrl}`
+          : `${config.label} is up to date.`
+      ]));
+      config.setState(data.newerVersionAvailable ? "available" : "none");
+    } catch (e: any) {
+      config.setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+      config.setState("done");
+    }
+  };
+
+  const installEngineUpdate = async (kind: EngineUpdateKind) => {
+    const config = engineConfig[kind];
+    closeJobStream(config.ref);
+    config.setState("running");
+    config.setOutput(prev => appendOutput(prev, [`Installing ${config.label} update...`]));
+    try {
+      const res = await fetch(config.installPath, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to start ${config.label} update.`);
+      config.setJobId(data.jobId);
+    } catch (e: any) {
+      config.setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+      config.setState("done");
+      config.setJobId(null);
+    }
+  };
+
+  const skipEngineVersion = async (kind: EngineUpdateKind, info: any) => {
+    if (!info?.latestVersion) return;
+    const config = engineConfig[kind];
+    await fetch(config.skipPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: info.latestVersion })
+    });
+    config.setOutput(prev => appendOutput(prev, [`Skipped ${config.label} ${info.latestVersion}.`]));
+    config.setState("none");
+  };
+
+  const remindEngineTomorrow = async (kind: EngineUpdateKind, info: any) => {
+    if (!info?.latestVersion) return;
+    const config = engineConfig[kind];
+    await fetch(config.remindPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remindAfter: Date.now() + 24 * 60 * 60 * 1000 })
+    });
+    config.setOutput(prev => appendOutput(prev, [`Will remind you tomorrow about ${config.label} ${info.latestVersion}.`]));
+    config.setState("none");
   };
 
   const bindJobStream = (
@@ -247,6 +360,24 @@ export default function Updates() {
   ), [yaraUpdateState, yaraJobId]);
 
   useEffect(() => bindJobStream(
+    clamavEngineState === "running",
+    clamavEngineJobId,
+    clamavEngineEventSourceRef,
+    logs => setClamavEngineOutput(prev => appendOutput(prev, logs)),
+    () => { setClamavEngineState("done"); setClamavEngineJobId(null); },
+    "ClamAV Engine update"
+  ), [clamavEngineState, clamavEngineJobId]);
+
+  useEffect(() => bindJobStream(
+    yaraEngineState === "running",
+    yaraEngineJobId,
+    yaraEngineEventSourceRef,
+    logs => setYaraEngineOutput(prev => appendOutput(prev, logs)),
+    () => { setYaraEngineState("done"); setYaraEngineJobId(null); },
+    "YARA Engine update"
+  ), [yaraEngineState, yaraEngineJobId]);
+
+  useEffect(() => bindJobStream(
     appUpdateState === "running",
     appJobId,
     appEventSourceRef,
@@ -259,10 +390,14 @@ export default function Updates() {
   const signatureUpdateActive = updateState === "running" || status?.isSignatureUpdateRunning;
   const saneUpdateActive = saneUpdateState === "running" || status?.isSaneSecurityUpdateRunning;
   const yaraUpdateActive = yaraUpdateState === "running";
+  const clamavEngineActive = clamavEngineState === "checking" || clamavEngineState === "running";
+  const yaraEngineActive = yaraEngineState === "checking" || yaraEngineState === "running";
   const appUpdateActive = appUpdateState === "checking" || appUpdateState === "running";
   const signatureUpdateFailed = updateState === "done" && output.some(line => /error|failed/i.test(line));
   const saneUpdateFailed = saneUpdateState === "done" && saneOutput.some(line => /error|failed/i.test(line));
   const yaraUpdateFailed = yaraUpdateState === "done" && yaraOutput.some(line => /error|failed/i.test(line));
+  const clamavEngineFailed = clamavEngineState === "done" && clamavEngineOutput.some(line => /error|failed/i.test(line));
+  const yaraEngineFailed = yaraEngineState === "done" && yaraEngineOutput.some(line => /error|failed/i.test(line));
   const appUpdateFailed = appUpdateState === "done" && appOutput.some(line => /error|failed/i.test(line));
 
   const formatExact = (value?: string | null) => formatSystemDateTime(value);
@@ -286,6 +421,8 @@ export default function Updates() {
   const signatureProgress = progressValue(updateState, signatureUpdateActive, output);
   const saneProgress = progressValue(saneUpdateState, saneUpdateActive, saneOutput);
   const yaraProgress = progressValue(yaraUpdateState, yaraUpdateActive, yaraOutput);
+  const clamavEngineProgress = clamavEngineActive ? Math.min(94, Math.max(12, 20 + clamavEngineOutput.length * 4)) : clamavEngineState !== "idle" ? 100 : 0;
+  const yaraEngineProgress = yaraEngineActive ? Math.min(94, Math.max(12, 20 + yaraEngineOutput.length * 4)) : yaraEngineState !== "idle" ? 100 : 0;
   const appProgress = appUpdateActive
     ? Math.min(94, Math.max(12, 20 + appOutput.length * 4))
     : appUpdateState !== "idle" ? 100 : 0;
@@ -293,8 +430,8 @@ export default function Updates() {
   const signatureProgressLabel = output.at(-1) || (signatureTarget === "securiteinfo" ? "SecuriteInfo is checking signature sources..." : "FreshClam is checking signature sources...");
 
   return (
-    <div className="px-8 max-w-4xl mx-auto space-y-8 pb-20">
-      <PageHeader title="Updates" description="Update ClamAV, SecuriteInfo, SaneSecurity, YARA Forge, and ClamShield." />
+    <div className="px-8 max-w-4xl mx-auto space-y-8 pb-20 flex flex-col">
+      <PageHeader title="Updates" description="Update signatures, engines, YARA Forge rules, and ClamShield." />
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
         <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
@@ -407,7 +544,7 @@ export default function Updates() {
       <section className="bg-slate-900 border border-violet-500/20 rounded-xl overflow-hidden">
         <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="flex items-start gap-4 min-w-0">
-            <div className="p-3 bg-violet-500/10 text-violet-400 rounded-full shrink-0"><ShieldCheck className="w-8 h-8" /></div>
+            <div className="p-3 bg-violet-500/10 text-violet-400 rounded-full shrink-0"><Database className="w-8 h-8" /></div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-semibold text-white text-lg">SaneSecurity Signatures</h3>
@@ -452,6 +589,104 @@ export default function Updates() {
         {(saneUpdateState === "running" || saneUpdateState === "done") && (
           <div className="px-8 pb-8 pt-4 border-t border-violet-500/20">
             <Terminal title="SaneSecurity Output" running={saneUpdateState === "running"} lines={saneOutput} accent="text-violet-300/80" />
+          </div>
+        )}
+      </section>
+
+      <section className="order-last bg-slate-900 border border-emerald-500/20 rounded-xl overflow-hidden">
+        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">ClamAV Engine</h3>
+              <p className="text-slate-400 text-sm">
+                Installed: {status?.stats?.engineVersion || "Unknown"}{clamavEngineInfo?.latestVersion ? ` - Latest: ${clamavEngineInfo.latestVersion}` : ""} - Last checked: {statusLine(status?.stats?.clamavEngineLastCheck, status?.stats?.clamavEngineLastCheckResult)}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {clamavEngineState === "available" && <>
+              <button onClick={() => skipEngineVersion("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
+              <button onClick={() => remindEngineTomorrow("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
+            </>}
+            <button onClick={() => setOpenPanel(openPanel === "clamavEngine" ? null : "clamavEngine")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "clamavEngine" ? "rotate-180" : ""}`} /></button>
+            <button onClick={clamavEngineState === "available" ? () => installEngineUpdate("clamavEngine") : () => checkEngineUpdate("clamavEngine")} disabled={clamavEngineActive} className="flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${clamavEngineActive ? "animate-spin" : ""}`} />
+              {clamavEngineState === "checking" ? "Checking..." : clamavEngineState === "running" ? "Installing..." : clamavEngineState === "available" ? "Install Update" : "Check ClamAV"}
+            </button>
+          </div>
+        </div>
+        {openPanel === "clamavEngine" && (
+          <div className="px-8 pb-8 pt-2 border-t border-emerald-500/20 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for ClamAV Engine updates</span><input type="checkbox" checked={updateSettings.clamavEngineUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ clamavEngineUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me when update is available</span><input type="checkbox" checked={updateSettings.clamavEngineUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ clamavEngineUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me on failed update</span><input type="checkbox" checked={updateSettings.clamavEngineUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ clamavEngineUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.clamavEngineUpdateIntervalHours || 24} onChange={event => updateNumberSetting("clamavEngineUpdateIntervalHours", event.target.value, 24, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-emerald-500" /></label>
+          </div>
+        )}
+        {clamavEngineState !== "idle" && (
+          <ProgressPanel
+            title={clamavEngineActive ? "Checking ClamAV Engine updates" : clamavEngineFailed ? "ClamAV Engine update failed" : clamavEngineState === "available" ? (clamavEngineInfo?.skipped ? "ClamAV Engine update skipped" : "ClamAV Engine update available") : "ClamAV Engine update check complete"}
+            progress={clamavEngineProgress}
+            failed={clamavEngineFailed}
+            active={clamavEngineActive}
+            label={clamavEngineOutput.at(-1) || "ClamAV Engine is checking GitHub releases..."}
+            barClass="bg-gradient-to-r from-emerald-500 to-cyan-400"
+            borderClass="border-emerald-500/20"
+          />
+        )}
+        {clamavEngineState !== "idle" && (
+          <div className="px-8 pb-8 pt-4 border-t border-emerald-500/20">
+            <Terminal title="ClamAV Engine Output" running={clamavEngineActive} lines={clamavEngineOutput} />
+          </div>
+        )}
+      </section>
+
+      <section className="order-last bg-slate-900 border border-amber-500/20 rounded-xl overflow-hidden">
+        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-amber-500/10 text-amber-300 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">YARA Engine</h3>
+              <p className="text-slate-400 text-sm">
+                Installed: {status?.stats?.yaraEngineVersion || "Unknown"}{yaraEngineInfo?.latestVersion ? ` - Latest: ${yaraEngineInfo.latestVersion}` : ""} - Last checked: {statusLine(status?.stats?.yaraEngineLastCheck, status?.stats?.yaraEngineLastCheckResult)}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {yaraEngineState === "available" && <>
+              <button onClick={() => skipEngineVersion("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
+              <button onClick={() => remindEngineTomorrow("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
+            </>}
+            <button onClick={() => setOpenPanel(openPanel === "yaraEngine" ? null : "yaraEngine")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yaraEngine" ? "rotate-180" : ""}`} /></button>
+            <button onClick={yaraEngineState === "available" ? () => installEngineUpdate("yaraEngine") : () => checkEngineUpdate("yaraEngine")} disabled={yaraEngineActive} className="flex items-center gap-2 px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${yaraEngineActive ? "animate-spin" : ""}`} />
+              {yaraEngineState === "checking" ? "Checking..." : yaraEngineState === "running" ? "Installing..." : yaraEngineState === "available" ? "Install Update" : "Check YARA"}
+            </button>
+          </div>
+        </div>
+        {openPanel === "yaraEngine" && (
+          <div className="px-8 pb-8 pt-2 border-t border-amber-500/20 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for YARA Engine updates</span><input type="checkbox" checked={updateSettings.yaraEngineUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ yaraEngineUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me when update is available</span><input type="checkbox" checked={updateSettings.yaraEngineUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ yaraEngineUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me on failed update</span><input type="checkbox" checked={updateSettings.yaraEngineUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ yaraEngineUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.yaraEngineUpdateIntervalHours || 24} onChange={event => updateNumberSetting("yaraEngineUpdateIntervalHours", event.target.value, 24, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-amber-500" /></label>
+          </div>
+        )}
+        {yaraEngineState !== "idle" && (
+          <ProgressPanel
+            title={yaraEngineActive ? "Checking YARA Engine updates" : yaraEngineFailed ? "YARA Engine update failed" : yaraEngineState === "available" ? (yaraEngineInfo?.skipped ? "YARA Engine update skipped" : "YARA Engine update available") : "YARA Engine update check complete"}
+            progress={yaraEngineProgress}
+            failed={yaraEngineFailed}
+            active={yaraEngineActive}
+            label={yaraEngineOutput.at(-1) || "YARA Engine is checking GitHub releases..."}
+            barClass="bg-gradient-to-r from-amber-500 to-emerald-400"
+            borderClass="border-amber-500/20"
+          />
+        )}
+        {yaraEngineState !== "idle" && (
+          <div className="px-8 pb-8 pt-4 border-t border-amber-500/20">
+            <Terminal title="YARA Engine Output" running={yaraEngineActive} lines={yaraEngineOutput} accent="text-amber-300/80" />
           </div>
         )}
       </section>
@@ -513,7 +748,7 @@ export default function Updates() {
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {appUpdateState === "available" && <>
               <button onClick={skipAppVersion} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
-              <button onClick={disableAppUpdates} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Disable Checks</button>
+              <button onClick={remindAppTomorrow} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
             </>}
             <button onClick={() => setOpenPanel(openPanel === "app" ? null : "app")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "app" ? "rotate-180" : ""}`} /></button>
             <button onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate} disabled={appUpdateState === "checking" || appUpdateState === "running"} className="flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
@@ -525,13 +760,15 @@ export default function Updates() {
         {openPanel === "app" && (
           <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
             <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for ClamShield app updates</span><input type="checkbox" checked={updateSettings.appUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ appUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me when update is available</span><input type="checkbox" checked={updateSettings.appUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ appUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me on failed update</span><input type="checkbox" checked={updateSettings.appUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ appUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
             <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.appUpdateIntervalHours || 168} onChange={event => updateNumberSetting("appUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
             <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Silent install ClamShield updates</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
           </div>
         )}
         {appUpdateState !== "idle" && (
           <ProgressPanel
-            title={appUpdateActive ? "Checking ClamShield updates" : appUpdateFailed ? "ClamShield update check failed" : appUpdateState === "available" ? "ClamShield update available" : "ClamShield update check complete"}
+            title={appUpdateActive ? "Checking ClamShield updates" : appUpdateFailed ? "ClamShield update check failed" : appUpdateState === "available" ? (appUpdateInfo?.skipped ? "ClamShield update skipped" : "ClamShield update available") : "ClamShield update check complete"}
             progress={appProgress}
             failed={appUpdateFailed}
             active={appUpdateActive}

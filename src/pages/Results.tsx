@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, CheckCircle2, ListChecks, Loader2, SearchCheck, ShieldCheck, UploadCloud } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle2, Loader2, SearchCheck, ShieldCheck, Trash2, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import { formatSystemDateTime } from "../lib/dateFormat";
@@ -14,12 +14,14 @@ export default function ResultsPage() {
   const [page, setPage] = useState(1);
   const [dateFilter, setDateFilter] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [bulkBusy, setBulkBusy] = useState<"md5" | "quarantine" | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<"exception" | "quarantine" | "clear" | null>(null);
   const [message, setMessage] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [virusTotalBusy, setVirusTotalBusy] = useState<{ id: string, action: VirusTotalAction } | null>(null);
   const [checkedVirusTotal, setCheckedVirusTotal] = useState<Record<string, Partial<Record<VirusTotalAction, boolean>>>>({});
-  const md5CheckableItems = items.filter(item => item.available !== false || item.md5);
-  const allVisibleMd5Checked = md5CheckableItems.length > 0 && md5CheckableItems.every(item => checkedVirusTotal[item.id]?.md5);
+  const selectedItems = items.filter(item => selectedIds[item.id]);
+  const selectedCount = selectedItems.length;
+  const allVisibleSelected = items.length > 0 && items.every(item => selectedIds[item.id]);
 
   const markVirusTotalChecked = (id: string, action: VirusTotalAction) => {
     setCheckedVirusTotal(prev => ({
@@ -59,6 +61,10 @@ export default function ResultsPage() {
         });
         return next;
       });
+      setSelectedIds(prev => {
+        const visibleIds = new Set(sorted.map((item: any) => String(item.id || "")));
+        return Object.fromEntries(Object.entries(prev).filter(([id]) => visibleIds.has(id)));
+      });
     } catch {
       setItems([]);
       setTotalItems(0);
@@ -95,35 +101,71 @@ export default function ResultsPage() {
     }
   };
 
-  const quarantineAll = async () => {
-    if (!items.length || !confirm("Quarantine all undecided suspicious files?")) return;
-    setBulkBusy("quarantine");
+  const toggleSelected = (id: string, checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = { ...prev };
+      if (checked) next[id] = true;
+      else delete next[id];
+      return next;
+    });
+  };
+
+  const toggleSelectVisible = (checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = { ...prev };
+      items.forEach(item => {
+        if (!item.id) return;
+        if (checked) next[item.id] = true;
+        else delete next[item.id];
+      });
+      return next;
+    });
+  };
+
+  const runSelectedAction = async (action: "quarantine" | "exception") => {
+    if (selectedCount === 0) return;
+    if (action === "quarantine" && !confirm(`Quarantine ${selectedCount} selected result item(s)?`)) return;
+    setBulkBusy(action);
     setMessage("");
     try {
-      const res = await fetch("/api/results/quarantine-all", { method: "POST" });
+      const res = await fetch("/api/results/action-selected", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ids: selectedItems.map(item => item.id) })
+      });
       const data = await res.json();
-      if (!res.ok && res.status !== 207) throw new Error(data.error || "Bulk quarantine failed.");
-      setMessage(data.errors?.length
-        ? `Quarantined ${data.quarantinedCount}. Removed ${data.removedUnavailableCount || 0} unavailable item(s). ${data.errors.length} item(s) could not be moved.`
-        : `Quarantined ${data.quarantinedCount} item(s). Removed ${data.removedUnavailableCount || 0} unavailable item(s).`);
+      if (!res.ok && res.status !== 207) throw new Error(data.error || "Selected action failed.");
+      setMessage(action === "quarantine"
+        ? `Quarantined ${data.affectedCount || 0} selected item(s).${data.removedUnavailableCount ? ` Removed ${data.removedUnavailableCount} unavailable item(s).` : ""}${data.errors?.length ? ` ${data.errors.length} item(s) could not be moved.` : ""}`
+        : `Added ${data.affectedCount || 0} selected item(s) to exceptions.${data.errors?.length ? ` ${data.errors.length} item(s) could not be added.` : ""}`);
+      setSelectedIds({});
       fetchItems();
     } catch (e: any) {
-      setMessage(e.message || "Bulk quarantine failed.");
+      setMessage(e.message || "Selected action failed.");
     } finally {
       setBulkBusy(null);
     }
   };
 
-  const clearMissing = async () => {
+  const clearSelectedUnavailable = async () => {
+    if (selectedCount === 0) return;
     setMessage("");
+    setBulkBusy("clear");
     try {
-      const res = await fetch("/api/results/clear-missing", { method: "POST" });
+      const res = await fetch("/api/results/clear-selected-unavailable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedItems.map(item => item.id) })
+      });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Cleanup failed.");
-      setMessage(`Removed ${data.removedCount} unavailable result item(s).`);
+      setMessage(`Removed ${data.removedCount} selected unavailable result item(s).`);
+      setSelectedIds({});
       fetchItems();
     } catch (e: any) {
       setMessage(e.message || "Cleanup failed.");
+    } finally {
+      setBulkBusy(null);
     }
   };
 
@@ -166,46 +208,6 @@ export default function ResultsPage() {
     }
   };
 
-  const checkAllMd5 = async () => {
-    if (!items.length) return;
-    setBulkBusy("md5");
-    setMessage("");
-    try {
-      const response = await fetch("/api/results/virustotal-md5-all", { method: "POST" });
-      const data = await response.json();
-      if (!response.ok || !data.success) throw new Error(data.error || "Could not prepare MD5 checks.");
-      if (!data.items?.length) {
-        setMessage("No available files or saved MD5 hashes were found for VirusTotal checking.");
-        return;
-      }
-      if (data.items.length > 8 && !confirm(`Open ${data.items.length} VirusTotal MD5 report tabs? ClamShield will only send hashes, not files.`)) {
-        await navigator.clipboard?.writeText(data.items.map((item: any) => item.md5).join("\n")).catch(() => {});
-        setMessage(`Copied ${data.items.length} MD5 hashes to the clipboard. No files were uploaded.`);
-        return;
-      }
-      await navigator.clipboard?.writeText(data.items.map((item: any) => item.md5).join("\n")).catch(() => {});
-      data.items.forEach((item: any) => window.open(item.url, "_blank", "noopener,noreferrer"));
-      setCheckedVirusTotal(prev => {
-        const next = { ...prev };
-        data.items.forEach((item: any) => {
-          if (item.id) next[item.id] = { ...next[item.id], md5: true };
-        });
-        return next;
-      });
-      await fetch("/api/results/virustotal-checks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "md5", ids: data.items.map((item: any) => item.id).filter(Boolean) })
-      }).catch(() => {});
-      setMessage(`Opened ${data.items.length} VirusTotal MD5 report${data.items.length === 1 ? "" : "s"}. Copied the MD5 list. ClamShield did not upload files.${data.skippedCount ? ` Skipped ${data.skippedCount} unavailable item(s).` : ""}`);
-      fetchItems();
-    } catch (error: any) {
-      setMessage(error.message || "Could not check all results.");
-    } finally {
-      setBulkBusy(null);
-    }
-  };
-
   const pageCount = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
   const currentPage = Math.min(page, pageCount);
   const rangeStart = totalItems === 0 ? 0 : pageSize === "all" ? 1 : (currentPage - 1) * pageSize + 1;
@@ -217,43 +219,36 @@ export default function ResultsPage() {
         title="Results"
         description="Suspicious files waiting for your decision"
         actions={items.length > 0 ? (
-          <div className="flex items-center gap-3">
-            <button
-              onClick={checkAllMd5}
-              disabled={bulkBusy !== null}
-              title={
-                allVisibleMd5Checked
-                  ? "Open VirusTotal MD5 reports again. Files are not uploaded."
-                  : "Opens VirusTotal reports by MD5 hash only. Files are not uploaded."
-              }
-              className={`inline-flex items-center gap-2 px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors ${
-                allVisibleMd5Checked ? "bg-emerald-600 hover:bg-emerald-500" : "bg-indigo-600 hover:bg-indigo-500"
-              }`}
-            >
-              {bulkBusy === "md5" ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : allVisibleMd5Checked ? (
-                <CheckCircle2 className="w-4 h-4" />
-              ) : (
-                <ListChecks className="w-4 h-4" />
-              )}
-              {bulkBusy === "md5" ? "Checking..." : allVisibleMd5Checked ? "MD5 opened" : "Check all MD5"}
-            </button>
-            <button
-              onClick={clearMissing}
-              disabled={bulkBusy !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700"
-            >
-              Clear unavailable
-            </button>
-            <button
-              onClick={quarantineAll}
-              disabled={bulkBusy !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-            >
-              <Archive className="w-4 h-4" />
-              {bulkBusy === "quarantine" ? "Quarantining..." : "Quarantine all"}
-            </button>
+          <div className="flex flex-col items-end gap-2 max-w-full">
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <span className="text-sm text-slate-400 tabular-nums">{selectedCount} selected</span>
+              <button
+                onClick={() => runSelectedAction("exception")}
+                disabled={bulkBusy !== null || selectedCount === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                {bulkBusy === "exception" ? "Adding..." : "Add selected to exceptions"}
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <button
+                onClick={clearSelectedUnavailable}
+                disabled={bulkBusy !== null || selectedCount === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700"
+              >
+                <Trash2 className="w-4 h-4" />
+                {bulkBusy === "clear" ? "Clearing..." : "Clear selected unavailable"}
+              </button>
+              <button
+                onClick={() => runSelectedAction("quarantine")}
+                disabled={bulkBusy !== null || selectedCount === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+              >
+                <Archive className="w-4 h-4" />
+                {bulkBusy === "quarantine" ? "Quarantining..." : "Quarantine selected"}
+              </button>
+            </div>
           </div>
         ) : null}
       />
@@ -348,13 +343,23 @@ export default function ResultsPage() {
           </div>
           <table className="w-full table-fixed text-left text-sm">
             <colgroup>
-              <col className="w-[58%]" />
+              <col className="w-[5%]" />
+              <col className="w-[53%]" />
               <col className="w-[12%]" />
               <col className="w-[12%]" />
               <col className="w-[18%]" />
             </colgroup>
             <thead className="bg-slate-800/50 text-slate-400">
               <tr>
+                <th className="px-6 py-4 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={e => toggleSelectVisible(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                    title="Select visible results"
+                  />
+                </th>
                 <th className="px-6 py-4 font-medium">Detection</th>
                 <th className="px-6 py-4 font-medium">Engine</th>
                 <th className="px-6 py-4 font-medium">Source</th>
@@ -364,6 +369,15 @@ export default function ResultsPage() {
             <tbody className="divide-y divide-slate-800 text-slate-300">
               {items.map(item => (
                 <tr key={item.id} className="hover:bg-slate-800/50 transition-colors">
+                  <td className="px-6 py-4 align-top">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedIds[item.id])}
+                      onChange={e => toggleSelected(item.id, e.target.checked)}
+                      className="mt-1 w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                      title="Select result"
+                    />
+                  </td>
                   <td className="px-6 py-4 font-medium text-red-400">
                     <span className="inline-flex items-center gap-2">
                       <AlertTriangle className="w-4 h-4" />

@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { CheckCircle2, ShieldCheck, Trash2, FolderPlus, FilePlus, Send, Loader2 } from "lucide-react";
 import PageHeader from "../components/PageHeader";
+import { formatSystemDateTime } from "../lib/dateFormat";
 
 type FalsePositiveChannel = "default" | "gmail" | "outlook";
+type PageSize = 50 | 100 | 200 | 500 | "all";
 
 const falsePositiveChannelNames: Record<FalsePositiveChannel, string> = {
   default: "report channel",
@@ -10,8 +12,23 @@ const falsePositiveChannelNames: Record<FalsePositiveChannel, string> = {
   outlook: "Outlook compose"
 };
 
+async function readJsonResponse(response: Response, fallback: string) {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(fallback);
+  }
+}
+
 export default function ExceptionsPage() {
   const [exceptions, setExceptions] = useState<Array<{ path: string, report: any | null }>>([]);
+  const [totalItems, setTotalItems] = useState(0);
+  const [pageSize, setPageSize] = useState<PageSize>(50);
+  const [page, setPage] = useState(1);
+  const [dateFilter, setDateFilter] = useState("");
+  const [selectedPaths, setSelectedPaths] = useState<Record<string, boolean>>({});
+  const [bulkBusy, setBulkBusy] = useState<"remove" | null>(null);
   const [addingError, setAddingError] = useState("");
   const [noticeKind, setNoticeKind] = useState<"error" | "info">("error");
   const [reportingTarget, setReportingTarget] = useState<{ path: string, channel: FalsePositiveChannel } | null>(null);
@@ -19,13 +36,21 @@ export default function ExceptionsPage() {
 
   const fetchExceptions = async () => {
     try {
-      const r = await fetch("/api/exceptions/reporting");
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (dateFilter) params.set("date", dateFilter);
+      const r = await fetch(`/api/exceptions/reporting?${params.toString()}`);
       const data = await r.json();
-      if (Array.isArray(data)) {
-        setExceptions(data);
+      const sourceItems = Array.isArray(data) ? data : data.items;
+      if (Array.isArray(sourceItems)) {
+        setExceptions(sourceItems);
+        setTotalItems(Array.isArray(data) ? sourceItems.length : Number(data.total || 0));
+        setSelectedPaths(prev => {
+          const visible = new Set(sourceItems.map((item: any) => String(item.path || "")));
+          return Object.fromEntries(Object.entries(prev).filter(([itemPath]) => visible.has(itemPath)));
+        });
         setPreparedReports(prev => {
           const next = { ...prev };
-          data.forEach((item: any) => {
+          sourceItems.forEach((item: any) => {
             if (item?.path && (item.report?.falsePositiveOpenedAt || item.report?.falsePositiveLastOpenedAt)) {
               next[item.path] = true;
             }
@@ -35,12 +60,17 @@ export default function ExceptionsPage() {
       }
     } catch {
       setExceptions([]);
+      setTotalItems(0);
     }
   };
 
   useEffect(() => {
     fetchExceptions();
-  }, []);
+  }, [page, pageSize, dateFilter]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize, dateFilter]);
 
   const handleAdd = async (type: "file" | "folder") => {
     try {
@@ -54,7 +84,9 @@ export default function ExceptionsPage() {
       }
 
       if (selectedPath) {
-        const exceptionPaths = exceptions.map(item => item.path);
+        const allResponse = await fetch("/api/exceptions");
+        const exceptionPaths = await allResponse.json();
+        if (!Array.isArray(exceptionPaths)) throw new Error("Could not load existing exceptions.");
         if (exceptionPaths.includes(selectedPath)) {
           setNoticeKind("error");
           setAddingError("Path is already in exceptions.");
@@ -76,15 +108,70 @@ export default function ExceptionsPage() {
 
   const removeException = async (path: string) => {
     try {
-      const updated = exceptions.map(item => item.path).filter(item => item !== path);
-      await fetch("/api/exceptions", {
+      const response = await fetch("/api/exceptions/delete-selected", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ exceptions: updated })
+        body: JSON.stringify({ paths: [path] })
       });
+      const data = await readJsonResponse(response, "The server returned a non-JSON response while removing the exception. Please retry after the app finishes loading.");
+      if (!response.ok || !data.success) throw new Error(data.error || "Could not remove exception.");
       fetchExceptions();
-    } catch {
-       // Ignore error
+    } catch (e: any) {
+      setNoticeKind("error");
+      setAddingError(e.message || "Could not remove exception.");
+    }
+  };
+
+  const selectedItems = exceptions.filter(item => selectedPaths[item.path]);
+  const selectedCount = selectedItems.length;
+  const allVisibleSelected = exceptions.length > 0 && exceptions.every(item => selectedPaths[item.path]);
+  const pageCount = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const rangeStart = totalItems === 0 ? 0 : pageSize === "all" ? 1 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = pageSize === "all" ? totalItems : Math.min(totalItems, (currentPage - 1) * pageSize + pageSize);
+
+  const toggleSelected = (path: string, checked: boolean) => {
+    setSelectedPaths(prev => {
+      const next = { ...prev };
+      if (checked) next[path] = true;
+      else delete next[path];
+      return next;
+    });
+  };
+
+  const toggleSelectVisible = (checked: boolean) => {
+    setSelectedPaths(prev => {
+      const next = { ...prev };
+      exceptions.forEach(item => {
+        if (checked) next[item.path] = true;
+        else delete next[item.path];
+      });
+      return next;
+    });
+  };
+
+  const removeSelected = async () => {
+    if (selectedCount === 0) return;
+    if (!confirm(`Remove ${selectedCount} selected exception(s)?`)) return;
+    setBulkBusy("remove");
+    setAddingError("");
+    try {
+      const response = await fetch("/api/exceptions/delete-selected", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: selectedItems.map(item => item.path) })
+      });
+      const data = await readJsonResponse(response, "The server returned a non-JSON response while removing exceptions. Please retry after the app finishes loading.");
+      if (!response.ok || !data.success) throw new Error(data.error || "Could not remove selected exceptions.");
+      setNoticeKind("info");
+      setAddingError(`Removed ${data.removedCount || 0} selected exception(s).`);
+      setSelectedPaths({});
+      fetchExceptions();
+    } catch (e: any) {
+      setNoticeKind("error");
+      setAddingError(e.message || "Could not remove selected exceptions.");
+    } finally {
+      setBulkBusy(null);
     }
   };
 
@@ -124,7 +211,16 @@ export default function ExceptionsPage() {
         title="Exceptions"
         description="Files and folders excluded from future scans"
         actions={(
-        <div className="flex gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm text-slate-400 tabular-nums">{selectedCount} selected</span>
+            <button
+                onClick={removeSelected}
+                disabled={selectedCount === 0 || bulkBusy !== null}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+            >
+                <Trash2 className="w-4 h-4" />
+                <span>{bulkBusy === "remove" ? "Removing..." : "Remove selected"}</span>
+            </button>
             <button 
                 onClick={() => handleAdd("file")}
                 className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700"
@@ -153,7 +249,7 @@ export default function ExceptionsPage() {
         </div>
       )}
 
-      {exceptions.length === 0 ? (
+      {totalItems === 0 ? (
         <div className="flex items-center justify-center p-12 mt-12 bg-slate-900 border border-slate-800 rounded-2xl flex-col text-center">
           <ShieldCheck className="w-16 h-16 text-slate-700 mb-4" />
           <h2 className="text-xl font-medium text-slate-300 mb-2">No Exceptions Added</h2>
@@ -163,16 +259,49 @@ export default function ExceptionsPage() {
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+          <div className="px-6 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-sm">
+            <span className="text-slate-400">Showing {rangeStart}-{rangeEnd} of {totalItems}</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-slate-400">
+                Date
+                <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)} className="date-picker-control bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" />
+              </label>
+              {dateFilter && <button onClick={() => setDateFilter("")} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">Clear</button>}
+              <label className="flex items-center gap-2 text-slate-400">
+                Rows
+                <select value={pageSize} onChange={e => setPageSize(e.target.value === "all" ? "all" : Number(e.target.value) as PageSize)} className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500">
+                  <option value={50}>50</option><option value={100}>100</option><option value={200}>200</option><option value={500}>500</option><option value="all">All</option>
+                </select>
+              </label>
+              {pageSize !== "all" && (
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setPage(current => Math.max(1, current - 1))} disabled={currentPage <= 1} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors">Previous</button>
+                  <span className="text-slate-500 tabular-nums">Page {currentPage} / {pageCount}</span>
+                  <button onClick={() => setPage(current => Math.min(pageCount, current + 1))} disabled={currentPage >= pageCount} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors">Next</button>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="px-4 py-3 border-b border-slate-800 bg-slate-800/30">
+            <label className="inline-flex items-center gap-2 text-sm text-slate-400">
+              <input type="checkbox" checked={allVisibleSelected} onChange={e => toggleSelectVisible(e.target.checked)} className="w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" />
+              Select visible
+            </label>
+          </div>
           <div className="divide-y divide-slate-800">
             {exceptions.map((exception, idx) => (
               <div key={idx} className="flex justify-between items-center p-4 hover:bg-slate-800/50 transition-colors">
-                <div className="min-w-0 pr-4">
+                <div className="flex items-start gap-3 min-w-0 pr-4">
+                  <input type="checkbox" checked={Boolean(selectedPaths[exception.path])} onChange={e => toggleSelected(exception.path, e.target.checked)} className="mt-1 w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" />
+                  <div className="min-w-0">
                   <span className="font-mono text-sm text-slate-300 truncate block" title={exception.path}>{exception.path}</span>
+                  <span className="text-xs text-slate-600 mt-1 block">Added {formatSystemDateTime((exception as any).date || (exception as any).addedAt)}</span>
                   {exception.report && (
                     <span className="text-xs text-slate-500 mt-1 block">
                       {exception.report.threatName} · Report to {exception.report.provider.name}
                     </span>
                   )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {exception.report && (

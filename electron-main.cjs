@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, session, shell, powerMonitor, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, session, shell, powerMonitor, ipcMain } = require('electron');
 const path = require('path');
 const { spawn, fork } = require('child_process');
 const fs = require('fs');
@@ -17,9 +17,9 @@ let activeAlerts = new Map();
 let primaryDisplay;
 let resultsReminderWindow = null;
 let scanSummaryWindow = null;
+let updateAvailableWindow = null;
 let debugLoggingEnabled = false;
-let appUpdatePromptVersion = null;
-let lastAppUpdateCheckAt = 0;
+const lastUpdateCheckAt = {};
 let appUpdateChecking = false;
 let scheduledScanChecking = false;
 let scheduledScanRun = null;
@@ -482,6 +482,68 @@ function createScanSummaryWindow(summary, port) {
       .catch(err => console.error("Failed to load scan summary HTML", err));
 }
 
+function createUpdateAvailableWindow(update, config, port) {
+   const { screen } = require('electron');
+   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
+   const workArea = primaryDisplay.workArea;
+
+   if (updateAvailableWindow && !updateAvailableWindow.isDestroyed()) {
+      updateAvailableWindow.close();
+   }
+
+   updateAvailableWindow = new BrowserWindow({
+      width: 460,
+      height: 190,
+      x: workArea.x + workArea.width - 460 - 20,
+      y: workArea.y + workArea.height - 190 - 20,
+      frame: false,
+      transparent: false,
+      backgroundColor: '#0f172a',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      title: `${config.label} Update`,
+      icon: path.join(__dirname, 'public/icon.png'),
+      webPreferences: {
+         nodeIntegration: false,
+         contextIsolation: true
+      }
+   });
+
+   attachWindowLogging(updateAvailableWindow, 'Update available');
+
+   updateAvailableWindow.on('closed', () => {
+      updateAvailableWindow = null;
+   });
+
+   updateAvailableWindow.webContents.on('will-navigate', (event, targetUrl) => {
+      if (targetUrl === `http://127.0.0.1:${port}/updates`) {
+         event.preventDefault();
+         openUpdatesTab(port);
+         if (updateAvailableWindow && !updateAvailableWindow.isDestroyed()) {
+            updateAvailableWindow.close();
+         }
+      }
+   });
+
+   const params = new URLSearchParams({
+      port: String(port),
+      label: String(config.label || 'ClamShield'),
+      current: String(update.currentVersion || update.currentLabel || 'Unknown'),
+      latest: String(update.latestVersion || 'Unknown'),
+      mode: String(config.mode || 'available'),
+      installPath: String(config.installPath || ''),
+      skipPath: String(config.skipPath || ''),
+      remindPath: String(config.remindPath || '')
+   });
+   updateAvailableWindow.loadURL(`http://127.0.0.1:${port}/update-available.html?${params.toString()}`).catch(err => {
+      console.error("Failed to load update popup HTML", err);
+      if (updateAvailableWindow && !updateAvailableWindow.isDestroyed()) {
+         updateAvailableWindow.close();
+      }
+   });
+}
+
 function getFreePort() {
   return new Promise((resolve) => {
     const srv = net.createServer();
@@ -558,6 +620,44 @@ ipcMain.handle('clamshield-alert-log', async (_event, payload = {}) => {
   }
 });
 
+function openUpdatesTab(port) {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.loadURL(`http://127.0.0.1:${port}/updates`).catch(err => console.error('Failed to open Updates', err));
+}
+
+async function checkUpdatePrompt(port, settings, config) {
+  if (settings[config.enabledKey] === false) return;
+  if (settings[config.notifyAvailableKey] === false) return;
+  if (Number(settings[config.remindAfterKey] || 0) > Date.now()) return;
+  if (config.skipWhenSilent && settings.appSilentAutoInstall === true) return;
+
+  const intervalMs = Math.max(1, Number(settings[config.intervalKey] || config.defaultIntervalHours)) * 60 * 60 * 1000;
+  if (Date.now() - Number(lastUpdateCheckAt[config.id] || 0) < intervalMs) return;
+  lastUpdateCheckAt[config.id] = Date.now();
+
+  try {
+    const update = await requestJson(port, config.checkPath);
+    if (!update.updateAvailable) return;
+    if (updateAvailableWindow && !updateAvailableWindow.isDestroyed()) return;
+    createUpdateAvailableWindow(update, config, port);
+  } catch (error) {
+    console.warn(`${config.label} update prompt failed`, error.message);
+    if (settings[config.notifyFailedKey] === true) {
+      createUpdateAvailableWindow({
+        currentVersion: error.message || String(error),
+        latestVersion: '',
+        updateAvailable: false
+      }, {
+        ...config,
+        mode: 'failed'
+      }, port);
+    }
+  }
+}
+
 function pollAppUpdates(port) {
   setInterval(async () => {
     if (appUpdateChecking) return;
@@ -566,37 +666,54 @@ function pollAppUpdates(port) {
       const status = await requestJson(port, '/api/status');
       const settings = status.settings || {};
       debugLoggingEnabled = settings.enableDebugLog === true;
-      if (settings.appUpdateCheckEnabled === false) return;
-      if (settings.appSilentAutoInstall === true) return;
-      const intervalMs = Math.max(1, Number(settings.appUpdateIntervalHours || 168)) * 60 * 60 * 1000;
-      if (Date.now() - lastAppUpdateCheckAt < intervalMs) return;
-      lastAppUpdateCheckAt = Date.now();
-
-      const update = await requestJson(port, '/api/app-update');
-      if (!update.updateAvailable || appUpdatePromptVersion === update.latestVersion) return;
-      appUpdatePromptVersion = update.latestVersion;
-
-      const choice = dialog.showMessageBoxSync(mainWindow || undefined, {
-        type: 'info',
-        title: 'ClamShield Update Available',
-        message: `ClamShield ${update.latestVersion} is available.`,
-        detail: `Installed version: ${update.currentVersion}\nLatest version: ${update.latestVersion}`,
-        buttons: ['Install', 'Skip this version', 'Disable update checks', 'Later'],
-        defaultId: 0,
-        cancelId: 3
-      });
-
-      if (choice === 0) {
-        await requestJson(port, '/api/app-update/install', 'POST');
-      } else if (choice === 1) {
-        await requestJson(port, '/api/app-update/skip', 'POST', { version: update.latestVersion });
-      } else if (choice === 2) {
-        await requestJson(port, '/api/app-update/disable', 'POST');
-      } else {
-        appUpdatePromptVersion = null;
+      const updateConfigs = [
+        {
+          id: 'app',
+          label: 'ClamShield',
+          enabledKey: 'appUpdateCheckEnabled',
+          notifyAvailableKey: 'appUpdateNotifyAvailable',
+          notifyFailedKey: 'appUpdateNotifyFailed',
+          remindAfterKey: 'appUpdateRemindAfter',
+          intervalKey: 'appUpdateIntervalHours',
+          defaultIntervalHours: 168,
+          checkPath: '/api/app-update',
+          installPath: '/api/app-update/install',
+          skipPath: '/api/app-update/skip',
+          remindPath: '/api/app-update/remind',
+          skipWhenSilent: true
+        },
+        {
+          id: 'clamav-engine',
+          label: 'ClamAV Engine',
+          enabledKey: 'clamavEngineUpdateCheckEnabled',
+          notifyAvailableKey: 'clamavEngineUpdateNotifyAvailable',
+          notifyFailedKey: 'clamavEngineUpdateNotifyFailed',
+          remindAfterKey: 'clamavEngineRemindAfter',
+          intervalKey: 'clamavEngineUpdateIntervalHours',
+          defaultIntervalHours: 24,
+          checkPath: '/api/clamav-engine-update',
+          installPath: '/api/clamav-engine-update/install',
+          skipPath: '/api/clamav-engine-update/skip',
+          remindPath: '/api/clamav-engine-update/remind'
+        },
+        {
+          id: 'yara-engine',
+          label: 'YARA Engine',
+          enabledKey: 'yaraEngineUpdateCheckEnabled',
+          notifyAvailableKey: 'yaraEngineUpdateNotifyAvailable',
+          notifyFailedKey: 'yaraEngineUpdateNotifyFailed',
+          remindAfterKey: 'yaraEngineRemindAfter',
+          intervalKey: 'yaraEngineUpdateIntervalHours',
+          defaultIntervalHours: 24,
+          checkPath: '/api/yara-engine-update',
+          installPath: '/api/yara-engine-update/install',
+          skipPath: '/api/yara-engine-update/skip',
+          remindPath: '/api/yara-engine-update/remind'
+        }
+      ];
+      for (const config of updateConfigs) {
+        await checkUpdatePrompt(port, settings, config);
       }
-    } catch (error) {
-      console.warn('ClamShield update prompt failed', error.message);
     } finally {
       appUpdateChecking = false;
     }

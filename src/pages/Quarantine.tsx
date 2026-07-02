@@ -11,6 +11,9 @@ export default function Quarantine() {
   const [loading, setLoading] = useState(true);
   const [pageSize, setPageSize] = useState<PageSize>(50);
   const [page, setPage] = useState(1);
+  const [dateFilter, setDateFilter] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
+  const [bulkBusy, setBulkBusy] = useState<"restore" | "delete" | null>(null);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
 
@@ -20,6 +23,7 @@ export default function Quarantine() {
       page: String(page),
       pageSize: String(pageSize)
     });
+    if (dateFilter) params.set("date", dateFilter);
     fetch(`/api/quarantine?${params.toString()}`).then(r => r.json()).then(data => {
       let fetchedItems = [];
       if (Array.isArray(data)) fetchedItems = data;
@@ -29,6 +33,10 @@ export default function Quarantine() {
       fetchedItems.sort((a: any, b: any) => (Number(b.timestamp) || new Date(b.date).getTime()) - (Number(a.timestamp) || new Date(a.date).getTime()));
       setItems(fetchedItems);
       setTotalItems(Array.isArray(data) ? fetchedItems.length : Number(data.total || 0));
+      setSelectedIds(prev => {
+        const visible = new Set(fetchedItems.map((item: any) => String(item.fileName || item.id || "")));
+        return Object.fromEntries(Object.entries(prev).filter(([id]) => visible.has(id)));
+      });
     }).catch(() => {
       setItems([]);
       setTotalItems(0);
@@ -37,11 +45,11 @@ export default function Quarantine() {
 
   useEffect(() => {
     fetchItems();
-  }, [page, pageSize]);
+  }, [page, pageSize, dateFilter]);
 
   useEffect(() => {
     setPage(1);
-  }, [pageSize]);
+  }, [pageSize, dateFilter]);
 
   const openQuarantine = async () => {
     await fetch("/api/open-quarantine");
@@ -78,6 +86,75 @@ export default function Quarantine() {
       setRestoringId(null);
     }
   };
+  const selectedItems = items.filter(item => selectedIds[item.fileName]);
+  const selectedCount = selectedItems.length;
+  const allVisibleSelected = items.length > 0 && items.every(item => selectedIds[item.fileName]);
+
+  const toggleSelected = (fileName: string, checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = { ...prev };
+      if (checked) next[fileName] = true;
+      else delete next[fileName];
+      return next;
+    });
+  };
+
+  const toggleSelectVisible = (checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = { ...prev };
+      items.forEach(item => {
+        if (checked) next[item.fileName] = true;
+        else delete next[item.fileName];
+      });
+      return next;
+    });
+  };
+
+  const restoreSelected = async () => {
+    if (selectedCount === 0) return;
+    if (!confirm(`Restore ${selectedCount} selected quarantined file(s) and add them to exceptions? Only do this if you trust them.`)) return;
+    setBulkBusy("restore");
+    setMessage("");
+    try {
+      const res = await fetch("/api/quarantine/restore-selected-exception", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileNames: selectedItems.map(item => item.fileName) })
+      });
+      const data = await res.json();
+      if (!res.ok && res.status !== 207) throw new Error(data.error || "Restore selected failed.");
+      setMessage(`Restored ${data.restoredCount || 0} selected file(s).${data.errors?.length ? ` ${data.errors.length} item(s) could not be restored.` : ""}`);
+      setSelectedIds({});
+      fetchItems();
+    } catch (e: any) {
+      setMessage(e.message || "Restore selected failed.");
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (selectedCount === 0) return;
+    if (!confirm(`Permanently delete ${selectedCount} selected quarantined file(s)? This cannot be undone.`)) return;
+    setBulkBusy("delete");
+    setMessage("");
+    try {
+      const res = await fetch("/api/quarantine/delete-selected", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileNames: selectedItems.map(item => item.fileName) })
+      });
+      const data = await res.json();
+      if (!res.ok && res.status !== 207) throw new Error(data.error || "Delete selected failed.");
+      setMessage(`Deleted ${data.deletedCount || 0} selected quarantined file(s).${data.errors?.length ? ` ${data.errors.length} item(s) could not be deleted.` : ""}`);
+      setSelectedIds({});
+      fetchItems();
+    } catch (e: any) {
+      setMessage(e.message || "Delete selected failed.");
+    } finally {
+      setBulkBusy(null);
+    }
+  };
   const pageCount = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
   const currentPage = Math.min(page, pageCount);
   const rangeStart = totalItems === 0 ? 0 : pageSize === "all" ? 1 : (currentPage - 1) * pageSize + 1;
@@ -89,23 +166,44 @@ export default function Quarantine() {
         title="Quarantine"
         description="Isolated threats that cannot harm your system"
         actions={(
-        <div className="flex items-center gap-3">
-          {totalItems > 0 && (
-            <button 
-              onClick={emptyQuarantine}
-              className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors border border-red-500/20"
+        <div className="flex flex-col items-end gap-2 max-w-full">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <span className="text-sm text-slate-400 tabular-nums">{selectedCount} selected</span>
+            <button
+              onClick={restoreSelected}
+              disabled={selectedCount === 0 || bulkBusy !== null}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors border border-slate-700"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>{bulkBusy === "restore" ? "Restoring..." : "Restore selected + exceptions"}</span>
+            </button>
+            <button
+              onClick={deleteSelected}
+              disabled={selectedCount === 0 || bulkBusy !== null}
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
             >
               <Trash2 className="w-4 h-4" />
-              <span>Empty Quarantine</span>
+              <span>{bulkBusy === "delete" ? "Deleting..." : "Delete selected"}</span>
             </button>
-          )}
-          <button 
-            onClick={openQuarantine}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
-          >
-            <FolderOpen className="w-4 h-4" />
-            <span>Open Folder</span>
-          </button>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {totalItems > 0 && (
+              <button
+                onClick={emptyQuarantine}
+                className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors border border-red-500/20"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Empty Quarantine</span>
+              </button>
+            )}
+            <button
+              onClick={openQuarantine}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
+            >
+              <FolderOpen className="w-4 h-4" />
+              <span>Open Folder</span>
+            </button>
+          </div>
         </div>
         )}
       />
@@ -138,6 +236,20 @@ export default function Quarantine() {
               Showing {rangeStart}-{rangeEnd} of {totalItems}
             </span>
             <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-slate-400">
+                Date
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={e => setDateFilter(e.target.value)}
+                  className="date-picker-control bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                />
+              </label>
+              {dateFilter && (
+                <button onClick={() => setDateFilter("")} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">
+                  Clear
+                </button>
+              )}
               <label className="flex items-center gap-2 text-slate-400">
                 Rows
                 <select
@@ -176,6 +288,15 @@ export default function Quarantine() {
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-800/50 text-slate-400">
               <tr>
+                <th className="px-6 py-4 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={e => toggleSelectVisible(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                    title="Select visible quarantine items"
+                  />
+                </th>
                 <th className="px-6 py-4 font-medium">Detection Name</th>
                 <th className="px-6 py-4 font-medium">Original Location</th>
                 <th className="px-6 py-4 font-medium">Date Caught</th>
@@ -185,6 +306,15 @@ export default function Quarantine() {
             <tbody className="divide-y divide-slate-800 text-slate-300">
               {items.map((item, idx) => (
                 <tr key={idx} className="hover:bg-slate-800/50 transition-colors">
+                  <td className="px-6 py-4">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedIds[item.fileName])}
+                      onChange={e => toggleSelected(item.fileName, e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                      title="Select quarantine item"
+                    />
+                  </td>
                   <td className="px-6 py-4 font-medium text-red-400">{item.threatName}</td>
                   <td className="px-6 py-4 text-slate-400 font-mono text-xs">{item.originalPath}</td>
                   <td className="px-6 py-4">{formatSystemDateTime(item.date)}</td>

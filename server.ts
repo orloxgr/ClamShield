@@ -319,8 +319,27 @@ const defaultSettings = {
     shieldScanIntensity: 41,
     appUpdateCheckEnabled: true,
     appUpdateIntervalHours: 168,
+    appUpdateNotifyAvailable: true,
+    appUpdateNotifyFailed: false,
+    appUpdateRemindAfter: 0,
     appSilentAutoInstall: false,
     skippedAppVersion: "",
+    clamavEngineUpdateCheckEnabled: true,
+    clamavEngineUpdateIntervalHours: 24,
+    clamavEngineUpdateNotifyAvailable: true,
+    clamavEngineUpdateNotifyFailed: false,
+    clamavEngineSkippedVersion: "",
+    clamavEngineRemindAfter: 0,
+    clamavEngineLastCheck: "",
+    clamavEngineLastCheckResult: "",
+    yaraEngineUpdateCheckEnabled: true,
+    yaraEngineUpdateIntervalHours: 24,
+    yaraEngineUpdateNotifyAvailable: true,
+    yaraEngineUpdateNotifyFailed: false,
+    yaraEngineSkippedVersion: "",
+    yaraEngineRemindAfter: 0,
+    yaraEngineLastCheck: "",
+    yaraEngineLastCheckResult: "",
     offloadToMemory: false,
     maxFileSize: 50, // MB
     scanArchives: true,
@@ -396,9 +415,14 @@ let scanResultsChangedHandler: (() => void | Promise<void>) | null = null;
 let appUpdateInstallPromise: Promise<any> | null = null;
 let queuedAppUpdateResult: any | null = null;
 const appUpdateInstallLoggers = new Set<(message: string) => void>();
+let clamavEngineUpdateInstallPromise: Promise<any> | null = null;
+const clamavEngineUpdateLoggers = new Set<(message: string) => void>();
+let yaraEngineUpdateInstallPromise: Promise<any> | null = null;
+const yaraEngineUpdateLoggers = new Set<(message: string) => void>();
 let freshclamUpdateInProgress = false;
 let saneSecurityUpdateInProgress = false;
 let clamAVVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
+let yaraVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
 
 // Simulate mode if not on Windows or clamscan not found
 let isSimulated = false;
@@ -2531,6 +2555,17 @@ function compareVersions(a: string, b: string) {
     return 0;
 }
 
+function normalizeReleaseVersion(value: any) {
+    return normalizeVersion(String(value || "")
+        .replace(/^clamav-/i, "")
+        .replace(/^yara-/i, ""));
+}
+
+function parseBareVersion(value: any) {
+    const match = String(value || "").match(/(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)/);
+    return match ? normalizeVersion(match[1]) : "0.0.0";
+}
+
 async function getCurrentAppVersion() {
     let pkgVersion = process.env.npm_package_version || "1.0.96";
     const candidatePaths = Array.from(new Set([
@@ -2550,6 +2585,93 @@ async function getCurrentAppVersion() {
     return normalizeVersion(pkgVersion);
 }
 
+async function getCurrentYaraEngineVersion(settings: any) {
+    if (!settings.yaraPath || !existsSync(settings.yaraPath)) return "Not installed";
+    try {
+        const stat = await fs.stat(settings.yaraPath);
+        const now = Date.now();
+        if (
+            yaraVersionCache &&
+            yaraVersionCache.path === settings.yaraPath &&
+            yaraVersionCache.mtimeMs === stat.mtimeMs &&
+            yaraVersionCache.expiresAt > now
+        ) {
+            return yaraVersionCache.value;
+        }
+        const result = await runHiddenProcess(settings.yaraPath, ["--version"], { timeoutMs: 10000 });
+        const output = `${result.stdout}\n${result.stderr}`.trim();
+        const value = parseBareVersion(output) || output.split(/\r?\n/).find(Boolean) || "Version unavailable";
+        yaraVersionCache = {
+            path: settings.yaraPath,
+            mtimeMs: stat.mtimeMs,
+            value,
+            expiresAt: now + 5 * 60 * 1000
+        };
+        return value;
+    } catch (e: any) {
+        console.warn("Could not read YARA engine version:", e?.message || e);
+        return "Version unavailable";
+    }
+}
+
+async function getLatestClamAVEngineRelease(settings: any) {
+    const currentLabel = await getClamAVEngineVersion(settings, Boolean(settings?.clamscanPath && existsSync(settings.clamscanPath)));
+    const currentVersion = parseBareVersion(currentLabel);
+    const releaseRes = await axios.get("https://api.github.com/repos/Cisco-Talos/clamav/releases/latest", {
+        headers: { "User-Agent": "ClamShield" }
+    });
+    const release = releaseRes.data;
+    const latestVersion = normalizeReleaseVersion(release.tag_name || release.name);
+    const skipped = normalizeVersion(settings.clamavEngineSkippedVersion) === latestVersion;
+    const newerVersionAvailable = compareVersions(latestVersion, currentVersion) > 0;
+    const asset = (release.assets || []).find((item: any) => {
+        const name = String(item.name || "").toLowerCase();
+        return name.includes("win") && name.includes("x64") && name.endsWith(".zip") && !name.includes("symbol");
+    });
+    return {
+        currentVersion,
+        currentLabel,
+        latestVersion,
+        newerVersionAvailable,
+        updateAvailable: newerVersionAvailable && !skipped,
+        skipped,
+        releaseUrl: release.html_url,
+        publishedAt: release.published_at,
+        assetName: asset?.name || "",
+        downloadUrl: asset?.browser_download_url || "",
+        assetSize: Number(asset?.size || 0)
+    };
+}
+
+async function getLatestYaraEngineRelease(settings: any) {
+    const currentLabel = await getCurrentYaraEngineVersion(settings);
+    const currentVersion = parseBareVersion(currentLabel);
+    const releaseRes = await axios.get("https://api.github.com/repos/VirusTotal/yara/releases/latest", {
+        headers: { "User-Agent": "ClamShield" }
+    });
+    const release = releaseRes.data;
+    const latestVersion = normalizeReleaseVersion(release.tag_name || release.name);
+    const skipped = normalizeVersion(settings.yaraEngineSkippedVersion) === latestVersion;
+    const newerVersionAvailable = compareVersions(latestVersion, currentVersion) > 0;
+    const asset = (release.assets || []).find((item: any) => {
+        const name = String(item.name || "").toLowerCase();
+        return name.includes("win64") && name.endsWith(".zip");
+    });
+    return {
+        currentVersion,
+        currentLabel,
+        latestVersion,
+        newerVersionAvailable,
+        updateAvailable: newerVersionAvailable && !skipped,
+        skipped,
+        releaseUrl: release.html_url,
+        publishedAt: release.published_at,
+        assetName: asset?.name || "",
+        downloadUrl: asset?.browser_download_url || "",
+        assetSize: Number(asset?.size || 0)
+    };
+}
+
 async function getLatestClamShieldRelease(settings: any) {
     const currentVersion = await getCurrentAppVersion();
     const releaseRes = await axios.get("https://api.github.com/repos/orloxgr/ClamShield/releases/latest", {
@@ -2558,6 +2680,7 @@ async function getLatestClamShieldRelease(settings: any) {
     const release = releaseRes.data;
     const latestVersion = normalizeVersion(release.tag_name || release.name);
     const skipped = normalizeVersion(settings.skippedAppVersion) === latestVersion;
+    const newerVersionAvailable = compareVersions(latestVersion, currentVersion) > 0;
     const asset = (release.assets || []).find((item: any) => {
         const name = String(item.name || "").toLowerCase();
         return name.endsWith(".exe") && (name.includes("setup") || name.includes("clamshield"));
@@ -2566,7 +2689,8 @@ async function getLatestClamShieldRelease(settings: any) {
     return {
         currentVersion,
         latestVersion,
-        updateAvailable: compareVersions(latestVersion, currentVersion) > 0 && !skipped,
+        newerVersionAvailable,
+        updateAvailable: newerVersionAvailable && !skipped,
         skipped,
         releaseUrl: release.html_url,
         publishedAt: release.published_at,
@@ -2579,6 +2703,16 @@ async function getLatestClamShieldRelease(settings: any) {
 
 function emitAppUpdateInstallLog(message: string) {
     for (const logger of appUpdateInstallLoggers) {
+        try {
+            logger(message);
+        } catch {
+            // A disconnected UI must not interrupt the shared update.
+        }
+    }
+}
+
+function emitSharedLog(loggers: Set<(message: string) => void>, message: string) {
+    for (const logger of loggers) {
         try {
             logger(message);
         } catch {
@@ -2696,7 +2830,7 @@ async function queueInstallerAfterCurrentProcessExit(installerPath: string) {
 
 async function performClamShieldInstallerHandoff(settings: any) {
     const update = await getLatestClamShieldRelease(settings);
-    if (!update.updateAvailable) return { ...update, handoffReady: false };
+    if (!update.newerVersionAvailable) return { ...update, handoffReady: false };
     if (!update.downloadUrl) throw new Error("Latest ClamShield release does not include a Windows installer asset.");
 
     const installerPath = await downloadVerifiedClamShieldInstaller(update, emitAppUpdateInstallLog);
@@ -2734,31 +2868,101 @@ async function downloadAndLaunchClamShieldInstaller(settings: any, log?: (messag
     }
 }
 
-async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
-    if (settings.yaraPath && existsSync(settings.yaraPath)) {
-        log?.(`YARA engine found: ${settings.yaraPath}`);
-        return settings.yaraPath;
+async function installClamAVEngine(settings: any, log?: (message: string) => void) {
+    if (process.platform !== "win32") {
+        throw new Error("Auto-install is only supported on Windows 64-bit.");
     }
+    const update = await getLatestClamAVEngineRelease(settings);
+    const downloadUrl = update.downloadUrl;
+    const assetName = update.assetName || `clamav-${update.latestVersion}-win-x64.zip`;
+    if (!downloadUrl) {
+        throw new Error("Could not find a Windows x64 ClamAV zip asset in the latest release.");
+    }
+
+    log?.(`Downloading ClamAV Engine ${update.latestVersion}...`);
+    await fs.mkdir(engineBaseDir, { recursive: true });
+    const zipPath = path.join(engineBaseDir, "clamav.zip");
+    await fs.rm(zipPath, { force: true }).catch(() => {});
+    await downloadToFile(downloadUrl, zipPath, log);
+
+    if (clamdProcess) {
+        log?.("Stopping clamd before replacing the engine files...");
+        clamdProcess.kill();
+        clamdProcess = null;
+        clamdConfSignature = "";
+        await sleep(800);
+    }
+
+    log?.(`Extracting ${assetName}...`);
+    await extractZip(zipPath, engineBaseDir);
+    const extractedClamDir = await findExtractedClamavDir();
+    if (!extractedClamDir) {
+        throw new Error("ClamAV archive was extracted, but clamscan.exe and freshclam.exe were not found.");
+    }
+
+    log?.("Replacing managed ClamAV engine folder...");
+    const finalClamDir = await adoptClamavEngineFolder(extractedClamDir);
+    const confPath = path.join(finalClamDir, "freshclam.conf");
+    const clamdConfPath = path.join(finalClamDir, "clamd.conf");
+    await fs.mkdir(settings.databaseDir, { recursive: true });
+
+    settings.clamavDir = finalClamDir;
+    settings.clamscanPath = path.join(settings.clamavDir, "clamscan.exe");
+    settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
+    settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
+    settings.clamdscanPath = path.join(settings.clamavDir, "clamdscan.exe");
+    settings.freshclamConf = confPath;
+    settings.clamdConf = clamdConfPath;
+
+    await ensureFreshclamConfig(settings);
+    await fs.writeFile(clamdConfPath, buildClamdConfContent(settings));
+    await fs.rm(zipPath, { force: true }).catch(() => {});
+    clamAVVersionCache = null;
+
+    await saveConfig(settings);
+    if (settings.autoDisableDefender === true) {
+        await autoDisableDefender();
+    }
+    await checkClamAV(settings);
+    await manageClamd(settings);
+    const installedVersion = await getClamAVEngineVersion(settings, true);
+    log?.(`ClamAV Engine ready: ${installedVersion}`);
+    return { ...update, installedVersion };
+}
+
+async function queueClamAVEngineUpdate(settings: any, log?: (message: string) => void) {
+    if (log) clamavEngineUpdateLoggers.add(log);
+    if (!clamavEngineUpdateInstallPromise) {
+        clamavEngineUpdateInstallPromise = installClamAVEngine(settings, message => emitSharedLog(clamavEngineUpdateLoggers, message))
+            .finally(() => {
+                clamavEngineUpdateInstallPromise = null;
+                clamavEngineUpdateLoggers.clear();
+            });
+    } else {
+        log?.("A ClamAV Engine update is already in progress; joining the existing update.");
+    }
+    try {
+        return await clamavEngineUpdateInstallPromise;
+    } finally {
+        if (log) clamavEngineUpdateLoggers.delete(log);
+    }
+}
+
+async function installYaraEngine(settings: any, log?: (message: string) => void) {
     if (process.platform !== "win32") {
         throw new Error("YARA engine was not found. Install YARA and set the yaraPath setting.");
     }
 
     log?.("Finding latest YARA Windows release...");
-    const releaseRes = await axios.get("https://api.github.com/repos/VirusTotal/yara/releases/latest", {
-        headers: { "User-Agent": "ClamShield" }
-    });
-    const asset = releaseRes.data.assets.find((item: any) =>
-        item.name.toLowerCase().includes("win64") &&
-        item.name.toLowerCase().endsWith(".zip")
-    );
-    if (!asset) {
+    const update = await getLatestYaraEngineRelease(settings);
+    if (!update.downloadUrl) {
         throw new Error("Could not find a Windows x64 YARA release asset.");
     }
 
     await fs.mkdir(settings.yaraDir || path.dirname(settings.yaraPath), { recursive: true });
-    const zipPath = path.join(settings.yaraCacheDir || yaraCacheDir, asset.name);
-    log?.(`Downloading ${asset.name}...`);
-    await downloadToFile(asset.browser_download_url, zipPath, log);
+    const zipPath = path.join(settings.yaraCacheDir || yaraCacheDir, update.assetName || `yara-${update.latestVersion}-win64.zip`);
+    log?.(`Downloading ${update.assetName || `YARA ${update.latestVersion}`}...`);
+    await downloadToFile(update.downloadUrl, zipPath, log);
 
     const tempDir = path.join(settings.yaraCacheDir || yaraCacheDir, `engine-${Date.now()}`);
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -2777,8 +2981,36 @@ async function ensureYaraEngine(settings: any, log?: (message: string) => void) 
     await fs.rm(tempDir, { recursive: true, force: true });
     await fs.unlink(zipPath).catch(() => {});
     settings.yaraPath = finalYaraPath;
+    yaraVersionCache = null;
     log?.(`YARA engine ready: ${finalYaraPath}`);
-    return finalYaraPath;
+    return { ...update, installedPath: finalYaraPath, installedVersion: await getCurrentYaraEngineVersion(settings) };
+}
+
+async function queueYaraEngineUpdate(settings: any, log?: (message: string) => void) {
+    if (log) yaraEngineUpdateLoggers.add(log);
+    if (!yaraEngineUpdateInstallPromise) {
+        yaraEngineUpdateInstallPromise = installYaraEngine(settings, message => emitSharedLog(yaraEngineUpdateLoggers, message))
+            .finally(() => {
+                yaraEngineUpdateInstallPromise = null;
+                yaraEngineUpdateLoggers.clear();
+            });
+    } else {
+        log?.("A YARA Engine update is already in progress; joining the existing update.");
+    }
+    try {
+        return await yaraEngineUpdateInstallPromise;
+    } finally {
+        if (log) yaraEngineUpdateLoggers.delete(log);
+    }
+}
+
+async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
+    if (settings.yaraPath && existsSync(settings.yaraPath)) {
+        log?.(`YARA engine found: ${settings.yaraPath}`);
+        return settings.yaraPath;
+    }
+    const result = await installYaraEngine(settings, log);
+    return result.installedPath;
 }
 
 async function updateYaraForgeRules(settings: any, log?: (message: string) => void) {
@@ -4325,6 +4557,61 @@ async function getHistory() {
     });
 }
 
+function getLocalDateRangeMs(dateValue: any) {
+    const value = String(dateValue || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const start = new Date(`${value}T00:00:00`).getTime();
+    const end = new Date(`${value}T23:59:59.999`).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return { start, end };
+}
+
+function getLocalDateRangeIso(dateValue: any) {
+    const range = getLocalDateRangeMs(dateValue);
+    return range ? { start: new Date(range.start).toISOString(), end: new Date(range.end).toISOString() } : null;
+}
+
+async function getHistoryPage(options: { limit?: number | null, offset?: number, date?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    const dateRange = getLocalDateRangeIso(options.date);
+    if (dateRange) {
+        clauses.push("date >= ? AND date <= ?");
+        params.push(dateRange.start, dateRange.end);
+    }
+    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const db = getAppStateDb();
+    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM history${whereSql}`).get(...params)?.count || 0);
+    const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
+    const limit = options.limit === null || options.limit === undefined
+        ? null
+        : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
+    const rows = db.prepare(`
+        SELECT id, date, type, target, result, threats_found, scanned_files, duration, action_taken, payload
+        FROM history${whereSql}
+        ORDER BY date DESC${limit ? " LIMIT ? OFFSET ?" : ""}
+    `).all(...params, ...(limit ? [limit, safeOffset] : []));
+    return {
+        items: rows.map((row: any) => {
+            const payload = asRecord(parseAppStateJson(row.payload, {}));
+            return {
+                ...payload,
+                id: row.id,
+                date: row.date,
+                type: row.type || payload.type,
+                target: row.target || payload.target,
+                result: row.result === null || row.result === undefined ? payload.result : Number(row.result),
+                threatsFound: row.threats_found === null || row.threats_found === undefined ? payload.threatsFound : Number(row.threats_found),
+                scannedFiles: row.scanned_files === null || row.scanned_files === undefined ? payload.scannedFiles : Number(row.scanned_files),
+                duration: row.duration === null || row.duration === undefined ? payload.duration : Number(row.duration),
+                actionTaken: row.action_taken || payload.actionTaken
+            };
+        }),
+        total
+    };
+}
+
 async function getExceptions() {
     await ensureAppStateReady();
     return getAppStateDb()
@@ -4333,12 +4620,58 @@ async function getExceptions() {
         .map((row: any) => row.path);
 }
 
+async function getExceptionItemsPage(options: { limit?: number | null, offset?: number, date?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    const dateRange = getLocalDateRangeMs(options.date);
+    if (dateRange) {
+        clauses.push("e.added_at >= ? AND e.added_at <= ?");
+        params.push(dateRange.start, dateRange.end);
+    }
+    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const db = getAppStateDb();
+    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM exceptions e${whereSql}`).get(...params)?.count || 0);
+    const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
+    const limit = options.limit === null || options.limit === undefined
+        ? null
+        : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
+    const rows = db.prepare(`
+        SELECT e.path, e.added_at, r.payload AS report_payload
+        FROM exceptions e
+        LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path
+        ${whereSql}
+        ORDER BY e.added_at DESC, e.path COLLATE NOCASE ASC${limit ? " LIMIT ? OFFSET ?" : ""}
+    `).all(...params, ...(limit ? [limit, safeOffset] : []));
+    return {
+        items: rows.map((row: any) => {
+            const report = row.report_payload ? asRecord(parseAppStateJson(row.report_payload, {})) : null;
+            return {
+                path: row.path,
+                addedAt: Number(row.added_at || 0),
+                date: new Date(Number(row.added_at || Date.now())).toISOString(),
+                report: report ? {
+                    ...report,
+                    provider: getFalsePositiveProvider(report)
+                } : null
+            };
+        }),
+        total
+    };
+}
+
 async function saveExceptions(list: string[]) {
     await ensureAppStateReady();
     const db = getAppStateDb();
+    const existingRows = db.prepare("SELECT normalized_path, added_at FROM exceptions").all();
+    const existingAddedAt = new Map(existingRows.map((row: any) => [String(row.normalized_path), Number(row.added_at || 0)]));
+    const now = Date.now();
     runAppStateTransaction(db, () => {
         db.prepare("DELETE FROM exceptions").run();
-        list.forEach((item, index) => insertExceptionRow(db, item, Date.now() + index));
+        list.forEach((item, index) => {
+            const key = normalizedStatePath(item);
+            insertExceptionRow(db, item, existingAddedAt.get(key) || now + index);
+        });
     });
     const normalizedPaths = new Set(list.map(item => normalizedStatePath(item)).filter(Boolean));
     const reports = await getExceptionReports();
@@ -5819,6 +6152,7 @@ async function startServer() {
             getSaneSecurityStatus(settings)
         ]);
         const engineVersion = await getClamAVEngineVersion(settings, hasEngine);
+        const yaraEngineVersion = await getCurrentYaraEngineVersion(settings);
 
         const pkgVersion = await getCurrentAppVersion();
         const activeScanJobIds = Object.entries(activeJobs)
@@ -5844,12 +6178,17 @@ async function startServer() {
             saneSecurity,
             stats: {
                 engineVersion,
+                yaraEngineVersion,
                 yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset),
                 yaraRuleCount: settings.lastYaraRuleCount || 0,
                 lastYaraUpdate: settings.lastYaraUpdate || null,
+                clamavEngineLastCheck: settings.clamavEngineLastCheck || null,
+                clamavEngineLastCheckResult: settings.clamavEngineLastCheckResult || "",
+                yaraEngineLastCheck: settings.yaraEngineLastCheck || null,
+                yaraEngineLastCheckResult: settings.yaraEngineLastCheckResult || "",
                 lastClamAVUpdate: settings.lastClamAVUpdate || null,
                 lastClamAVUpdateResult: settings.lastClamAVUpdateResult || "",
-                lastAppUpdateCheck: lastAppUpdateCheck ? lastAppUpdateCheck.date : null,
+                lastAppUpdateCheck: settings.lastAppUpdateCheck || (lastAppUpdateCheck ? lastAppUpdateCheck.date : null),
                 lastScan: lastScan ? lastScan.date : null,
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
@@ -5873,82 +6212,7 @@ async function startServer() {
         res.json({ status: "started" });
 
         try {
-            installProgress = "Finding latest ClamAV release...";
-            const releaseRes = await axios.get("https://api.github.com/repos/Cisco-Talos/clamav/releases/latest");
-            const releaseData = releaseRes.data;
-            
-            const winAsset = releaseData.assets.find((a: any) => 
-                a.name.toLowerCase().includes("win") && 
-                a.name.toLowerCase().includes("x64") && 
-                a.name.toLowerCase().endsWith(".zip") &&
-                !a.name.toLowerCase().includes("symbol")
-            );
-
-            if (!winAsset) {
-                throw new Error("Could not find a Windows x64 zip asset in the latest release.");
-            }
-            
-            const zipUrl = winAsset.browser_download_url;
-            
-            await fs.mkdir(engineBaseDir, { recursive: true });
-            const zipPath = path.join(engineBaseDir, "clamav.zip");
-            
-            installProgress = `Downloading ${winAsset.name} (this may take a minute)...`;
-            
-            const response = await axios({ url: zipUrl, method: 'GET', responseType: 'stream' });
-            const writer = createWriteStream(zipPath);
-            response.data.pipe(writer);
-            
-            await new Promise<void>((resolve, reject) => {
-                writer.on('finish', () => resolve());
-                writer.on('error', reject);
-            });
-            
-            installProgress = "Extracting ClamAV engine...";
-            const extractStream = createReadStream(zipPath).pipe(unzipper.Extract({ path: engineBaseDir }));
-            await new Promise<void>((resolve, reject) => {
-                extractStream.on('close', () => resolve());
-                extractStream.on('error', reject);
-            });
-            
-            installProgress = "Configuring engine & signatures...";
-            const extractedClamDir = await findExtractedClamavDir();
-            if (!extractedClamDir) {
-                throw new Error("ClamAV archive was extracted, but clamscan.exe and freshclam.exe were not found.");
-            }
-            installProgress = "Copying ClamAV engine into managed folder...";
-            const finalClamDir = await adoptClamavEngineFolder(extractedClamDir);
-
-            const confPath = path.join(finalClamDir, "freshclam.conf");
-            const clamdConfPath = path.join(finalClamDir, "clamd.conf");
-            await fs.mkdir(settings.databaseDir, { recursive: true });
-            
-            settings.clamavDir = finalClamDir;
-            settings.clamscanPath = path.join(settings.clamavDir, "clamscan.exe");
-            settings.freshclamPath = path.join(settings.clamavDir, "freshclam.exe");
-            settings.clamdPath = path.join(settings.clamavDir, "clamd.exe");
-            settings.clamdscanPath = path.join(settings.clamavDir, "clamdscan.exe");
-            settings.freshclamConf = confPath;
-            settings.clamdConf = clamdConfPath;
-
-            await ensureFreshclamConfig(settings);
-
-            const clamdConfContent = buildClamdConfContent(settings);
-            await fs.writeFile(clamdConfPath, clamdConfContent);
-            
-            await saveConfig(settings);
-            if (settings.autoDisableDefender === true) {
-                await autoDisableDefender();
-            }
-
-            // Clean up zip
-            try {
-                await fs.unlink(zipPath);
-            } catch (e: any) {
-                console.debug("ClamAV installer zip cleanup failed:", e?.message || e);
-            }
-            
-            await checkClamAV(settings); // Verify
+            await installClamAVEngine(settings, message => installProgress = message);
             isInstalling = false;
             installProgress = "Complete";
         } catch (e: any) {
@@ -6216,6 +6480,15 @@ async function startServer() {
         }
         if ("saneSecurityUpdateIntervalHours" in requestedSettings) {
             requestedSettings.saneSecurityUpdateIntervalHours = normalizePositiveNumber(requestedSettings.saneSecurityUpdateIntervalHours, 1, 1, 24);
+        }
+        if ("appUpdateIntervalHours" in requestedSettings) {
+            requestedSettings.appUpdateIntervalHours = normalizePositiveNumber(requestedSettings.appUpdateIntervalHours, 168, 1, 8760);
+        }
+        if ("clamavEngineUpdateIntervalHours" in requestedSettings) {
+            requestedSettings.clamavEngineUpdateIntervalHours = normalizePositiveNumber(requestedSettings.clamavEngineUpdateIntervalHours, 24, 1, 8760);
+        }
+        if ("yaraEngineUpdateIntervalHours" in requestedSettings) {
+            requestedSettings.yaraEngineUpdateIntervalHours = normalizePositiveNumber(requestedSettings.yaraEngineUpdateIntervalHours, 24, 1, 8760);
         }
         if ("manualScanIntensity" in requestedSettings) {
             requestedSettings.manualScanIntensity = normalizeScanIntensity(requestedSettings.manualScanIntensity, 81);
@@ -6547,7 +6820,45 @@ async function startServer() {
     });
 
     app.get("/api/history", async (req, res) => {
-        res.json(await getHistory());
+        const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined;
+        if (!hasPagedQuery) {
+            res.json(await getHistory());
+            return;
+        }
+        const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
+        const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+        const pageSize = requestedPageSize === "all"
+            ? null
+            : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
+        const offset = pageSize ? (page - 1) * pageSize : 0;
+        const paged = await getHistoryPage({
+            limit: pageSize,
+            offset,
+            date: typeof req.query.date === "string" ? req.query.date : ""
+        });
+        res.json({ items: paged.items, total: paged.total, page, pageSize: pageSize || "all" });
+    });
+
+    app.post("/api/history/delete-selected", async (req, res) => {
+        try {
+            const ids = Array.isArray(req.body?.ids)
+                ? req.body.ids.map((item: any) => String(item || "")).filter(Boolean)
+                : [];
+            if (ids.length === 0) return res.status(400).json({ success: false, error: "No history items selected." });
+            await ensureAppStateReady();
+            const db = getAppStateDb();
+            const deleteStmt = db.prepare("DELETE FROM history WHERE id = ?");
+            let deletedCount = 0;
+            runAppStateTransaction(db, () => {
+                ids.forEach(id => {
+                    const result = deleteStmt.run(id);
+                    deletedCount += Number(result.changes || 0);
+                });
+            });
+            res.json({ success: true, deletedCount });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
     });
 
     app.get("/api/select-folder", async (req, res) => {
@@ -7824,7 +8135,13 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.get("/api/app-update", async (req, res) => {
         try {
-            res.json(await getLatestClamShieldRelease(settings));
+            const update = await getLatestClamShieldRelease(settings);
+            settings = {
+                ...settings,
+                lastAppUpdateCheck: new Date().toISOString()
+            };
+            await saveConfig(settings).catch(() => {});
+            res.json(update);
         } catch (e: any) {
             res.status(500).json({ error: e.message || "Failed to check for ClamShield updates." });
         }
@@ -7839,6 +8156,17 @@ if ($dialog.ShowDialog() -eq 'OK') {
             settings = { ...settings, skippedAppVersion: version };
             await saveConfig(settings);
             res.json({ success: true, skippedAppVersion: version });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/app-update/remind", async (req, res) => {
+        try {
+            const remindAfter = Number(req.body?.remindAfter || Date.now() + 24 * 60 * 60 * 1000);
+            settings = { ...settings, appUpdateRemindAfter: remindAfter };
+            await saveConfig(settings);
+            res.json({ success: true, appUpdateRemindAfter: remindAfter });
         } catch (e: any) {
             res.status(500).json({ error: e.message });
         }
@@ -7893,6 +8221,218 @@ if ($dialog.ShowDialog() -eq 'OK') {
             await addHistory({
                 type: "app-update-install",
                 target: "ClamShield",
+                result: 1,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Failed"
+            });
+        }
+    });
+
+    app.get("/api/clamav-engine-update", async (req, res) => {
+        try {
+            const update = await getLatestClamAVEngineRelease(settings);
+            settings = {
+                ...settings,
+                clamavEngineLastCheck: new Date().toISOString(),
+                clamavEngineLastCheckResult: update.updateAvailable ? `Available ${update.latestVersion}` : update.skipped ? `Skipped ${update.latestVersion}` : "No update"
+            };
+            await saveConfig(settings).catch(() => {});
+            res.json(update);
+        } catch (e: any) {
+            settings = {
+                ...settings,
+                clamavEngineLastCheck: new Date().toISOString(),
+                clamavEngineLastCheckResult: `Check failed: ${e.message || e}`.slice(0, 500)
+            };
+            await saveConfig(settings).catch(() => {});
+            res.status(500).json({ error: e.message || "Failed to check ClamAV Engine updates." });
+        }
+    });
+
+    app.post("/api/clamav-engine-update/skip", async (req, res) => {
+        try {
+            const version = normalizeVersion(req.body?.version || "");
+            if (!version || version === "0.0.0") return res.status(400).json({ error: "Missing version to skip." });
+            settings = { ...settings, clamavEngineSkippedVersion: version };
+            await saveConfig(settings);
+            res.json({ success: true, clamavEngineSkippedVersion: version });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/clamav-engine-update/remind", async (req, res) => {
+        try {
+            const remindAfter = Number(req.body?.remindAfter || Date.now() + 24 * 60 * 60 * 1000);
+            settings = { ...settings, clamavEngineRemindAfter: remindAfter };
+            await saveConfig(settings);
+            res.json({ success: true, clamavEngineRemindAfter: remindAfter });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/clamav-engine-update/install", async (req, res) => {
+        const runningScan = Object.values(activeJobs).some((job: any) =>
+            job?.status === "running" && ["disk", "folder", "file", "memory"].includes(job.progress?.type || "")
+        );
+        if (runningScan || freshclamUpdateInProgress) {
+            return res.status(409).json({ error: "Stop active scans or signature updates before replacing the ClamAV Engine." });
+        }
+        const jobId = "clamav-engine-update-" + Date.now().toString();
+        activeJobs[jobId] = { status: "running", logs: [] };
+        res.json({ jobId, status: "started" });
+
+        const startedAt = Date.now();
+        try {
+            const result = await queueClamAVEngineUpdate(settings, message => {
+                if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
+            });
+            if (!activeJobs[jobId]) return;
+            settings = {
+                ...settings,
+                clamavEngineLastCheck: new Date().toISOString(),
+                clamavEngineLastCheckResult: `Installed ${parseBareVersion(result.installedVersion || result.latestVersion)}`
+            };
+            await saveConfig(settings);
+            appendJobLogs(jobId, [`ClamAV Engine update complete: ${result.installedVersion || result.latestVersion}.`]);
+            activeJobs[jobId].status = "done";
+            activeJobs[jobId].result = 0;
+            broadcastJobEvent(jobId);
+            await addHistory({
+                type: "clamav-engine-update",
+                target: `ClamAV Engine ${result.latestVersion || ""}`.trim(),
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Installed"
+            });
+        } catch (e: any) {
+            settings = {
+                ...settings,
+                clamavEngineLastCheck: new Date().toISOString(),
+                clamavEngineLastCheckResult: `Install failed: ${e.message || e}`.slice(0, 500)
+            };
+            await saveConfig(settings).catch(() => {});
+            console.error("ClamAV Engine update failed:", e.message);
+            if (activeJobs[jobId]) {
+                appendJobLogs(jobId, [`Error: ${e.message}`]);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = 1;
+                broadcastJobEvent(jobId);
+            }
+            await addHistory({
+                type: "clamav-engine-update",
+                target: "ClamAV Engine",
+                result: 1,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Failed"
+            });
+        }
+    });
+
+    app.get("/api/yara-engine-update", async (req, res) => {
+        try {
+            const update = await getLatestYaraEngineRelease(settings);
+            settings = {
+                ...settings,
+                yaraEngineLastCheck: new Date().toISOString(),
+                yaraEngineLastCheckResult: update.updateAvailable ? `Available ${update.latestVersion}` : update.skipped ? `Skipped ${update.latestVersion}` : "No update"
+            };
+            await saveConfig(settings).catch(() => {});
+            res.json(update);
+        } catch (e: any) {
+            settings = {
+                ...settings,
+                yaraEngineLastCheck: new Date().toISOString(),
+                yaraEngineLastCheckResult: `Check failed: ${e.message || e}`.slice(0, 500)
+            };
+            await saveConfig(settings).catch(() => {});
+            res.status(500).json({ error: e.message || "Failed to check YARA Engine updates." });
+        }
+    });
+
+    app.post("/api/yara-engine-update/skip", async (req, res) => {
+        try {
+            const version = normalizeVersion(req.body?.version || "");
+            if (!version || version === "0.0.0") return res.status(400).json({ error: "Missing version to skip." });
+            settings = { ...settings, yaraEngineSkippedVersion: version };
+            await saveConfig(settings);
+            res.json({ success: true, yaraEngineSkippedVersion: version });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/yara-engine-update/remind", async (req, res) => {
+        try {
+            const remindAfter = Number(req.body?.remindAfter || Date.now() + 24 * 60 * 60 * 1000);
+            settings = { ...settings, yaraEngineRemindAfter: remindAfter };
+            await saveConfig(settings);
+            res.json({ success: true, yaraEngineRemindAfter: remindAfter });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post("/api/yara-engine-update/install", async (req, res) => {
+        const runningScan = Object.values(activeJobs).some((job: any) =>
+            job?.status === "running" && ["disk", "folder", "file", "memory"].includes(job.progress?.type || "")
+        );
+        if (runningScan) {
+            return res.status(409).json({ error: "Stop active scans before replacing the YARA Engine." });
+        }
+        const jobId = "yara-engine-update-" + Date.now().toString();
+        activeJobs[jobId] = { status: "running", logs: [] };
+        res.json({ jobId, status: "started" });
+
+        const startedAt = Date.now();
+        try {
+            const result = await queueYaraEngineUpdate(settings, message => {
+                if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
+            });
+            if (!activeJobs[jobId]) return;
+            settings = {
+                ...settings,
+                yaraEngineLastCheck: new Date().toISOString(),
+                yaraEngineLastCheckResult: `Installed ${result.installedVersion || result.latestVersion}`
+            };
+            await saveConfig(settings);
+            appendJobLogs(jobId, [`YARA Engine update complete: ${result.installedVersion || result.latestVersion}.`]);
+            activeJobs[jobId].status = "done";
+            activeJobs[jobId].result = 0;
+            broadcastJobEvent(jobId);
+            await addHistory({
+                type: "yara-engine-update",
+                target: `YARA Engine ${result.latestVersion || ""}`.trim(),
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                actionTaken: "Installed"
+            });
+        } catch (e: any) {
+            settings = {
+                ...settings,
+                yaraEngineLastCheck: new Date().toISOString(),
+                yaraEngineLastCheckResult: `Install failed: ${e.message || e}`.slice(0, 500)
+            };
+            await saveConfig(settings).catch(() => {});
+            console.error("YARA Engine update failed:", e.message);
+            if (activeJobs[jobId]) {
+                appendJobLogs(jobId, [`Error: ${e.message}`]);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = 1;
+                broadcastJobEvent(jobId);
+            }
+            await addHistory({
+                type: "yara-engine-update",
+                target: "YARA Engine",
                 result: 1,
                 threatsFound: 0,
                 scannedFiles: 0,
@@ -8109,6 +8649,102 @@ if ($dialog.ShowDialog() -eq 'OK') {
         res.json({ success: true, removedCount });
     });
 
+    app.post("/api/results/clear-selected-unavailable", async (req, res) => {
+        try {
+            const ids = Array.isArray(req.body?.ids)
+                ? new Set(req.body.ids.map((item: any) => String(item || "")).filter(Boolean))
+                : new Set<string>();
+            if (ids.size === 0) return res.status(400).json({ success: false, error: "No results selected." });
+            const results = await getScanResults();
+            const remaining: any[] = [];
+            let removedCount = 0;
+            for (const result of results) {
+                if (ids.has(String(result.id || "")) && (!result.originalPath || !existsSync(result.originalPath))) {
+                    removedCount++;
+                    continue;
+                }
+                remaining.push(result);
+            }
+            if (removedCount > 0) await saveScanResults(remaining);
+            res.json({ success: true, removedCount });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/results/action-selected", async (req, res) => {
+        try {
+            const action = req.body?.action;
+            if (action !== "quarantine" && action !== "exception") {
+                return res.status(400).json({ success: false, error: "Invalid action." });
+            }
+            const ids = Array.isArray(req.body?.ids)
+                ? new Set(req.body.ids.map((item: any) => String(item || "")).filter(Boolean))
+                : new Set<string>();
+            if (ids.size === 0) return res.status(400).json({ success: false, error: "No results selected." });
+
+            const results = await getScanResults();
+            const remaining: any[] = [];
+            const errors: any[] = [];
+            let affectedCount = 0;
+            let removedUnavailableCount = 0;
+            const exceptions = action === "exception" ? await getExceptions() : [];
+
+            for (const result of results) {
+                if (!ids.has(String(result.id || ""))) {
+                    remaining.push(result);
+                    continue;
+                }
+                if (action === "quarantine") {
+                    if (!result.originalPath || !existsSync(result.originalPath)) {
+                        removedUnavailableCount++;
+                        continue;
+                    }
+                    try {
+                        await quarantineResultItem(settings, result);
+                        affectedCount++;
+                    } catch (e: any) {
+                        remaining.push(result);
+                        errors.push({ id: result.id, path: result.originalPath, error: e.message });
+                    }
+                } else {
+                    if (!result.originalPath) {
+                        errors.push({ id: result.id, path: "", error: "Original path is unavailable." });
+                        remaining.push(result);
+                        continue;
+                    }
+                    if (!exceptions.includes(result.originalPath)) {
+                        exceptions.push(result.originalPath);
+                    }
+                    await rememberExceptionDetection(result);
+                    affectedCount++;
+                }
+            }
+
+            if (action === "exception") await saveExceptions(exceptions);
+            await saveScanResults(remaining);
+            await addHistory({
+                type: action === "quarantine" ? "results-quarantine-selected" : "results-exception-selected",
+                target: "Selected scan results",
+                result: errors.length === 0 ? 0 : 1,
+                threatsFound: action === "quarantine" ? affectedCount : 0,
+                scannedFiles: ids.size,
+                duration: 0,
+                actionTaken: action === "quarantine"
+                    ? `Quarantined ${affectedCount} selected result${affectedCount === 1 ? "" : "s"}`
+                    : `Added ${affectedCount} selected result${affectedCount === 1 ? "" : "s"} to exceptions`
+            });
+            res.status(errors.length === 0 ? 200 : 207).json({
+                success: errors.length === 0,
+                affectedCount,
+                removedUnavailableCount,
+                errors
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
     app.get("/api/results-reminder", async (req, res) => {
         res.json(await getResultsReminderPayload());
     });
@@ -8273,8 +8909,24 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
-    app.get("/api/exceptions/reporting", async (_req, res) => {
+    app.get("/api/exceptions/reporting", async (req, res) => {
         try {
+            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined;
+            if (hasPagedQuery) {
+                const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
+                const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+                const pageSize = requestedPageSize === "all"
+                    ? null
+                    : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
+                const offset = pageSize ? (page - 1) * pageSize : 0;
+                const paged = await getExceptionItemsPage({
+                    limit: pageSize,
+                    offset,
+                    date: typeof req.query.date === "string" ? req.query.date : ""
+                });
+                res.json({ items: paged.items, total: paged.total, page, pageSize: pageSize || "all" });
+                return;
+            }
             const [exceptions, reports] = await Promise.all([getExceptions(), getExceptionReports()]);
             res.json(exceptions.map(exceptionPath => {
                 const report = reports[exceptionReportKey(exceptionPath)] || null;
@@ -8288,6 +8940,31 @@ if ($dialog.ShowDialog() -eq 'OK') {
             }));
         } catch (e: any) {
             res.status(500).json({ error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/exceptions/delete-selected", async (req, res) => {
+        try {
+            const paths = Array.isArray(req.body?.paths)
+                ? req.body.paths.map((item: any) => String(item || "")).filter(Boolean)
+                : [];
+            if (paths.length === 0) return res.status(400).json({ success: false, error: "No exceptions selected." });
+            await ensureAppStateReady();
+            const db = getAppStateDb();
+            const deleteException = db.prepare("DELETE FROM exceptions WHERE normalized_path = ?");
+            const deleteReport = db.prepare("DELETE FROM exception_reports WHERE normalized_path = ?");
+            let removedCount = 0;
+            runAppStateTransaction(db, () => {
+                paths.forEach(exceptionPath => {
+                    const key = normalizedStatePath(exceptionPath);
+                    const result = deleteException.run(key);
+                    deleteReport.run(key);
+                    removedCount += Number(result.changes || 0);
+                });
+            });
+            res.json({ success: true, removedCount });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
         }
     });
 
@@ -8342,12 +9019,16 @@ if ($dialog.ShowDialog() -eq 'OK') {
     app.get("/api/quarantine", async (req, res) => {
         try {
             const items = await getQuarantineItems(settings.quarantineDir);
-            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined;
+            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined;
             if (!hasPagedQuery) {
                 res.json(items);
                 return;
             }
 
+            const dateRange = getLocalDateRangeMs(req.query.date);
+            const filteredItems = dateRange
+                ? items.filter((item: any) => Number(item.timestamp || 0) >= dateRange.start && Number(item.timestamp || 0) <= dateRange.end)
+                : items;
             const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
             const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
             const pageSize = requestedPageSize === "all"
@@ -8355,8 +9036,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
             const offset = pageSize ? (page - 1) * pageSize : 0;
             res.json({
-                items: pageSize ? items.slice(offset, offset + pageSize) : items,
-                total: items.length,
+                items: pageSize ? filteredItems.slice(offset, offset + pageSize) : filteredItems,
+                total: filteredItems.length,
                 page,
                 pageSize: pageSize || "all"
             });
@@ -8372,6 +9053,72 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json({ success: true, ...result });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e.message });
+        }
+    });
+
+    app.post("/api/quarantine/restore-selected-exception", async (req, res) => {
+        try {
+            const fileNames = Array.isArray(req.body?.fileNames)
+                ? req.body.fileNames.map((item: any) => String(item || "")).filter(Boolean)
+                : [];
+            if (fileNames.length === 0) return res.status(400).json({ success: false, error: "No quarantine items selected." });
+            const restored: any[] = [];
+            const errors: any[] = [];
+            for (const fileName of fileNames) {
+                try {
+                    const result = await restoreQuarantinedFileAndAddException(settings, fileName);
+                    restored.push({ fileName, ...result });
+                } catch (e: any) {
+                    errors.push({ fileName, error: e.message || String(e) });
+                }
+            }
+            res.status(errors.length === 0 ? 200 : 207).json({
+                success: errors.length === 0,
+                restoredCount: restored.length,
+                restored,
+                errors
+            });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/quarantine/delete-selected", async (req, res) => {
+        try {
+            const fileNames = Array.isArray(req.body?.fileNames)
+                ? req.body.fileNames.map((item: any) => String(item || "")).filter(Boolean)
+                : [];
+            if (fileNames.length === 0) return res.status(400).json({ success: false, error: "No quarantine items selected." });
+            const qMap = await getQuarantineMap();
+            const errors: any[] = [];
+            let deletedCount = 0;
+            for (const fileName of fileNames) {
+                const safeName = path.basename(fileName);
+                if (safeName !== fileName) {
+                    errors.push({ fileName, error: "Invalid quarantine item." });
+                    continue;
+                }
+                try {
+                    await fs.unlink(path.join(settings.quarantineDir, safeName));
+                    delete qMap[safeName];
+                    deletedCount++;
+                } catch (e: any) {
+                    errors.push({ fileName, error: e.message || String(e) });
+                }
+            }
+            await saveQuarantineMap(qMap);
+            await addHistory({
+                type: "quarantine-delete-selected",
+                target: "Selected quarantine items",
+                result: errors.length === 0 ? 0 : 1,
+                threatsFound: 0,
+                scannedFiles: fileNames.length,
+                duration: 0,
+                actionTaken: `Deleted ${deletedCount} selected quarantined file${deletedCount === 1 ? "" : "s"}`
+            });
+            res.status(errors.length === 0 ? 200 : 207).json({ success: errors.length === 0, deletedCount, errors });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
         }
     });
 
@@ -8426,6 +9173,19 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.sendFile(summaryPath);
         } else {
             res.status(404).send("Scan summary not found");
+        }
+    });
+
+    app.get('/update-available.html', (req, res) => {
+        const isProd = process.env.NODE_ENV === "production";
+        const updatePath = isProd
+            ? path.join(runtimeDir, "..", "public", "update-available.html")
+            : path.join(runtimeDir, "public", "update-available.html");
+
+        if (existsSync(updatePath)) {
+            res.sendFile(updatePath);
+        } else {
+            res.status(404).send("Update popup not found");
         }
     });
 
