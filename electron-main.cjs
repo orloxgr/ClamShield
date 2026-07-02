@@ -16,6 +16,7 @@ let isQuiting = false;
 let activeAlerts = new Map();
 let primaryDisplay;
 let resultsReminderWindow = null;
+let scanSummaryWindow = null;
 let debugLoggingEnabled = false;
 let appUpdatePromptVersion = null;
 let lastAppUpdateCheckAt = 0;
@@ -251,10 +252,6 @@ async function handleThreatEvent(threat, port) {
     const settings = status.settings || {};
     playSound = settings.playSoundOnAlert === true;
     debugLoggingEnabled = settings.enableDebugLog === true;
-    if (settings.shieldShowPopup === false) {
-      activeAlerts.delete(threat.id);
-      return;
-    }
   } catch {
     // If status is temporarily unavailable, still show the threat alert.
   }
@@ -264,6 +261,10 @@ async function handleThreatEvent(threat, port) {
 function handleApiEvent(eventName, data, port) {
   if (eventName === 'threat') {
     handleThreatEvent(data, port).catch(error => console.warn('Failed to handle threat event', error.message));
+  } else if (eventName === 'scan-summary') {
+    if (data && !(scanSummaryWindow && !scanSummaryWindow.isDestroyed())) {
+      createScanSummaryWindow(data, port);
+    }
   } else if (eventName === 'results-reminder') {
     if (data && data.show && !(resultsReminderWindow && !resultsReminderWindow.isDestroyed())) {
       createResultsReminderWindow(data, port);
@@ -367,6 +368,9 @@ function createAlertWindow(threat, port, playSound) {
          id: String(threat.id || ''),
          name: String(threat.threatName || 'Unknown threat'),
          path: String(threat.originalPath || 'Unknown path'),
+         mode: String(threat.mode || 'decision'),
+         title: String(threat.title || ''),
+         subtitle: String(threat.subtitle || ''),
          playSound: playSound ? 'true' : 'false'
       }
    }).catch(err => {
@@ -421,6 +425,61 @@ function createResultsReminderWindow(reminder, port) {
 
    const reminderUrl = `http://127.0.0.1:${port}/results-reminder.html?count=${encodeURIComponent(reminder.count || 0)}&port=${port}`;
    resultsReminderWindow.loadURL(reminderUrl).catch(err => console.error("Failed to load results reminder HTML", err));
+}
+
+function createScanSummaryWindow(summary, port) {
+   const { screen } = require('electron');
+   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
+   const workArea = primaryDisplay.workArea;
+
+   scanSummaryWindow = new BrowserWindow({
+      width: 460,
+      height: 205,
+      x: workArea.x + workArea.width - 460 - 20,
+      y: workArea.y + workArea.height - 205 - 20,
+      frame: false,
+      transparent: false,
+      backgroundColor: '#0f172a',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      title: "ClamShield Scan Summary",
+      icon: path.join(__dirname, 'public/icon.png'),
+      webPreferences: {
+         nodeIntegration: false,
+         contextIsolation: true
+      }
+   });
+
+   attachWindowLogging(scanSummaryWindow, 'Scan summary');
+
+   scanSummaryWindow.on('closed', () => {
+      scanSummaryWindow = null;
+   });
+
+   scanSummaryWindow.webContents.on('will-navigate', (event, targetUrl) => {
+      if (targetUrl === `http://127.0.0.1:${port}/results` || targetUrl === `http://127.0.0.1:${port}/quarantine`) {
+         event.preventDefault();
+         if (mainWindow) {
+            mainWindow.show();
+            mainWindow.loadURL(targetUrl).catch(err => console.error("Failed to open scan summary target", err));
+         }
+         if (scanSummaryWindow && !scanSummaryWindow.isDestroyed()) {
+            scanSummaryWindow.close();
+         }
+      }
+   });
+
+   const params = new URLSearchParams({
+      port: String(port),
+      title: String(summary.title || 'Scan finished'),
+      message: String(summary.message || ''),
+      detail: String(summary.detail || ''),
+      target: String(summary.target || ''),
+      action: String(summary.action || 'results')
+   });
+   scanSummaryWindow.loadURL(`http://127.0.0.1:${port}/scan-summary.html?${params.toString()}`)
+      .catch(err => console.error("Failed to load scan summary HTML", err));
 }
 
 function getFreePort() {

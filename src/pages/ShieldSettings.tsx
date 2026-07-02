@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, Plus, RotateCcw, SlidersHorizontal, X } from "lucide-react";
+import { Bell, Plus, RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
 import PageHeader from "../components/PageHeader";
 
 export default function ShieldSettings() {
@@ -16,12 +16,28 @@ export default function ShieldSettings() {
   const updateSettings = async (nextSettings: any) => {
     setSettings(nextSettings);
     setSaving(true);
-    await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(nextSettings)
-    });
+    await persistSettings(nextSettings);
     setSaving(false);
+  };
+
+  const persistSettings = async (nextSettings = settings, showMessage = false) => {
+    if (!nextSettings) return;
+    setSaving(true);
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextSettings)
+      });
+      if (showMessage) {
+        setMessage("Shield settings saved.");
+        setTimeout(() => setMessage(""), 3000);
+      }
+    } catch (e: any) {
+      setMessage(e.message || "Failed to save Shield settings.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const toggle = (key: string) => {
@@ -35,9 +51,20 @@ export default function ShieldSettings() {
     updateSettings({ ...settings, [key]: nextValue });
   };
   const shieldIntensityDetails = (value: number) => {
-    if (value <= 15) return "1-15: Shield launches scan processes at idle priority, the gentlest option for foreground work.";
-    if (value < 70) return "16-69: Shield launches scan processes below normal priority, balancing protection and responsiveness.";
-    return "70-100: Shield launches scan processes at normal priority for faster real-time decisions.";
+    const cores = typeof navigator !== "undefined" && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 1;
+    const allCores = Math.min(32, Math.max(1, cores));
+    const halfCores = Math.min(allCores, Math.max(2, Math.ceil(cores * 0.5)));
+    const threeQuarterCores = Math.min(allCores, Math.max(2, Math.ceil(cores * 0.75)));
+    if (value <= 10) return "1-10: Extremely gentle. Idle priority, 1 Shield worker, 100-file total event window, 500 ms pause.";
+    if (value <= 20) return "11-20: Very gentle. Idle priority, 1 Shield worker, 250-file total event window, 250 ms pause.";
+    if (value <= 30) return "21-30: Gentle. Below-normal priority, 1 Shield worker, 500-file total event window, 150 ms pause.";
+    if (value <= 40) return "31-40: Light. Below-normal priority, 1 Shield worker, 1,000-file total event window, 75 ms pause.";
+    if (value <= 50) return "41-50: Balanced. Below-normal priority, 2 Shield workers, 2,000-file total event window split between workers, 25 ms pause.";
+    if (value <= 60) return "51-60: Active. Normal priority, 2 Shield workers, 3,000-file total event window split between workers, no pause.";
+    if (value <= 70) return `61-70: Fast. Normal priority, ${halfCores} Shield workers, 5,000-file total event window split between workers, no pause.`;
+    if (value <= 80) return `71-80: Very fast. Normal priority, ${threeQuarterCores} Shield workers, 10,000-file total event window split between workers, no pause.`;
+    if (value <= 90) return `81-90: Maximum minus one core. High priority, ${Math.max(1, allCores - 1)} Shield workers, 15,000-file total event window split between workers, no pause.`;
+    return `91-100: Maximum. High priority, all ${allCores} logical cores, 25,000-file total event window split between workers, no pause. The PC may be hard to use when many files change.`;
   };
 
   const handleAddFolder = async () => {
@@ -77,6 +104,22 @@ export default function ShieldSettings() {
 
   if (!settings) return <div className="p-8">Loading...</div>;
 
+  const normalizeShieldAction = (value: string) => {
+    if (value === "warn") return "ask";
+    if (value === "quarantine") return "quarantine_silent";
+    if (value === "results") return "results_silent";
+    if (["ask", "quarantine_notify", "quarantine_silent", "results_notify", "results_silent"].includes(value)) return value;
+    return "ask";
+  };
+  const shieldAction = normalizeShieldAction(settings.actionOnDetection || "ask");
+  const shieldActionDescription: Record<string, string> = {
+    ask: "Opens the threat popup so you can quarantine, add an exception, or decide later.",
+    quarantine_notify: "Quarantines the file immediately, then shows a Shield notification popup.",
+    quarantine_silent: "Quarantines the file immediately without showing a popup.",
+    results_notify: "Saves the detection to Results, then shows a Shield notification popup.",
+    results_silent: "Saves the detection to Results without showing a popup."
+  };
+
   const defaultFolders = [
     { key: 'monitorDownloads', name: 'Downloads Folder', pathLabel: systemPaths?.Downloads },
     { key: 'monitorDesktop', name: 'Desktop Folder', pathLabel: systemPaths?.Desktop },
@@ -99,6 +142,14 @@ export default function ShieldSettings() {
             className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none ${settings.shieldEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
           >
             <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${settings.shieldEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+          <button
+            onClick={() => persistSettings(settings, true)}
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            <Save className="w-4 h-4" />
+            {saving ? "Saving..." : "Save"}
           </button>
         </div>
         )}
@@ -127,7 +178,7 @@ export default function ShieldSettings() {
           </div>
           <div className="p-4 space-y-4">
             {defaultFolders.map(folder => (
-              <label key={folder.key} className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+              <div key={folder.key} className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
                 <div>
                     <span className="text-slate-300 block">{folder.name}</span>
                     <span className="text-xs text-slate-500 block">{folder.pathLabel || "Loading path..."}</span>
@@ -138,10 +189,10 @@ export default function ShieldSettings() {
                   onChange={() => toggle(folder.key)}
                   className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
                 />
-              </label>
+              </div>
             ))}
 
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">Browser Download Folders</span>
                 <span className="text-xs text-slate-500 block">
@@ -156,7 +207,7 @@ export default function ShieldSettings() {
                 onChange={() => toggle('autoDetectBrowserDownloads')}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
-            </label>
+            </div>
 
             {settings.autoDetectBrowserDownloads !== false && browserDownloads.length > 0 && (
               <div className="ml-2 mr-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
@@ -197,40 +248,26 @@ export default function ShieldSettings() {
             Performance
           </div>
           <div className="p-4 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
-              <div>
-                <span className="text-slate-300 block">Low impact Shield scans</span>
-                <span className="text-xs text-slate-500">Lets Shield lower scan-process priority according to the intensity slider. Turn it off only when you want Shield to scan at normal priority.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.shieldLowImpactMode !== false}
-                onChange={() => toggle("shieldLowImpactMode")}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            <div className="p-2 space-y-3 border-t border-slate-800 pt-4">
+            <div className="p-2 space-y-3">
               <div className="flex items-center justify-between gap-6">
                 <div>
                   <span className="text-slate-300 block">Shield intensity</span>
-                  <span className="text-xs text-slate-500">Current value: {settings.shieldScanIntensity || 25}/100</span>
+                  <span className="text-xs text-slate-500">Current value: {settings.shieldScanIntensity || 41}/100</span>
                 </div>
                 <input
                   type="range"
                   min={1}
                   max={100}
-                  value={settings.shieldScanIntensity || 25}
-                  onChange={e => updateNumberSetting("shieldScanIntensity", e.target.value, 25, 1, 100)}
+                  value={settings.shieldScanIntensity || 41}
+                  onChange={e => updateNumberSetting("shieldScanIntensity", e.target.value, 41, 1, 100)}
                   className="w-1/2 accent-indigo-500"
                 />
               </div>
               <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
-                {settings.shieldLowImpactMode === false
-                  ? "Low impact mode is off: Shield scan processes use normal priority regardless of the slider."
-                  : shieldIntensityDetails(settings.shieldScanIntensity || 25)}
+                {shieldIntensityDetails(settings.shieldScanIntensity || 41)}
               </p>
             </div>
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">Folder depth</span>
                 <span className="text-xs text-slate-500">How many levels below watched folders the shield monitors</span>
@@ -243,22 +280,8 @@ export default function ShieldSettings() {
                 onChange={e => updateNumberSetting("shieldDepth", e.target.value, 1, 0, 20)}
                 className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
-            </label>
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
-              <div>
-                <span className="text-slate-300 block">Concurrent scans</span>
-                <span className="text-xs text-slate-500">Keep this at 1 for lowest disk impact</span>
-              </div>
-              <input
-                type="number"
-                min={1}
-                max={4}
-                value={settings.shieldMaxConcurrentScans ?? 1}
-                onChange={e => updateNumberSetting("shieldMaxConcurrentScans", e.target.value, 1, 1, 4)}
-                className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </label>
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+            </div>
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">Polling interval</span>
                 <span className="text-xs text-slate-500">How often ClamShield checks whether a changing file has become stable. Lower values react sooner but wake the disk/CPU more often.</span>
@@ -271,8 +294,8 @@ export default function ShieldSettings() {
                 onChange={e => updateNumberSetting("shieldPollInterval", e.target.value, 1000, 100, 60000)}
                 className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
-            </label>
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+            </div>
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">Stability threshold</span>
                 <span className="text-xs text-slate-500">How long a file must stop changing before Shield scans it. Higher values are better for many simultaneous downloads and large files.</span>
@@ -285,7 +308,7 @@ export default function ShieldSettings() {
                 onChange={e => updateNumberSetting("shieldStabilityThreshold", e.target.value, 2000, 100, 120000)}
                 className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               />
-            </label>
+            </div>
             <div className="flex items-center justify-between p-2 border-t border-slate-800 pt-4">
               <div>
                 <span className="text-slate-300 block">Forget scanned file cache</span>
@@ -308,21 +331,46 @@ export default function ShieldSettings() {
             Notifications
           </div>
           <div className="p-4 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
-                <span className="text-slate-300 block">When threat found</span>
-                <span className="text-xs text-slate-500">Choose how the real-time shield handles detections</span>
+                <span className="text-slate-300 block">When Shield finds a threat</span>
+                <span className="text-xs text-slate-500">Choose the real-time Shield action and whether it notifies you.</span>
               </div>
               <select
-                value={settings.actionOnDetection === "warn" ? "ask" : (settings.actionOnDetection || "ask")}
-                onChange={e => updateSettings({ ...settings, actionOnDetection: e.target.value, autoQuarantine: e.target.value === "quarantine" })}
-                className="w-56 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                value={shieldAction}
+                onChange={e => {
+                  const action = e.target.value;
+                  updateSettings({
+                    ...settings,
+                    actionOnDetection: action,
+                    autoQuarantine: action.startsWith("quarantine"),
+                    shieldShowPopup: action === "ask" || action.endsWith("_notify")
+                  });
+                }}
+                className="w-72 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
               >
                 <option value="ask">Ask me</option>
-                <option value="quarantine">Auto quarantine</option>
-                <option value="results">Send silently to Results</option>
+                <option value="quarantine_notify">Auto quarantine and notify me</option>
+                <option value="quarantine_silent">Auto quarantine silently</option>
+                <option value="results_notify">Send to Results and notify me</option>
+                <option value="results_silent">Send silently to Results</option>
               </select>
-            </label>
+            </div>
+            <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+              {shieldActionDescription[shieldAction]}
+            </p>
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg">
+              <div>
+                <span className="text-slate-300 block">Play sound on Shield notification</span>
+                <span className="text-xs text-slate-500">Play a short bundled alert sound when Shield opens a decision or notification popup.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.playSoundOnAlert || false}
+                onChange={e => updateSettings({...settings, playSoundOnAlert: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </div>
           </div>
         </section>
       </div>

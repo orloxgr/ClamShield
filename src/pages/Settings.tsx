@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown } from "lucide-react";
 
 type ActionNotice = {
@@ -6,7 +6,7 @@ type ActionNotice = {
   text: string;
 };
 
-type SettingsSection = "system" | "notifications" | "scanner" | "diagnostics" | "paths";
+type SettingsSection = "system" | "scanner" | "diagnostics" | "paths";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -15,10 +15,16 @@ export default function SettingsPage() {
   const [notice, setNotice] = useState<ActionNotice | null>(null);
   const [defenderActionPending, setDefenderActionPending] = useState<"pause" | "restore" | "refresh" | null>(null);
   const [openSection, setOpenSection] = useState<SettingsSection | null>("system");
+  const autosaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
+    fetch("/api/status").then(r => r.json()).then(d => {
+      setSettings(d.settings);
+    });
     fetch("/api/defender-status").then(r => r.json()).then(d => setDefenderStatus(d)).catch(() => {});
+    return () => {
+      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    };
   }, []);
 
   const refreshDefenderStatus = async () => {
@@ -98,24 +104,37 @@ export default function SettingsPage() {
   const updateNumberSetting = (key: string, rawValue: string, fallback: number, min: number, max: number) => {
     const parsed = Number(rawValue);
     const nextValue = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
-    setSettings((current: any) => ({ ...current, [key]: nextValue }));
+    updateSettings({ ...settings, [key]: nextValue });
   };
 
-  const saveSettings = async () => {
+  const scheduleAutosave = (nextSettings: any) => {
+    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = window.setTimeout(() => {
+      saveSettings({ silent: true, nextSettings });
+    }, 350);
+  };
+
+  const updateSettings = (nextSettings: any) => {
+    setSettings(nextSettings);
+    scheduleAutosave(nextSettings);
+  };
+
+  const saveSettings = async (options: { silent?: boolean, nextSettings?: any } = {}) => {
+    const settingsToSave = options.nextSettings || settings;
     setSaving(true);
-    setNotice(null);
+    if (!options.silent) setNotice(null);
     try {
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings)
+        body: JSON.stringify(settingsToSave)
       });
-      setNotice({ kind: "success", text: "Settings saved successfully." });
+      if (!options.silent) setNotice({ kind: "success", text: "Settings saved successfully." });
     } catch (e: any) {
       setNotice({ kind: "error", text: "Failed to save settings: " + e.message });
     }
     setSaving(false);
-    setTimeout(() => setNotice(null), 3000);
+    if (!options.silent) setTimeout(() => setNotice(null), 3000);
   };
 
   if (!settings) return <div className="p-8">Loading...</div>;
@@ -132,10 +151,25 @@ export default function SettingsPage() {
     setOpenSection(current => current === section ? null : section);
   };
   const scanIntensityDetails = (value: number) => {
-    if (value < 40) return "Gentle: below-normal process priority, 500-file batches, 100 ms pause between batches.";
-    if (value < 65) return "Balanced: below-normal process priority, 2,000-file batches, 25 ms pause between batches.";
-    if (value < 85) return "Fast: normal process priority, 5,000-file batches, no artificial batch pause.";
-    return "Maximum: normal process priority, 10,000-file batches, no artificial batch pause.";
+    const cores = typeof navigator !== "undefined" && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 1;
+    const allCores = Math.min(32, Math.max(1, cores));
+    const halfCores = Math.min(allCores, Math.max(2, Math.ceil(cores * 0.5)));
+    const threeQuarterCores = Math.min(allCores, Math.max(2, Math.ceil(cores * 0.75)));
+    if (value <= 10) return "1-10: Extremely gentle. Idle priority, 1 worker, 100-file total batch window, 500 ms pause.";
+    if (value <= 20) return "11-20: Very gentle. Idle priority, 1 worker, 250-file total batch window, 250 ms pause.";
+    if (value <= 30) return "21-30: Gentle. Below-normal priority, 1 worker, 500-file total batch window, 150 ms pause.";
+    if (value <= 40) return "31-40: Light. Below-normal priority, 1 worker, 1,000-file total batch window, 75 ms pause.";
+    if (value <= 50) return "41-50: Balanced. Below-normal priority, 2 workers, 2,000-file total batch window split between workers, 25 ms pause.";
+    if (value <= 60) return "51-60: Active. Normal priority, 2 workers, 3,000-file total batch window split between workers, no pause.";
+    if (value <= 70) return `61-70: Fast. Normal priority, ${halfCores} workers, 5,000-file total batch window split between workers, no pause.`;
+    if (value <= 80) return `71-80: Very fast. Normal priority, ${threeQuarterCores} workers, 10,000-file total batch window split between workers, no pause.`;
+    if (value <= 90) return `81-90: Maximum minus one core. High priority, ${Math.max(1, allCores - 1)} workers, 15,000-file total batch window split between workers, no pause.`;
+    return `91-100: Maximum. High priority, all ${allCores} logical cores, 25,000-file total batch window split between workers, no pause. The PC may be hard to use until the scan finishes.`;
+  };
+  const scanMemoryWarning = (value: number) => {
+    const deviceMemory = typeof navigator !== "undefined" && "deviceMemory" in navigator ? Number((navigator as any).deviceMemory) : 0;
+    if (settings.offloadToMemory || !deviceMemory || deviceMemory >= 8 || value <= 50) return "";
+    return `RAM warning: this PC reports about ${deviceMemory} GB RAM. High parallel clamscan intensity can load signatures in multiple workers. Offload to memory uses clamdscan and is safer for RAM.`;
   };
 
   return (
@@ -147,7 +181,7 @@ export default function SettingsPage() {
             <p className="text-slate-400">Configure ClamAV paths and scanner options</p>
           </div>
           <button
-            onClick={saveSettings}
+            onClick={() => saveSettings()}
             disabled={saving}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors shrink-0"
           >
@@ -176,7 +210,7 @@ export default function SettingsPage() {
           </button>
           {openSection === "system" && (
           <div className="p-6 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+            <div className="flex items-center justify-between py-2 border-b border-slate-800 pb-4">
               <div>
                 <span className="text-slate-200 font-medium block">Run ClamShield on Startup</span>
                 <span className="text-slate-500 text-xs">Automatically launch ClamShield background service when you sign into Windows.</span>
@@ -184,11 +218,11 @@ export default function SettingsPage() {
               <input 
                 type="checkbox" 
                 checked={settings.runOnStartup || false} 
-                onChange={e => setSettings({...settings, runOnStartup: e.target.checked})}
+                onChange={e => updateSettings({...settings, runOnStartup: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
-            </label>
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+            </div>
+            <div className="flex items-center justify-between py-2 border-b border-slate-800 pb-4">
               <div>
                 <span className="text-slate-200 font-medium block">Start Minimized to Tray</span>
                 <span className="text-slate-500 text-xs">Open ClamShield as a tray icon without showing the main window.</span>
@@ -196,10 +230,10 @@ export default function SettingsPage() {
               <input
                 type="checkbox"
                 checked={settings.startMinimized || false}
-                onChange={e => setSettings({...settings, startMinimized: e.target.checked})}
+                onChange={e => updateSettings({...settings, startMinimized: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
-            </label>
+            </div>
 
             <h3 className="text-slate-200 font-medium pt-2 block">Windows Security</h3>
             <p className="text-sm text-slate-400">
@@ -207,9 +241,9 @@ export default function SettingsPage() {
               so it does not claim to be an independent antivirus provider or register itself as one in Windows Security.
               You may optionally request that Defender real-time protection be paused to reduce duplicate scanning.
             </p>
-            <label
+            <div
               className={`flex items-center justify-between py-2 border-t border-slate-800 pt-4 ${
-                tamperProtectionOn ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                tamperProtectionOn ? "opacity-60" : ""
               }`}
               title={tamperProtectionOn ? "Open Windows Security and disable Tamper Protection first." : undefined}
             >
@@ -221,10 +255,10 @@ export default function SettingsPage() {
                 type="checkbox"
                 checked={settings.autoDisableDefender === true}
                 disabled={tamperProtectionOn}
-                onChange={e => setSettings({...settings, autoDisableDefender: e.target.checked})}
+                onChange={e => updateSettings({...settings, autoDisableDefender: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800 disabled:cursor-not-allowed"
               />
-            </label>
+            </div>
             {settings.autoDisableDefender === true && (
               <div className="flex items-center justify-between">
                 <label className="text-sm font-medium text-slate-400 block w-1/3">Re-apply every (minutes)</label>
@@ -367,51 +401,6 @@ export default function SettingsPage() {
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <button
             type="button"
-            onClick={() => toggleSection("notifications")}
-            aria-expanded={openSection === "notifications"}
-            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
-              openSection === "notifications" ? "border-b border-slate-800" : ""
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <ShieldAlert className="w-5 h-5 text-indigo-400" />
-              Notifications & Alerts
-            </div>
-            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "notifications" ? "rotate-180" : ""}`} />
-          </button>
-          {openSection === "notifications" && (
-          <div className="p-6 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
-              <div>
-                <span className="text-slate-200 font-medium block">Show popup when a virus is found</span>
-                <span className="text-slate-500 text-xs">Displays an action popup for detections. On by default.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.shieldShowPopup !== false}
-                onChange={e => setSettings({...settings, shieldShowPopup: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
-              <div>
-                <span className="text-slate-200 font-medium block">Play Sound on Threat Found</span>
-                <span className="text-slate-500 text-xs">Play a short bundled alert sound when a threat popup opens. Off by default.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.playSoundOnAlert || false}
-                onChange={e => setSettings({...settings, playSoundOnAlert: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-          </div>
-          )}
-        </section>
-
-        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <button
-            type="button"
             onClick={() => toggleSection("scanner")}
             aria-expanded={openSection === "scanner"}
             className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
@@ -426,7 +415,7 @@ export default function SettingsPage() {
           </button>
           {openSection === "scanner" && (
           <div className="p-6 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+            <div className="flex items-center justify-between py-2 border-b border-slate-800 pb-4">
               <div>
                 <span className="text-slate-200 font-medium block">Offload ClamShield to memory</span>
                 <span className="text-slate-500 text-xs">Larger memory footprint (~1GB RAM), less CPU overhead.</span>
@@ -434,61 +423,89 @@ export default function SettingsPage() {
               <input
                 type="checkbox"
                 checked={settings.offloadToMemory || false}
-                onChange={e => setSettings({...settings, offloadToMemory: e.target.checked})}
+                onChange={e => updateSettings({...settings, offloadToMemory: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
-            </label>
+            </div>
 
             <div className="border-t border-slate-800 pt-4 space-y-3">
               <div className="flex items-center justify-between gap-6">
                 <div className="w-1/3 pr-4">
                   <label className="text-sm font-medium text-slate-400 block">On-demand intensity</label>
-                  <span className="text-xs text-slate-500">Current value: {settings.manualScanIntensity || 75}/100</span>
+                  <span className="text-xs text-slate-500">Current value: {settings.manualScanIntensity || 81}/100</span>
                 </div>
                 <input
                   type="range"
                   min={1}
                   max={100}
-                  value={settings.manualScanIntensity || 75}
-                  onChange={e => updateNumberSetting("manualScanIntensity", e.target.value, 75, 1, 100)}
+                  value={settings.manualScanIntensity || 81}
+                  onChange={e => updateNumberSetting("manualScanIntensity", e.target.value, 81, 1, 100)}
                   className="w-2/3 accent-indigo-500"
                 />
               </div>
               <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
-                {scanIntensityDetails(settings.manualScanIntensity || 75)}
+                {scanIntensityDetails(settings.manualScanIntensity || 81)}
               </p>
+              {scanMemoryWarning(settings.manualScanIntensity || 81) && (
+                <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+                  {scanMemoryWarning(settings.manualScanIntensity || 81)}
+                </p>
+              )}
             </div>
 
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-6">
                 <div className="w-1/3 pr-4">
                   <label className="text-sm font-medium text-slate-400 block">Scheduled intensity</label>
-                  <span className="text-xs text-slate-500">Current value: {settings.scheduledScanIntensity || 60}/100</span>
+                  <span className="text-xs text-slate-500">Current value: {settings.scheduledScanIntensity || 81}/100</span>
                 </div>
                 <input
                   type="range"
                   min={1}
                   max={100}
-                  value={settings.scheduledScanIntensity || 60}
-                  onChange={e => updateNumberSetting("scheduledScanIntensity", e.target.value, 60, 1, 100)}
+                  value={settings.scheduledScanIntensity || 81}
+                  onChange={e => updateNumberSetting("scheduledScanIntensity", e.target.value, 81, 1, 100)}
                   className="w-2/3 accent-indigo-500"
                 />
               </div>
               <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
-                {scanIntensityDetails(settings.scheduledScanIntensity || 60)}
+                {scanIntensityDetails(settings.scheduledScanIntensity || 81)}
               </p>
+              {scanMemoryWarning(settings.scheduledScanIntensity || 81) && (
+                <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+                  {scanMemoryWarning(settings.scheduledScanIntensity || 81)}
+                </p>
+              )}
             </div>
 
-            <div className="flex items-center justify-between py-2">
-              <span className="text-slate-300 text-sm mb-1 block">Send scanned items to</span>
-              <select
-                value={settings.scanDetectionAction || "results"}
-                onChange={e => setSettings({...settings, scanDetectionAction: e.target.value})}
-                className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              >
-                <option value="results">Results checklist</option>
-                <option value="quarantine">Quarantine</option>
-              </select>
+            <div className="pt-4 border-t border-slate-800 space-y-4">
+              <div>
+                <h3 className="text-slate-200 font-medium">When a virus is found</h3>
+                <p className="text-xs text-slate-500 mt-1">Actions and final warning popup for on-demand and scheduled scans.</p>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-slate-300 text-sm mb-1 block">Send scanned items to</span>
+                <select
+                  value={settings.scanDetectionAction || "results"}
+                  onChange={e => updateSettings({...settings, scanDetectionAction: e.target.value})}
+                  className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="results">Results checklist</option>
+                  <option value="quarantine">Quarantine</option>
+                </select>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <div>
+                  <span className="text-slate-200 font-medium block">Warn me with a popup at the end of the scan</span>
+                  <span className="text-slate-500 text-xs">Shows a summary popup after a scan finishes with detections, and when a scheduled scan stops.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.scanCompletionPopupEnabled !== false}
+                  onChange={e => updateSettings({...settings, scanCompletionPopupEnabled: e.target.checked})}
+                  className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                />
+              </div>
             </div>
 
             <div className="flex items-center justify-between border-t border-slate-800 pt-4">
@@ -502,21 +519,33 @@ export default function SettingsPage() {
             </div>
 
             {['scanArchives', 'recursive', 'followSymlinks'].map(key => (
-              <label key={key} className="flex items-center justify-between cursor-pointer py-2">
+              <div key={key} className="flex items-center justify-between py-2">
                 <span className="text-slate-300 capitalize text-sm">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
                 <input
                   type="checkbox"
                   checked={settings[key]}
-                  onChange={e => setSettings({...settings, [key]: e.target.checked})}
+                  onChange={e => updateSettings({...settings, [key]: e.target.checked})}
                   className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
                 />
-              </label>
+              </div>
             ))}
 
             <div className="pt-4 border-t border-slate-800 space-y-4">
               <div>
                 <h3 className="text-slate-200 font-medium">YARA scanning</h3>
                 <p className="text-xs text-slate-500 mt-1">Runtime limits used when the scanner evaluates files with local YARA rules.</p>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-2">
+                <div>
+                  <span className="text-slate-200 font-medium block">Enable YARA scanning</span>
+                  <span className="text-slate-500 text-xs">Use local YARA rules during manual, scheduled, and Shield scans.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.yaraEnabled !== false}
+                  onChange={e => updateSettings({...settings, yaraEnabled: e.target.checked})}
+                  className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                />
               </div>
               <div className="grid sm:grid-cols-2 gap-4">
                 <label className="block">
@@ -564,7 +593,7 @@ export default function SettingsPage() {
           </button>
           {openSection === "diagnostics" && (
           <div className="p-6 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+            <div className="flex items-center justify-between py-2 border-b border-slate-800 pb-4">
               <div>
                 <span className="text-slate-200 font-medium block">Enable Debug Log</span>
                 <span className="text-slate-500 text-xs">Writes extra startup, popup, and service details. Error and crash logs are always kept so white screens can be diagnosed.</span>
@@ -572,10 +601,10 @@ export default function SettingsPage() {
               <input
                 type="checkbox"
                 checked={settings.enableDebugLog === true}
-                onChange={e => setSettings({...settings, enableDebugLog: e.target.checked})}
+                onChange={e => updateSettings({...settings, enableDebugLog: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
-            </label>
+            </div>
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-slate-400 block w-1/3">
                 Delete logs after days
@@ -622,7 +651,7 @@ export default function SettingsPage() {
                 <input
                   type="text"
                   value={settings[key] || ""}
-                  onChange={e => setSettings({...settings, [key]: e.target.value})}
+                  onChange={e => updateSettings({...settings, [key]: e.target.value})}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
                 />
               </div>

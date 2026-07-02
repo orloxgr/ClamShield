@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClamShield Scan Summary</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+    }
+
+    .wrap {
+      height: 100%;
+      padding: 18px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: rgba(99, 102, 241, 0.16);
+      color: #a5b4fc;
+      font-weight: 800;
+      border: 1px solid rgba(99, 102, 241, 0.35);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      color: #f8fafc;
+    }
+
+    .sub {
+      margin-top: 2px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+
+    .details {
+      display: grid;
+      gap: 6px;
+      align-content: center;
+      color: #cbd5e1;
+      font-size: 13px;
+      line-height: 1.4;
+      min-width: 0;
+    }
+
+    .target {
+      color: #94a3b8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    button {
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: white;
+      cursor: pointer;
+    }
+
+    .secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border-color: #334155;
+    }
+
+    .primary {
+      background: #4f46e5;
+      border-color: #6366f1;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="header">
+      <div class="icon">!</div>
+      <div>
+        <h1 id="title">Scan finished</h1>
+        <div id="message" class="sub"></div>
+      </div>
+    </section>
+
+    <section class="details">
+      <div id="detail"></div>
+      <div id="target" class="target"></div>
+    </section>
+
+    <section class="actions">
+      <button id="close" class="secondary" type="button">Close</button>
+      <button id="open" class="primary" type="button">Open Results</button>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const port = params.get("port") || window.location.port;
+    const action = params.get("action") || "results";
+
+    document.getElementById("title").textContent = params.get("title") || "Scan finished";
+    document.getElementById("message").textContent = params.get("message") || "";
+    document.getElementById("detail").textContent = params.get("detail") || "";
+    document.getElementById("target").textContent = params.get("target") || "";
+    document.getElementById("open").textContent = action === "quarantine" ? "Open Quarantine" : "Open Results";
+
+    document.getElementById("close").addEventListener("click", () => window.close());
+    window.addEventListener("keydown", event => {
+      if (event.key === "Escape") window.close();
+    });
+    document.getElementById("open").addEventListener("click", () => {
+      window.location.href = `http://127.0.0.1:${port}/${action === "quarantine" ? "quarantine" : "results"}`;
+    });
+  </script>
+</body>
+</html>

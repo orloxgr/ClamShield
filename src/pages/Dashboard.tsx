@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import PageHeader from "../components/PageHeader";
+import { formatSystemDateTime } from "../lib/dateFormat";
 
 export default function Dashboard() {
   const [status, setStatus] = useState<any>(null);
@@ -186,7 +187,7 @@ export default function Dashboard() {
   const securiteInfoInstalled = securiteInfo.connected && Number(securiteInfo.installedCount || 0) > 0;
   const saneSecurity = status.saneSecurity || {};
   const saneSecurityInstalled = saneSecurity.connected && Number(saneSecurity.installedCount || 0) > 0;
-  const formatUpdateDate = (value: any) => value ? new Date(value).toLocaleString() : "Never";
+  const formatUpdateDate = (value: any) => formatSystemDateTime(value);
   const metadataValueClass = "font-medium text-slate-200";
   const attentionValueClass = "font-medium text-amber-400";
   const openSecuriteInfoDialog = () => {
@@ -438,9 +439,9 @@ export default function Dashboard() {
                   </button>
                 </div>
               </div>
-              <label className={`flex items-start justify-between gap-4 rounded-xl border p-4 ${
+              <div className={`flex items-start justify-between gap-4 rounded-xl border p-4 ${
                 securiteInfoPlan === "paid"
-                  ? "border-amber-500/30 bg-amber-500/10 cursor-pointer"
+                  ? "border-amber-500/30 bg-amber-500/10"
                   : "border-slate-800 bg-slate-950/40 opacity-60"
               }`}>
                 <div className="space-y-1">
@@ -462,7 +463,7 @@ export default function Dashboard() {
                   onChange={event => setSecuriteInfoIncludePua(event.target.checked)}
                   className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"
                 />
-              </label>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
                   Paste any one of your <code className="text-cyan-300">DatabaseCustomURL</code> lines

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { History, Search, ShieldAlert, RefreshCw, CheckCircle2 } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
 import PageHeader from "../components/PageHeader";
+import { formatSystemDateTime } from "../lib/dateFormat";
 
 type PageSize = 50 | 100 | 200 | 500 | "all";
 
@@ -108,7 +108,7 @@ export default function HistoryPage() {
                     </td>
                     <td className="px-6 py-4 truncate max-w-xs" title={item.target}>{item.target}</td>
                     <td className="px-6 py-4 text-slate-400 text-xs">
-                      {formatDistanceToNow(new Date(item.date), {addSuffix: true})}
+                      {formatSystemDateTime(item.date)}
                     </td>
                     <td className="px-6 py-4 text-right">
                        {item.threatsFound > 0 ? (

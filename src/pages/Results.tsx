@@ -1,6 +1,7 @@
 import { AlertTriangle, Archive, CheckCircle2, ListChecks, Loader2, SearchCheck, ShieldCheck, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
+import { formatSystemDateTime } from "../lib/dateFormat";
 
 type VirusTotalAction = "md5" | "upload";
 type PageSize = 50 | 100 | 200 | 500 | "all";
@@ -156,7 +157,7 @@ export default function ResultsPage() {
       await navigator.clipboard?.writeText(data.filePath).catch(() => {});
       window.open(data.url, "_blank", "noopener,noreferrer");
       markVirusTotalChecked(id, "upload");
-      setMessage("Opened VirusTotal's upload page and copied the file path. ClamShield did not upload the file automatically.");
+      setMessage("Opened VirusTotal's upload page and copied the full file path. Paste it into VirusTotal with Ctrl+V. ClamShield did not upload the file automatically.");
     } catch (error: any) {
       setMessage(error.message || "Could not open VirusTotal upload.");
     } finally {
@@ -401,8 +402,8 @@ export default function ResultsPage() {
                         disabled={busyId === item.id || item.available === false}
                         title={
                           checkedVirusTotal[item.id]?.upload
-                            ? "Open VirusTotal's upload page again. You choose whether to upload the file."
-                            : "Opens VirusTotal's upload page. You choose whether to upload the file."
+                            ? "Open VirusTotal's upload page again. The full file path will be copied so you can paste it with Ctrl+V."
+                            : "Opens VirusTotal's upload page. The full file path will be copied so you can paste it with Ctrl+V."
                         }
                         className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors ${
                           checkedVirusTotal[item.id]?.upload ? "bg-emerald-600 hover:bg-emerald-500" : "bg-sky-600 hover:bg-sky-500"
@@ -444,7 +445,7 @@ export default function ResultsPage() {
                   <td className="px-6 py-4 text-slate-400 capitalize">{item.source || "scan"}</td>
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-1">
-                      <span>{new Date(item.timestamp).toLocaleString()}</span>
+                      <span>{formatSystemDateTime(item.timestamp)}</span>
                       {item.available === false && <span className="text-xs text-amber-400">Original file unavailable</span>}
                     </div>
                   </td>

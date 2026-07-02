@@ -1,6 +1,7 @@
 import { ArchiveX, FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import PageHeader from "../components/PageHeader";
+import { formatSystemDateTime } from "../lib/dateFormat";
 
 type PageSize = 50 | 100 | 200 | 500 | "all";
 
@@ -186,7 +187,7 @@ export default function Quarantine() {
                 <tr key={idx} className="hover:bg-slate-800/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-red-400">{item.threatName}</td>
                   <td className="px-6 py-4 text-slate-400 font-mono text-xs">{item.originalPath}</td>
-                  <td className="px-6 py-4">{new Date(item.date).toLocaleString()}</td>
+                  <td className="px-6 py-4">{formatSystemDateTime(item.date)}</td>
                   <td className="px-6 py-4">
                     <div className="flex justify-end">
                       <button

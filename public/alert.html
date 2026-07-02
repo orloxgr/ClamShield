@@ -182,6 +182,9 @@
     const port = params.get("port") || window.location.port;
     const name = params.get("name") || "Unknown threat";
     const filePath = params.get("path") || "Unknown path";
+    const mode = params.get("mode") || "decision";
+    const title = params.get("title") || (mode === "notice" ? "Threat handled" : "Threat Detected");
+    const subtitle = params.get("subtitle") || (mode === "notice" ? "ClamShield handled a suspicious file" : "ClamShield found a suspicious file");
     const playSound = params.get("playSound") !== "false";
     const bridge = window.clamshieldAlert;
 
@@ -216,12 +219,20 @@
       });
     });
 
+    document.querySelector("h1").textContent = title;
+    document.querySelector(".sub").textContent = subtitle;
     document.getElementById("threatName").textContent = name;
     document.getElementById("threatPath").textContent = filePath;
     document.getElementById("closeBtn").addEventListener("click", () => window.close());
     window.addEventListener("keydown", event => {
       if (event.key === "Escape") window.close();
     });
+
+    if (mode === "notice") {
+      const actions = document.querySelector(".actions");
+      actions.innerHTML = '<button id="noticeCloseBtn" class="secondary" type="button">Close</button>';
+      document.getElementById("noticeCloseBtn").addEventListener("click", () => window.close());
+    }
 
     if (playSound) {
       const audio = document.getElementById("alertSound");
@@ -249,9 +260,11 @@
       }
     }
 
-    document.getElementById("exceptionBtn").addEventListener("click", () => sendAction("exception"));
-    document.getElementById("laterBtn").addEventListener("click", () => sendAction("results"));
-    document.getElementById("quarantineBtn").addEventListener("click", () => sendAction("quarantine"));
+    if (mode !== "notice") {
+      document.getElementById("exceptionBtn").addEventListener("click", () => sendAction("exception"));
+      document.getElementById("laterBtn").addEventListener("click", () => sendAction("results"));
+      document.getElementById("quarantineBtn").addEventListener("click", () => sendAction("quarantine"));
+    }
   </script>
 </body>
 </html>

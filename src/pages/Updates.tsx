@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Database, DownloadCloud, FileWarning, KeyRound, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
+import { formatSystemDateTime } from "../lib/dateFormat";
 
 const MAX_TERMINAL_LINES = 800;
 type DetailsPanel = "clamav" | "securiteinfo" | "sanesecurity" | "yara" | "app";
@@ -264,7 +265,7 @@ export default function Updates() {
   const yaraUpdateFailed = yaraUpdateState === "done" && yaraOutput.some(line => /error|failed/i.test(line));
   const appUpdateFailed = appUpdateState === "done" && appOutput.some(line => /error|failed/i.test(line));
 
-  const formatExact = (value?: string | null) => value ? new Date(value).toLocaleString() : "Never";
+  const formatExact = (value?: string | null) => formatSystemDateTime(value);
   const formatAge = (value?: string | null) => {
     if (!value) return "not updated yet";
     const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -316,10 +317,10 @@ export default function Updates() {
         </div>
         {openPanel === "clamav" && (
           <div className="px-8 pb-8 pt-2 border-t border-slate-800 grid sm:grid-cols-2 gap-4">
-            <label className="flex items-center justify-between gap-4 sm:col-span-2">
+            <div className="flex items-center justify-between gap-4 sm:col-span-2">
               <span className="text-sm text-slate-300">Automatic ClamAV updates</span>
               <input type="checkbox" checked={updateSettings.autoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ autoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" />
-            </label>
+            </div>
             <label className="block">
               <span className="text-xs font-medium text-slate-400">Update interval (hours)</span>
               <input type="number" min={24} max={720} value={updateSettings.clamavUpdateIntervalHours || updateSettings.updateIntervalHours || 24} onChange={event => updateNumberSetting("clamavUpdateIntervalHours", event.target.value, 24, 24, 720)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" />
@@ -375,14 +376,14 @@ export default function Updates() {
               <span className="text-xs font-medium text-slate-400">Update interval (hours)</span>
               <input type="number" min={1} max={24} value={updateSettings.securiteInfoUpdateIntervalHours || 1} onChange={event => updateNumberSetting("securiteInfoUpdateIntervalHours", event.target.value, 1, 1, 24)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" />
             </label>
-            <label className={`flex items-start justify-between gap-4 cursor-pointer rounded-lg border border-slate-800 bg-slate-950/50 p-4 ${updateSettings.securiteInfoPlan === "paid" ? "" : "opacity-60"}`}>
+            <div className={`flex items-start justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-4 ${updateSettings.securiteInfoPlan === "paid" ? "" : "opacity-60"}`}>
               <div>
                 <span className="text-slate-200 font-medium flex items-center gap-2"><FileWarning className="w-4 h-4 text-amber-300" />SecuriteInfo PUA signatures</span>
                 <span className="text-slate-500 text-xs block mt-1">Optional database <code>securiteinfo-pua-app-and-vulnerabilities.ndb</code>. It may generate many false positives.</span>
                 {updateSettings.securiteInfoPlan !== "paid" && <span className="text-slate-500 text-xs block mt-1">Available for paid SecuriteInfo plans.</span>}
               </div>
               <input type="checkbox" checked={updateSettings.securiteInfoPlan === "paid" && updateSettings.securiteInfoIncludePua === true} disabled={updateSettings.securiteInfoPlan !== "paid"} onChange={event => saveUpdateSettings({ securiteInfoIncludePua: event.target.checked })} className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800" />
-            </label>
+            </div>
           </div>
         )}
         {signatureTarget === "securiteinfo" && (signatureUpdateActive || updateState === "done") && (
@@ -474,8 +475,7 @@ export default function Updates() {
         </div>
         {openPanel === "yara" && (
           <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
-            <label className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Enable YARA scanning</span><input type="checkbox" checked={updateSettings.yaraEnabled !== false} onChange={event => saveUpdateSettings({ yaraEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></label>
-            <label className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Auto-update YARA rules</span><input type="checkbox" checked={updateSettings.yaraAutoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ yaraAutoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></label>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Auto-update YARA rules</span><input type="checkbox" checked={updateSettings.yaraAutoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ yaraAutoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
             <div className="grid sm:grid-cols-2 gap-4">
               <label className="block"><span className="text-xs font-medium text-slate-400">Ruleset</span><select value={updateSettings.yaraRuleset || "core"} onChange={event => saveUpdateSettings({ yaraRuleset: event.target.value })} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"><option value="core">Core</option><option value="extended">Extended</option><option value="full">Full</option></select></label>
               <label className="block"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.yaraUpdateIntervalHours || 168} onChange={event => updateNumberSetting("yaraUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
@@ -524,9 +524,9 @@ export default function Updates() {
         </div>
         {openPanel === "app" && (
           <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
-            <label className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for ClamShield app updates</span><input type="checkbox" checked={updateSettings.appUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ appUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></label>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for ClamShield app updates</span><input type="checkbox" checked={updateSettings.appUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ appUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
             <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.appUpdateIntervalHours || 168} onChange={event => updateNumberSetting("appUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
-            <label className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Silent install ClamShield updates</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></label>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Silent install ClamShield updates</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
           </div>
         )}
         {appUpdateState !== "idle" && (
