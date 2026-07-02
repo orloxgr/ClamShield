@@ -34,6 +34,11 @@ export default function ShieldSettings() {
     const nextValue = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
     updateSettings({ ...settings, [key]: nextValue });
   };
+  const shieldIntensityDetails = (value: number) => {
+    if (value <= 15) return "1-15: Shield launches scan processes at idle priority, the gentlest option for foreground work.";
+    if (value < 70) return "16-69: Shield launches scan processes below normal priority, balancing protection and responsiveness.";
+    return "70-100: Shield launches scan processes at normal priority for faster real-time decisions.";
+  };
 
   const handleAddFolder = async () => {
     try {
@@ -195,7 +200,7 @@ export default function ShieldSettings() {
             <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">Low impact Shield scans</span>
-                <span className="text-xs text-slate-500">Runs ClamAV Shield scans with below-normal Windows CPU priority so foreground apps stay responsive.</span>
+                <span className="text-xs text-slate-500">Lets Shield lower scan-process priority according to the intensity slider. Turn it off only when you want Shield to scan at normal priority.</span>
               </div>
               <input
                 type="checkbox"
@@ -204,6 +209,27 @@ export default function ShieldSettings() {
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>
+            <div className="p-2 space-y-3 border-t border-slate-800 pt-4">
+              <div className="flex items-center justify-between gap-6">
+                <div>
+                  <span className="text-slate-300 block">Shield intensity</span>
+                  <span className="text-xs text-slate-500">Current value: {settings.shieldScanIntensity || 25}/100</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={100}
+                  value={settings.shieldScanIntensity || 25}
+                  onChange={e => updateNumberSetting("shieldScanIntensity", e.target.value, 25, 1, 100)}
+                  className="w-1/2 accent-indigo-500"
+                />
+              </div>
+              <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                {settings.shieldLowImpactMode === false
+                  ? "Low impact mode is off: Shield scan processes use normal priority regardless of the slider."
+                  : shieldIntensityDetails(settings.shieldScanIntensity || 25)}
+              </p>
+            </div>
             <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">Folder depth</span>
@@ -282,18 +308,6 @@ export default function ShieldSettings() {
             Notifications
           </div>
           <div className="p-4 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
-              <div>
-                <span className="text-slate-300 block">Show bottom-right popup on file scan</span>
-                <span className="text-xs text-slate-500">Displays a small toast when downloading/modifying files</span>
-              </div>
-              <input 
-                type="checkbox" 
-                checked={settings.shieldShowPopup} 
-                onChange={() => toggle('shieldShowPopup')}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
             <label className="flex items-center justify-between cursor-pointer p-2 hover:bg-slate-800/50 rounded-lg">
               <div>
                 <span className="text-slate-300 block">When threat found</span>

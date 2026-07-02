@@ -354,10 +354,10 @@ function Sidebar({ status }: { status?: any }) {
   const { scanState } = useScan();
   const navItems = [
     { name: "Dashboard", path: "/", icon: Activity },
+    { name: "Shield", path: "/shield", icon: Shield },
     { name: "On-Demand Scan", path: "/scan", icon: Search },
     { name: "Scheduled Scanner", path: "/scheduled-scanner", icon: CalendarClock },
     { name: "Results", path: "/results", icon: FileWarning },
-    { name: "Shield", path: "/shield", icon: Shield },
     { name: "Exceptions", path: "/exceptions", icon: ShieldCheck },
     { name: "Quarantine", path: "/quarantine", icon: Archive },
     { name: "DNS Protection", path: "/dns-protection", icon: Globe2 },

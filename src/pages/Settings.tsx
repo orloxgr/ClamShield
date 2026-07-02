@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown, FileWarning } from "lucide-react";
+import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown } from "lucide-react";
 
 type ActionNotice = {
   kind: "success" | "warning" | "error" | "info";
   text: string;
 };
 
-type SettingsSection = "system" | "notifications" | "diagnostics" | "paths" | "shield" | "scanner" | "support";
+type SettingsSection = "system" | "notifications" | "scanner" | "diagnostics" | "paths";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -130,6 +130,12 @@ export default function SettingsPage() {
         : "bg-indigo-500/15 border-indigo-500/30 text-indigo-200";
   const toggleSection = (section: SettingsSection) => {
     setOpenSection(current => current === section ? null : section);
+  };
+  const scanIntensityDetails = (value: number) => {
+    if (value < 40) return "Gentle: below-normal process priority, 500-file batches, 100 ms pause between batches.";
+    if (value < 65) return "Balanced: below-normal process priority, 2,000-file batches, 25 ms pause between batches.";
+    if (value < 85) return "Fast: normal process priority, 5,000-file batches, no artificial batch pause.";
+    return "Maximum: normal process priority, 10,000-file batches, no artificial batch pause.";
   };
 
   return (
@@ -377,16 +383,166 @@ export default function SettingsPage() {
           <div className="p-6 space-y-4">
             <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
               <div>
+                <span className="text-slate-200 font-medium block">Show popup when a virus is found</span>
+                <span className="text-slate-500 text-xs">Displays an action popup for detections. On by default.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.shieldShowPopup !== false}
+                onChange={e => setSettings({...settings, shieldShowPopup: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+              <div>
                 <span className="text-slate-200 font-medium block">Play Sound on Threat Found</span>
                 <span className="text-slate-500 text-xs">Play a short bundled alert sound when a threat popup opens. Off by default.</span>
               </div>
-              <input 
-                type="checkbox" 
-                checked={settings.playSoundOnAlert || false} 
+              <input
+                type="checkbox"
+                checked={settings.playSoundOnAlert || false}
                 onChange={e => setSettings({...settings, playSoundOnAlert: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
               />
             </label>
+          </div>
+          )}
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("scanner")}
+            aria-expanded={openSection === "scanner"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "scanner" ? "border-b border-slate-800" : ""
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Sliders className="w-5 h-5 text-indigo-400" />
+              Scanner Options
+            </span>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "scanner" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "scanner" && (
+          <div className="p-6 space-y-4">
+            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Offload ClamShield to memory</span>
+                <span className="text-slate-500 text-xs">Larger memory footprint (~1GB RAM), less CPU overhead.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.offloadToMemory || false}
+                onChange={e => setSettings({...settings, offloadToMemory: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </label>
+
+            <div className="border-t border-slate-800 pt-4 space-y-3">
+              <div className="flex items-center justify-between gap-6">
+                <div className="w-1/3 pr-4">
+                  <label className="text-sm font-medium text-slate-400 block">On-demand intensity</label>
+                  <span className="text-xs text-slate-500">Current value: {settings.manualScanIntensity || 75}/100</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={100}
+                  value={settings.manualScanIntensity || 75}
+                  onChange={e => updateNumberSetting("manualScanIntensity", e.target.value, 75, 1, 100)}
+                  className="w-2/3 accent-indigo-500"
+                />
+              </div>
+              <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                {scanIntensityDetails(settings.manualScanIntensity || 75)}
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-6">
+                <div className="w-1/3 pr-4">
+                  <label className="text-sm font-medium text-slate-400 block">Scheduled intensity</label>
+                  <span className="text-xs text-slate-500">Current value: {settings.scheduledScanIntensity || 60}/100</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={100}
+                  value={settings.scheduledScanIntensity || 60}
+                  onChange={e => updateNumberSetting("scheduledScanIntensity", e.target.value, 60, 1, 100)}
+                  className="w-2/3 accent-indigo-500"
+                />
+              </div>
+              <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+                {scanIntensityDetails(settings.scheduledScanIntensity || 60)}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between py-2">
+              <span className="text-slate-300 text-sm mb-1 block">Send scanned items to</span>
+              <select
+                value={settings.scanDetectionAction || "results"}
+                onChange={e => setSettings({...settings, scanDetectionAction: e.target.value})}
+                className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="results">Results checklist</option>
+                <option value="quarantine">Quarantine</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-slate-800 pt-4">
+              <label className="text-sm font-medium text-slate-400 block w-1/3">Max File Size (MB)</label>
+              <input
+                type="number"
+                value={settings.maxFileSize}
+                onChange={e => updateNumberSetting("maxFileSize", e.target.value, 50, 1, 4096)}
+                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            {['scanArchives', 'recursive', 'followSymlinks'].map(key => (
+              <label key={key} className="flex items-center justify-between cursor-pointer py-2">
+                <span className="text-slate-300 capitalize text-sm">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
+                <input
+                  type="checkbox"
+                  checked={settings[key]}
+                  onChange={e => setSettings({...settings, [key]: e.target.checked})}
+                  className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+                />
+              </label>
+            ))}
+
+            <div className="pt-4 border-t border-slate-800 space-y-4">
+              <div>
+                <h3 className="text-slate-200 font-medium">YARA scanning</h3>
+                <p className="text-xs text-slate-500 mt-1">Runtime limits used when the scanner evaluates files with local YARA rules.</p>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-400">Timeout seconds</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={settings.yaraTimeoutSeconds || 15}
+                    onChange={e => updateNumberSetting("yaraTimeoutSeconds", e.target.value, 15, 1, 3600)}
+                    className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-400">Max file size (MB)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={4096}
+                    value={settings.yaraMaxFileSize || 50}
+                    onChange={e => updateNumberSetting("yaraMaxFileSize", e.target.value, 50, 1, 4096)}
+                    className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
           )}
         </section>
@@ -476,383 +632,10 @@ export default function SettingsPage() {
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <button
-            type="button"
-            onClick={() => toggleSection("shield")}
-            aria-expanded={openSection === "shield"}
-            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
-              openSection === "shield" ? "border-b border-slate-800" : ""
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Shield className="w-5 h-5 text-indigo-400" />
-              Real-Time Shield Setup
-            </span>
-            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "shield" ? "rotate-180" : ""}`} />
-          </button>
-          {openSection === "shield" && (
-          <div className="p-6 space-y-4">
-            {['monitorDesktop', 'monitorDocuments', 'monitorDownloads'].map(key => (
-              <label key={key} className="flex items-center justify-between cursor-pointer py-2">
-                <span className="text-slate-300 capitalize text-sm">{key.replace(/([A-Z])/g, ' $1').replace('monitor ', 'Monitor ').trim()}</span>
-                <input 
-                  type="checkbox" 
-                  checked={settings[key] || false} 
-                  onChange={e => setSettings({...settings, [key]: e.target.checked})}
-                  className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-                />
-              </label>
-            ))}
-            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
-              <div>
-                <span className="text-slate-300 block text-sm">Auto-detect browser download folders</span>
-                <span className="text-xs text-slate-500">Adds installed Chrome, Edge, Firefox, Brave, Opera, Vivaldi, and Chromium download paths.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.autoDetectBrowserDownloads !== false}
-                onChange={e => setSettings({...settings, autoDetectBrowserDownloads: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            <label className="flex items-center justify-between cursor-pointer py-2">
-              <div>
-                <span className="text-slate-300 block text-sm">Low impact Shield scans</span>
-                <span className="text-xs text-slate-500">Runs real-time ClamAV scans below normal CPU priority to reduce foreground slowdowns.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.shieldLowImpactMode !== false}
-                onChange={e => setSettings({...settings, shieldLowImpactMode: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">Shield Folder Depth</label>
-              <input
-                type="number"
-                min={0}
-                max={20}
-                value={settings.shieldDepth ?? 1}
-                onChange={e => updateNumberSetting("shieldDepth", e.target.value, 1, 0, 20)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">Concurrent Shield Scans</label>
-              <input
-                type="number"
-                min={1}
-                max={4}
-                value={settings.shieldMaxConcurrentScans ?? 1}
-                onChange={e => updateNumberSetting("shieldMaxConcurrentScans", e.target.value, 1, 1, 4)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">
-                Polling Interval (ms)
-                <span className="block text-xs font-normal text-slate-500 mt-1">How often Shield checks if a changing file is stable. Lower is faster but costs more CPU/disk wakeups.</span>
-              </label>
-              <input 
-                type="number"
-                value={settings.shieldPollInterval || 1000}
-                onChange={e => updateNumberSetting("shieldPollInterval", e.target.value, 1000, 100, 60000)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">
-                Stability Threshold (ms)
-                <span className="block text-xs font-normal text-slate-500 mt-1">How long a file must stop changing before scan. Higher is safer for many downloads and large files.</span>
-              </label>
-              <input 
-                type="number"
-                value={settings.shieldStabilityThreshold || 2000}
-                onChange={e => updateNumberSetting("shieldStabilityThreshold", e.target.value, 2000, 100, 120000)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
+          <div className="w-full px-6 py-4 flex items-center gap-2 font-medium text-slate-200 border-b border-slate-800">
+            <Heart className="w-5 h-5 text-rose-500" />
+            Support Us
           </div>
-          )}
-        </section>
-
-        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <button
-            type="button"
-            onClick={() => toggleSection("scanner")}
-            aria-expanded={openSection === "scanner"}
-            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
-              openSection === "scanner" ? "border-b border-slate-800" : ""
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Sliders className="w-5 h-5 text-indigo-400" />
-              Scanner Options
-            </span>
-            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "scanner" ? "rotate-180" : ""}`} />
-          </button>
-          {openSection === "scanner" && (
-          <div className="p-6 space-y-4">
-            <label className="flex items-center justify-between cursor-pointer py-2 border-b border-slate-800 pb-4">
-              <div>
-                <span className="text-slate-200 font-medium block">Offload ClamShield to memory</span>
-                <span className="text-slate-500 text-xs">Larger memory footprint (~1GB RAM), less CPU overhead.</span>
-              </div>
-              <input 
-                type="checkbox" 
-                checked={settings.offloadToMemory || false} 
-                onChange={e => setSettings({...settings, offloadToMemory: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-
-            <label className="flex items-center justify-between cursor-pointer py-2">
-              <span className="text-slate-300 capitalize text-sm mb-1 block">Auto-Update Signatures</span>
-              <input 
-                type="checkbox" 
-                checked={settings.autoUpdateEnabled} 
-                onChange={e => setSettings({...settings, autoUpdateEnabled: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            <label className={`flex items-start justify-between gap-4 cursor-pointer py-4 border-t border-slate-800 ${
-              settings.securiteInfoPlan === "paid" ? "" : "opacity-60"
-            }`}>
-              <div>
-                <span className="text-slate-200 font-medium flex items-center gap-2">
-                  <FileWarning className="w-4 h-4 text-amber-300" />
-                  SecuriteInfo PUA signatures
-                </span>
-                <span className="text-slate-500 text-xs block mt-1">
-                  Optional database <code>securiteinfo-pua-app-and-vulnerabilities.ndb</code>. Caution: detects potentially unwanted applications and vulnerable components, and may generate many false positives.
-                </span>
-                {settings.securiteInfoPlan !== "paid" && (
-                  <span className="text-slate-500 text-xs block mt-1">Available for paid SecuriteInfo plans.</span>
-                )}
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.securiteInfoPlan === "paid" && settings.securiteInfoIncludePua === true}
-                disabled={settings.securiteInfoPlan !== "paid"}
-                onChange={e => setSettings({...settings, securiteInfoIncludePua: e.target.checked})}
-                className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            {settings.autoUpdateEnabled && (
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-slate-400 block w-1/3">Update every XX hours</label>
-                <input 
-                  type="number"
-                  value={settings.updateIntervalHours || 24}
-                  min={1}
-                  max={720}
-                  onChange={e => updateNumberSetting("updateIntervalHours", e.target.value, 24, 1, 720)}
-                  className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-            )}
-
-            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
-              <div>
-                <span className="text-slate-300 block text-sm">Check for ClamShield app updates weekly</span>
-                <span className="text-xs text-slate-500">Looks for a newer GitHub release while ClamShield is running.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.appUpdateCheckEnabled !== false}
-                onChange={e => setSettings({...settings, appUpdateCheckEnabled: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-            {settings.appUpdateCheckEnabled !== false && (
-              <>
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-slate-400 block w-1/3">ClamShield update interval (hours)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={8760}
-                    value={settings.appUpdateIntervalHours || 168}
-                    onChange={e => updateNumberSetting("appUpdateIntervalHours", e.target.value, 168, 1, 8760)}
-                    className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <label className="flex items-center justify-between cursor-pointer py-2">
-                  <div>
-                    <span className="text-slate-300 block text-sm">Silent install ClamShield updates</span>
-                    <span className="text-xs text-slate-500">Downloads and launches the installer automatically, then closes ClamShield so files can be replaced.</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={settings.appSilentAutoInstall === true}
-                    onChange={e => setSettings({...settings, appSilentAutoInstall: e.target.checked})}
-                    className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-                  />
-                </label>
-              </>
-            )}
-            
-            <div className="flex items-center justify-between py-2">
-              <span className="text-slate-300 text-sm mb-1 block">Send scanned items to</span>
-              <select
-                value={settings.scanDetectionAction || "results"}
-                onChange={e => setSettings({...settings, scanDetectionAction: e.target.value})}
-                className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              >
-                <option value="results">Results checklist</option>
-                <option value="quarantine">Quarantine</option>
-              </select>
-            </div>
-
-            <label className="flex items-center justify-between cursor-pointer py-2 border-t border-slate-800 pt-4">
-              <div>
-                <span className="text-slate-200 font-medium block">Enable YARA scanning</span>
-                <span className="text-slate-500 text-xs">Runs YARA Forge rules as a second detection layer. Core is enabled by default for low false positives.</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={settings.yaraEnabled !== false}
-                onChange={e => setSettings({...settings, yaraEnabled: e.target.checked})}
-                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-              />
-            </label>
-
-            {settings.yaraEnabled !== false && (
-              <>
-                <div className="flex items-center justify-between py-2">
-                  <div className="w-1/2 pr-4">
-                    <span className="text-slate-300 text-sm mb-1 block">YARA Forge ruleset</span>
-                    <span className="text-xs text-slate-500">Core is fastest and safest. Extended is balanced. Full is widest and heavier.</span>
-                  </div>
-                  <select
-                    value={settings.yaraRuleset || "core"}
-                    onChange={e => setSettings({...settings, yaraRuleset: e.target.value})}
-                    className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="core">Core</option>
-                    <option value="extended">Extended</option>
-                    <option value="full">Full</option>
-                  </select>
-                </div>
-
-                <label className="flex items-center justify-between cursor-pointer py-2">
-                  <div>
-                    <span className="text-slate-300 block text-sm">Auto-update YARA rules weekly</span>
-                    <span className="text-xs text-slate-500">Checks YARA Forge once per week when ClamShield is running.</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={settings.yaraAutoUpdateEnabled !== false}
-                    onChange={e => setSettings({...settings, yaraAutoUpdateEnabled: e.target.checked})}
-                    className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-                  />
-                </label>
-
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-slate-400 block w-1/3">YARA timeout seconds</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={3600}
-                    value={settings.yaraTimeoutSeconds || 15}
-                    onChange={e => updateNumberSetting("yaraTimeoutSeconds", e.target.value, 15, 1, 3600)}
-                    className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-slate-400 block w-1/3">YARA max file size (MB)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={4096}
-                    value={settings.yaraMaxFileSize || 50}
-                    onChange={e => updateNumberSetting("yaraMaxFileSize", e.target.value, 50, 1, 4096)}
-                    className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </>
-            )}
-
-            <div className="flex items-center justify-between py-2">
-              <span className="text-slate-300 text-sm mb-1 block">Real-time shield detections</span>
-              <select
-                value={settings.actionOnDetection === "warn" ? "ask" : (settings.actionOnDetection || (settings.autoQuarantine ? "quarantine" : "ask"))}
-                onChange={e => setSettings({...settings, actionOnDetection: e.target.value, autoQuarantine: e.target.value === "quarantine"})}
-                className="w-1/2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              >
-                <option value="quarantine">Auto Quarantine</option>
-                <option value="ask">Ask Me</option>
-                <option value="results">Send silently to Results</option>
-              </select>
-            </div>
-
-            <div className="flex items-center justify-between border-t border-slate-800 pt-4">
-              <label className="text-sm font-medium text-slate-400 block w-1/3">Max File Size (MB)</label>
-              <input 
-                type="number"
-                value={settings.maxFileSize}
-                onChange={e => updateNumberSetting("maxFileSize", e.target.value, 50, 1, 4096)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div className="w-1/3 pr-4">
-                <label className="text-sm font-medium text-slate-400 block">Adaptive scan batches</label>
-                <span className="text-xs text-slate-500">Manual scans use smaller batches for small folders and larger batches for big folders to keep progress responsive.</span>
-              </div>
-              <div className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-xs text-slate-400 leading-relaxed">
-                {"<=100 files: 1 per batch | 101-500: 3 | 501-1000: 10 | 1001+: 100"}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div className="w-1/3 pr-4">
-                <label className="text-sm font-medium text-slate-400 block">Pause between batches (ms)</label>
-                <span className="text-xs text-slate-500">Adds a small pause between manual scan batches to reduce CPU and disk pressure.</span>
-              </div>
-              <input
-                type="number"
-                value={settings.scanBatchDelayMs || 0}
-                min={0}
-                max={60000}
-                onChange={e => updateNumberSetting("scanBatchDelayMs", e.target.value, 0, 0, 60000)}
-                className="w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-            {['scanArchives', 'recursive', 'followSymlinks'].map(key => (
-              <label key={key} className="flex items-center justify-between cursor-pointer py-2">
-                <span className="text-slate-300 capitalize text-sm">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
-                <input 
-                  type="checkbox" 
-                  checked={settings[key]} 
-                  onChange={e => setSettings({...settings, [key]: e.target.checked})}
-                  className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
-                />
-              </label>
-            ))}
-          </div>
-          )}
-        </section>
-
-        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <button
-            type="button"
-            onClick={() => toggleSection("support")}
-            aria-expanded={openSection === "support"}
-            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
-              openSection === "support" ? "border-b border-slate-800" : ""
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Heart className="w-5 h-5 text-rose-500" />
-              Support Us
-            </span>
-            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "support" ? "rotate-180" : ""}`} />
-          </button>
-          {openSection === "support" && (
           <div className="p-6 space-y-6">
             <div>
               <p className="text-sm text-slate-300 mb-4">
@@ -879,8 +662,15 @@ export default function SettingsPage() {
                 Donate to Sanesecurity
               </a>
             </div>
+            <div className="pt-4 border-t border-slate-800">
+              <p className="text-sm text-slate-400 mb-3">
+                SecuriteInfo offers hourly ClamAV signature updates through a subscription service for improved zero-day detection coverage.
+              </p>
+              <a href="https://www.securiteinfo.com/clamav-antivirus/improve-detection-rate-of-zero-day-malwares-for-clamav.shtml" target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center py-2 px-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium transition-colors border border-slate-700">
+                Subscribe to SecuriteInfo
+              </a>
+            </div>
           </div>
-          )}
         </section>
       </div>
     </div>

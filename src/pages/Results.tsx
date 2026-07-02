@@ -3,9 +3,15 @@ import { useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 
 type VirusTotalAction = "md5" | "upload";
+type PageSize = 50 | 100 | 200 | 500 | "all";
 
 export default function ResultsPage() {
   const [items, setItems] = useState<any[]>([]);
+  const [totalItems, setTotalItems] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [pageSize, setPageSize] = useState<PageSize>(50);
+  const [page, setPage] = useState(1);
+  const [dateFilter, setDateFilter] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState<"md5" | "quarantine" | null>(null);
   const [message, setMessage] = useState("");
@@ -25,11 +31,19 @@ export default function ResultsPage() {
   };
 
   const fetchItems = async () => {
+    setLoading(true);
     try {
-      const res = await fetch("/api/results");
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize)
+      });
+      if (dateFilter) params.set("date", dateFilter);
+      const res = await fetch(`/api/results?${params.toString()}`);
       const data = await res.json();
-      const sorted = Array.isArray(data) ? data.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)) : [];
+      const sourceItems = Array.isArray(data) ? data : data.items;
+      const sorted = Array.isArray(sourceItems) ? sourceItems.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)) : [];
       setItems(sorted);
+      setTotalItems(Array.isArray(data) ? sorted.length : Number(data.total || 0));
       setCheckedVirusTotal(prev => {
         const next = { ...prev };
         sorted.forEach((item: any) => {
@@ -46,12 +60,19 @@ export default function ResultsPage() {
       });
     } catch {
       setItems([]);
+      setTotalItems(0);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchItems();
-  }, []);
+  }, [page, pageSize, dateFilter]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize, dateFilter]);
 
   const handleAction = async (id: string, action: "quarantine" | "exception") => {
     setBusyId(id);
@@ -184,6 +205,11 @@ export default function ResultsPage() {
     }
   };
 
+  const pageCount = pageSize === "all" ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const rangeStart = totalItems === 0 ? 0 : pageSize === "all" ? 1 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = pageSize === "all" ? totalItems : Math.min(totalItems, (currentPage - 1) * pageSize + pageSize);
+
   return (
     <div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
       <PageHeader
@@ -237,16 +263,88 @@ export default function ResultsPage() {
         </div>
       )}
 
-      {items.length === 0 ? (
+      {loading ? (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 flex flex-col items-center justify-center text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-indigo-400 mb-4" />
+          <p className="text-slate-400">Loading results...</p>
+        </div>
+      ) : totalItems === 0 ? (
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 flex flex-col items-center justify-center text-center">
           <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mb-4">
             <ShieldCheck className="w-8 h-8" />
           </div>
-          <h3 className="text-lg font-medium text-slate-200 mb-2">No undecided results</h3>
-          <p className="text-slate-500 max-w-md">Manual scan detections and silent shield detections will appear here for review.</p>
+          <h3 className="text-lg font-medium text-slate-200 mb-2">{dateFilter ? "No results for this date" : "No undecided results"}</h3>
+          <p className="text-slate-500 max-w-md">
+            {dateFilter ? "Pick another date or clear the filter to see all undecided results." : "Manual scan detections and silent shield detections will appear here for review."}
+          </p>
+          {dateFilter && (
+            <button
+              onClick={() => setDateFilter("")}
+              className="mt-4 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700"
+            >
+              Clear date
+            </button>
+          )}
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-sm">
+            <span className="text-slate-400">
+              Showing {rangeStart}-{rangeEnd} of {totalItems}
+            </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-slate-400">
+                Date
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={e => setDateFilter(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                />
+              </label>
+              {dateFilter && (
+                <button
+                  onClick={() => setDateFilter("")}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+              <label className="flex items-center gap-2 text-slate-400">
+                Rows
+                <select
+                  value={pageSize}
+                  onChange={e => setPageSize(e.target.value === "all" ? "all" : Number(e.target.value) as PageSize)}
+                  className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={500}>500</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              {pageSize !== "all" && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage(current => Math.max(1, current - 1))}
+                    disabled={currentPage <= 1}
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-slate-500 tabular-nums">Page {currentPage} / {pageCount}</span>
+                  <button
+                    onClick={() => setPage(current => Math.min(pageCount, current + 1))}
+                    disabled={currentPage >= pageCount}
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
           <table className="w-full table-fixed text-left text-sm">
             <colgroup>
               <col className="w-[58%]" />

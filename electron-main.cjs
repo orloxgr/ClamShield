@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, session, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, session, shell, powerMonitor, ipcMain } = require('electron');
 const path = require('path');
 const { spawn, fork } = require('child_process');
 const fs = require('fs');
@@ -22,6 +22,7 @@ let lastAppUpdateCheckAt = 0;
 let appUpdateChecking = false;
 let scheduledScanChecking = false;
 let scheduledScanRun = null;
+let currentApiPort = null;
 const apiSessionToken = randomBytes(32).toString('hex');
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -348,7 +349,8 @@ function createAlertWindow(threat, port, playSound) {
       icon: path.join(__dirname, 'public/icon.png'),
       webPreferences: {
          nodeIntegration: false,
-         contextIsolation: true
+         contextIsolation: true,
+         preload: getPublicAssetPath('alert-preload.cjs')
       }
    });
    
@@ -359,10 +361,19 @@ function createAlertWindow(threat, port, playSound) {
       activeAlerts.delete(threat.id);
    });
    
-   const alertUrl = `http://127.0.0.1:${port}/alert.html?id=${encodeURIComponent(threat.id)}&name=${encodeURIComponent(threat.threatName)}&path=${encodeURIComponent(threat.originalPath)}&port=${port}&playSound=${playSound}`;
-   
    console.debug('Opening threat alert window', { threatId: threat.id, playSound });
-   alertWin.loadURL(alertUrl).catch(err => console.error("Failed to load alert HTML", err));
+   alertWin.loadFile(getPublicAssetPath('alert.html'), {
+      query: {
+         id: String(threat.id || ''),
+         name: String(threat.threatName || 'Unknown threat'),
+         path: String(threat.originalPath || 'Unknown path'),
+         playSound: playSound ? 'true' : 'false'
+      }
+   }).catch(err => {
+      console.error("Failed to load alert HTML", err);
+      activeAlerts.delete(threat.id);
+      if (!alertWin.isDestroyed()) alertWin.close();
+   });
 }
 
 function createResultsReminderWindow(reminder, port) {
@@ -456,6 +467,37 @@ function requestJson(port, pathName, method = 'GET', body = null) {
     req.end();
   });
 }
+
+function getPublicAssetPath(fileName) {
+  return path.join(__dirname, 'public', fileName);
+}
+
+ipcMain.handle('clamshield-alert-action', async (_event, payload = {}) => {
+  const threatId = String(payload.id || '');
+  const action = String(payload.action || '');
+  if (!currentApiPort || !threatId || !action) {
+    throw new Error('The alert action is missing required data.');
+  }
+  return requestJson(
+    currentApiPort,
+    `/api/pending-threats/${encodeURIComponent(threatId)}/action`,
+    'POST',
+    { action }
+  );
+});
+
+ipcMain.handle('clamshield-alert-log', async (_event, payload = {}) => {
+  if (!currentApiPort) return { success: false };
+  try {
+    return await requestJson(currentApiPort, '/api/client-log', 'POST', {
+      level: String(payload.level || 'error'),
+      message: String(payload.message || 'Threat popup log'),
+      details: payload.details || {}
+    });
+  } catch {
+    return { success: false };
+  }
+});
 
 function pollAppUpdates(port) {
   setInterval(async () => {
@@ -958,6 +1000,7 @@ function startServer(port) {
 app.on('ready', async () => {
   if (!gotSingleInstanceLock) return;
   const port = await getFreePort();
+  currentApiPort = port;
   const settings = readAppSettings();
   const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
   writeMainLog('info', ['ClamShield Electron ready', { port, startHidden, argv: process.argv, version: app.getVersion() }]);

@@ -290,9 +290,14 @@ const defaultSettings = {
     autoQuarantine: false,
     autoUpdateEnabled: true,
     updateIntervalHours: 24,
+    clamavUpdateIntervalHours: 24,
+    securiteInfoUpdateIntervalHours: 1,
+    saneSecurityUpdateIntervalHours: 1,
     securiteInfoEnabled: false,
     securiteInfoPlan: "basic",
     securiteInfoIncludePua: false,
+    lastClamAVUpdate: "",
+    lastClamAVUpdateResult: "",
     lastSecuriteInfoUpdate: "",
     lastSecuriteInfoUpdateResult: "",
     saneSecurityEnabled: false,
@@ -307,6 +312,9 @@ const defaultSettings = {
     yaraMaxFileSize: 50,
     scanBatchSize: 250,
     scanBatchDelayMs: 0,
+    manualScanIntensity: 75,
+    scheduledScanIntensity: 60,
+    shieldScanIntensity: 25,
     appUpdateCheckEnabled: true,
     appUpdateIntervalHours: 168,
     appSilentAutoInstall: false,
@@ -1572,7 +1580,12 @@ async function setWindowsProcessPriority(pid: any, priority: any) {
 
 function applyShieldLowImpactPriority(child: any, settings: any, label: string) {
     if (settings?.shieldLowImpactMode === false) return;
-    const priorityClass = normalizeWindowsPriority(settings?.shieldProcessPriority, "BelowNormal");
+    const shieldIntensity = normalizeScanIntensity(settings?.shieldScanIntensity, 25);
+    const fallbackPriority = shieldIntensity >= 70 ? "Normal" : shieldIntensity <= 15 ? "Idle" : "BelowNormal";
+    const configuredPriority = settings?.shieldProcessPriority && settings.shieldProcessPriority !== "belowNormal"
+        ? settings.shieldProcessPriority
+        : fallbackPriority;
+    const priorityClass = normalizeWindowsPriority(configuredPriority, fallbackPriority);
     void setWindowsProcessPriority(child?.pid, priorityClass)
         .then(() => {
             if (process.platform === "win32" && child?.pid) {
@@ -1819,6 +1832,8 @@ class ScanSessionStore {
     private insertFileStmt: any;
     private markFileDoneStmt: any;
     private markFilePendingStmt: any;
+    private countFilesStmt: any;
+    private pendingFilesPageStmt: any;
 
     constructor(dbPath: string) {
         mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -1899,6 +1914,15 @@ class ScanSessionStore {
             SET status = 'pending', size = ?, mtime_ms = ?, scanned_at = NULL
             WHERE job_id = ? AND normalized_path = ?
         `);
+        this.countFilesStmt = this.db.prepare("SELECT COUNT(*) AS count FROM scan_session_files WHERE job_id = ?");
+        this.pendingFilesPageStmt = this.db.prepare(`
+            SELECT file_index, file_path, size, mtime_ms
+            FROM scan_session_files
+            WHERE job_id = ? AND status = 'pending'
+            ORDER BY file_index ASC
+            LIMIT ?
+        `);
+        this.compactCompletedFileLists();
     }
 
     save(progress: ScanProgress) {
@@ -1925,23 +1949,44 @@ class ScanSessionStore {
         this.db.exec("BEGIN");
         try {
             this.db.prepare("DELETE FROM scan_session_files WHERE job_id = ?").run(jobId);
-            files.forEach((file, index) => {
-                this.insertFileStmt.run(
-                    jobId,
-                    index,
-                    file.filePath,
-                    normalizeCachePath(file.filePath),
-                    "pending",
-                    file.size,
-                    file.mtimeMs,
-                    null
-                );
-            });
+            this.insertFiles(jobId, files, 0);
             this.db.exec("COMMIT");
         } catch (e) {
             this.db.exec("ROLLBACK");
             throw e;
         }
+    }
+
+    insertFiles(jobId: string, files: Array<{ filePath: string, size: number, mtimeMs: number }>, startIndex: number) {
+        files.forEach((file, offset) => {
+            this.insertFileStmt.run(
+                jobId,
+                startIndex + offset,
+                file.filePath,
+                normalizeCachePath(file.filePath),
+                "pending",
+                file.size,
+                file.mtimeMs,
+                null
+            );
+        });
+    }
+
+    appendFiles(jobId: string, files: Array<{ filePath: string, size: number, mtimeMs: number }>, startIndex: number) {
+        if (files.length === 0) return;
+        this.db.exec("BEGIN");
+        try {
+            this.insertFiles(jobId, files, startIndex);
+            this.db.exec("COMMIT");
+        } catch (e) {
+            this.db.exec("ROLLBACK");
+            throw e;
+        }
+    }
+
+    countFiles(jobId: string) {
+        const row = this.countFilesStmt.get(jobId);
+        return Number(row?.count || 0);
     }
 
     getLatestResumable() {
@@ -1968,6 +2013,14 @@ class ScanSessionStore {
         `).all(jobId);
     }
 
+    getPendingFilesPage(jobId: string, limit: number) {
+        return this.pendingFilesPageStmt.all(jobId, Math.max(1, Math.floor(limit))).map((row: any) => ({
+            filePath: row.file_path,
+            size: Number(row.size || 0),
+            mtimeMs: Number(row.mtime_ms || 0)
+        }));
+    }
+
     markFilesDone(jobId: string, files: Array<{ filePath: string, size: number, mtimeMs: number }>) {
         this.db.exec("BEGIN");
         try {
@@ -1990,6 +2043,21 @@ class ScanSessionStore {
         this.db.prepare("UPDATE scan_sessions SET status = 'discarded', phase = 'Discarded', updated_at = ? WHERE job_id = ?")
             .run(Date.now(), jobId);
         this.db.prepare("DELETE FROM scan_session_files WHERE job_id = ?").run(jobId);
+    }
+
+    compactCompletedFileLists() {
+        try {
+            this.db.prepare(`
+                DELETE FROM scan_session_files
+                WHERE job_id IN (
+                    SELECT job_id
+                    FROM scan_sessions
+                    WHERE status NOT IN ('running', 'paused', 'error')
+                )
+            `).run();
+        } catch (e: any) {
+            console.warn("Failed to compact completed scan file lists:", e?.message || e);
+        }
     }
 }
 
@@ -2396,7 +2464,7 @@ function compareVersions(a: string, b: string) {
 }
 
 async function getCurrentAppVersion() {
-    let pkgVersion = process.env.npm_package_version || "1.0.93";
+    let pkgVersion = process.env.npm_package_version || "1.0.95";
     const candidatePaths = Array.from(new Set([
         path.join(runtimeDir, "package.json"),
         path.join(runtimeDir, "..", "package.json"),
@@ -3377,14 +3445,35 @@ async function cleanupStaleFreshclamSecretFiles() {
     }
 }
 
-async function prepareFreshclamConfig(settings: any) {
+async function prepareFreshclamConfig(settings: any, options: { includeOfficial?: boolean, includeSecuriteInfo?: boolean } = {}) {
+    const includeOfficial = options.includeOfficial !== false;
+    const includeSecuriteInfo = options.includeSecuriteInfo === true;
     await ensureFreshclamConfig(settings);
-    if (settings.securiteInfoEnabled !== true) {
+    if (!includeSecuriteInfo || settings.securiteInfoEnabled !== true) {
+        if (includeOfficial) {
+            return {
+                configPath: settings.freshclamConf,
+                securiteInfoEnabled: false,
+                officialEnabled: true,
+                redact: (value: any) => String(value ?? ""),
+                cleanup: async () => {}
+            };
+        }
+        const suffix = `${Date.now()}-${randomBytes(6).toString("hex")}`;
+        const configPath = path.join(os.tmpdir(), `clamshield-freshclam-${suffix}.conf`);
+        const logPath = path.join(os.tmpdir(), `clamshield-freshclam-${suffix}.log`);
+        await fs.writeFile(configPath, `DatabaseDirectory ${settings.databaseDir}\nUpdateLogFile ${logPath}\n`, { mode: 0o600 });
         return {
-            configPath: settings.freshclamConf,
+            configPath,
             securiteInfoEnabled: false,
+            officialEnabled: false,
             redact: (value: any) => String(value ?? ""),
-            cleanup: async () => {}
+            cleanup: async () => {
+                await Promise.all([
+                    fs.unlink(configPath).catch(() => {}),
+                    fs.unlink(logPath).catch(() => {})
+                ]);
+            }
         };
     }
 
@@ -3401,7 +3490,7 @@ async function prepareFreshclamConfig(settings: any) {
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
         `UpdateLogFile ${logPath}`,
-        "DatabaseMirror database.clamav.net",
+        ...(includeOfficial ? ["DatabaseMirror database.clamav.net"] : []),
         ...databases.map(fileName => `DatabaseCustomURL ${securiteInfoBaseUrl}/${token}/${fileName}`)
     ];
     await fs.writeFile(configPath, `${lines.join("\n")}\n`, { mode: 0o600 });
@@ -3409,6 +3498,7 @@ async function prepareFreshclamConfig(settings: any) {
     return {
         configPath,
         securiteInfoEnabled: true,
+        officialEnabled: includeOfficial,
         redact: (value: any) => redactSecuriteInfoSecret(value, token),
         cleanup: async () => {
             await Promise.all([
@@ -3586,6 +3676,34 @@ async function enumerateScanTargets(settings: any, type: string, target: string)
     return files;
 }
 
+async function* enumerateScanTargetFiles(settings: any, type: string, target: string): AsyncGenerator<string> {
+    const shouldSkipFile = createManualScanPathSkipper(settings, type);
+    if (type === "memory" && process.platform === "win32") {
+        const processPaths = await getRunningProcessImagePaths();
+        for (const filePath of processPaths) {
+            if (!shouldSkipFile(filePath)) yield filePath;
+        }
+        return;
+    }
+
+    let stat;
+    try {
+        stat = await fs.stat(target);
+    } catch {
+        return;
+    }
+
+    if (stat.isFile()) {
+        if (!shouldSkipFile(target)) yield target;
+        return;
+    }
+
+    if (!stat.isDirectory()) return;
+    for await (const filePath of walkFiles(target, shouldSkipFile)) {
+        yield filePath;
+    }
+}
+
 function chunkItems<T>(items: T[], chunkSize: number) {
     const chunks: T[][] = [];
     for (let i = 0; i < items.length; i += chunkSize) {
@@ -3599,6 +3717,50 @@ function getAdaptiveScanBatchSize(totalFiles: number) {
     if (totalFiles <= 500) return 3;
     if (totalFiles <= 1000) return 10;
     return 100;
+}
+
+function normalizeScanIntensity(value: any, fallback: number) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(100, Math.max(1, Math.round(parsed)));
+}
+
+function getScanModeIntensity(settings: any, source: string) {
+    if (source === "scheduled") return normalizeScanIntensity(settings.scheduledScanIntensity, 60);
+    return normalizeScanIntensity(settings.manualScanIntensity, 75);
+}
+
+function getScanBatchSizeForMode(settings: any, totalFiles: number, source: string) {
+    const configured = Number(settings.scanBatchSize || 0);
+    if (Number.isFinite(configured) && configured > 0 && configured !== 250) {
+        return Math.min(25000, Math.max(1, Math.round(configured)));
+    }
+    const intensity = getScanModeIntensity(settings, source);
+    if (totalFiles > 0 && totalFiles <= 100) return Math.max(1, Math.min(25, Math.ceil(totalFiles / 4)));
+    if (intensity >= 85) return 10000;
+    if (intensity >= 65) return 5000;
+    if (intensity >= 40) return 2000;
+    return 500;
+}
+
+function getScanBatchDelayForMode(settings: any, source: string) {
+    const configured = Math.round(normalizePositiveNumber(settings.scanBatchDelayMs, 0, 0, 60000));
+    if (configured > 0) return configured;
+    const intensity = getScanModeIntensity(settings, source);
+    if (intensity >= 65) return 0;
+    if (intensity >= 40) return 25;
+    return 100;
+}
+
+function applyScanProcessPriority(child: any, settings: any, source: string, label: string) {
+    if (source === "shield") {
+        applyShieldLowImpactPriority(child, settings, label);
+        return;
+    }
+    const intensity = getScanModeIntensity(settings, source);
+    const priorityClass = intensity >= 65 ? "Normal" : "BelowNormal";
+    void setWindowsProcessPriority(child?.pid, priorityClass)
+        .catch((err: any) => console.warn(`Could not set ${label} priority:`, err?.message || err));
 }
 
 async function addTargetToShieldCache(cache: ShieldScanCacheStore, targetPath: string, settings: any, onProgress?: (count: number) => void) {
@@ -4212,34 +4374,64 @@ async function restoreQuarantinedFileAndAddException(settings: any, fileName: st
     return { restoredPath: originalPath };
 }
 
+function scanResultSelectSql() {
+    return `SELECT id, timestamp, original_path, threat_name, engine, source, scan_type, target,
+                   yara_ruleset, md5, sha1, sha256, virus_total_checks, payload
+            FROM scan_results`;
+}
+
+function mapScanResultRow(row: any) {
+    const payload = asRecord(parseAppStateJson(row.payload, {}));
+    const virusTotalChecks = asRecord(parseAppStateJson(row.virus_total_checks, {}));
+    return {
+        ...payload,
+        id: row.id,
+        timestamp: Number(row.timestamp || payload.timestamp || 0),
+        originalPath: row.original_path || payload.originalPath,
+        threatName: row.threat_name || payload.threatName,
+        engine: row.engine || payload.engine,
+        source: row.source || payload.source,
+        scanType: row.scan_type || payload.scanType,
+        target: row.target || payload.target,
+        yaraRuleset: row.yara_ruleset || payload.yaraRuleset,
+        md5: row.md5 || payload.md5,
+        sha1: row.sha1 || payload.sha1,
+        sha256: row.sha256 || payload.sha256,
+        virusTotalChecks: Object.keys(virusTotalChecks).length > 0 ? virusTotalChecks : payload.virusTotalChecks
+    };
+}
+
 async function getScanResults() {
     await ensureAppStateReady();
-    const rows = getAppStateDb().prepare(`
-        SELECT id, timestamp, original_path, threat_name, engine, source, scan_type, target,
-               yara_ruleset, md5, sha1, sha256, virus_total_checks, payload
-        FROM scan_results
-        ORDER BY timestamp DESC
-    `).all();
-    return rows.map((row: any) => {
-        const payload = asRecord(parseAppStateJson(row.payload, {}));
-        const virusTotalChecks = asRecord(parseAppStateJson(row.virus_total_checks, {}));
-        return {
-            ...payload,
-            id: row.id,
-            timestamp: Number(row.timestamp || payload.timestamp || 0),
-            originalPath: row.original_path || payload.originalPath,
-            threatName: row.threat_name || payload.threatName,
-            engine: row.engine || payload.engine,
-            source: row.source || payload.source,
-            scanType: row.scan_type || payload.scanType,
-            target: row.target || payload.target,
-            yaraRuleset: row.yara_ruleset || payload.yaraRuleset,
-            md5: row.md5 || payload.md5,
-            sha1: row.sha1 || payload.sha1,
-            sha256: row.sha256 || payload.sha256,
-            virusTotalChecks: Object.keys(virusTotalChecks).length > 0 ? virusTotalChecks : payload.virusTotalChecks
-        };
-    });
+    const rows = getAppStateDb().prepare(`${scanResultSelectSql()} ORDER BY timestamp DESC`).all();
+    return rows.map(mapScanResultRow);
+}
+
+async function getScanResultsPage(options: { limit?: number | null, offset?: number, date?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    const dateValue = String(options.date || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+        const start = new Date(`${dateValue}T00:00:00`).getTime();
+        const end = new Date(`${dateValue}T23:59:59.999`).getTime();
+        if (Number.isFinite(start) && Number.isFinite(end)) {
+            clauses.push("timestamp >= ? AND timestamp <= ?");
+            params.push(start, end);
+        }
+    }
+    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const db = getAppStateDb();
+    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM scan_results${whereSql}`).get(...params)?.count || 0);
+    const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
+    const limit = options.limit === null || options.limit === undefined
+        ? null
+        : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
+    const sql = `${scanResultSelectSql()}${whereSql} ORDER BY timestamp DESC${limit ? " LIMIT ? OFFSET ?" : ""}`;
+    const rows = limit
+        ? db.prepare(sql).all(...params, limit, safeOffset)
+        : db.prepare(sql).all(...params);
+    return { items: rows.map(mapScanResultRow), total };
 }
 
 async function saveScanResults(results: any[]) {
@@ -5244,6 +5436,7 @@ async function startServer() {
         const history = await getHistory();
         const lastScan = history.find((h: any) => h.type.startsWith("scan") || h.type.startsWith("scheduled-scan")) || null;
         const lastUpdate = history.find((h: any) => h.type === "update") || null;
+        const lastAppUpdateCheck = history.find((h: any) => h.type === "app-update-check") || null;
         const lastThreat = history.find((h: any) => h.threatsFound > 0) || null;
 
         let hasEngine = false;
@@ -5291,6 +5484,9 @@ async function startServer() {
                 yaraRuleset: normalizeYaraRuleset(settings.yaraRuleset),
                 yaraRuleCount: settings.lastYaraRuleCount || 0,
                 lastYaraUpdate: settings.lastYaraUpdate || null,
+                lastClamAVUpdate: settings.lastClamAVUpdate || null,
+                lastClamAVUpdateResult: settings.lastClamAVUpdateResult || "",
+                lastAppUpdateCheck: lastAppUpdateCheck ? lastAppUpdateCheck.date : null,
                 lastScan: lastScan ? lastScan.date : null,
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
@@ -5410,29 +5606,35 @@ async function startServer() {
         autoUpdateTimer = setTimeout(async () => {
             try {
                 if (!isSimulated && settings.autoUpdateEnabled) {
+                    const now = Date.now();
                     const history = await getHistory();
-                    const lastUpdate = history.find((h: any) => h.type === "update" && h.result === 0);
-                    let shouldUpdate = false;
-                    
-                    if (!lastUpdate) {
-                        shouldUpdate = true;
-                    } else {
-                        const lastDate = new Date(lastUpdate.date).getTime();
-                        const now = Date.now();
-                        const intervalMs = (settings.updateIntervalHours || 24) * 60 * 60 * 1000;
-                        if (now - lastDate > intervalMs) {
-                            shouldUpdate = true;
-                        }
-                    }
-                    
-                    if (shouldUpdate) {
+                    const lastClamAVHistory = history.find((h: any) => h.type === "update" && h.result === 0 && /ClamAV/.test(String(h.target || "")));
+                    const lastClamAVTime = settings.lastClamAVUpdate
+                        ? new Date(settings.lastClamAVUpdate).getTime()
+                        : (lastClamAVHistory ? new Date(lastClamAVHistory.date).getTime() : 0);
+                    const clamavIntervalMs = Math.max(24, normalizePositiveNumber(settings.clamavUpdateIntervalHours || settings.updateIntervalHours, 24, 24, 720)) * 60 * 60 * 1000;
+                    const securiteIntervalMs = normalizePositiveNumber(settings.securiteInfoUpdateIntervalHours, 1, 1, 24) * 60 * 60 * 1000;
+                    const lastSecuriteTime = settings.lastSecuriteInfoUpdate ? new Date(settings.lastSecuriteInfoUpdate).getTime() : 0;
+                    const updateTarget = !lastClamAVTime || now - lastClamAVTime > clamavIntervalMs
+                        ? "clamav"
+                        : settings.securiteInfoEnabled === true && (!lastSecuriteTime || now - lastSecuriteTime > securiteIntervalMs)
+                            ? "securiteinfo"
+                            : "";
+                    const saneIntervalMs = normalizePositiveNumber(settings.saneSecurityUpdateIntervalHours, 1, 1, 24) * 60 * 60 * 1000;
+                    const lastSaneTime = settings.lastSaneSecurityUpdate ? new Date(settings.lastSaneSecurityUpdate).getTime() : 0;
+                    const saneDue = settings.saneSecurityEnabled && !saneSecurityUpdateInProgress && (!lastSaneTime || now - lastSaneTime > saneIntervalMs);
+
+                    if (updateTarget) {
                         if (freshclamUpdateInProgress) {
                             console.log("Skipping automatic signature update because FreshClam is already running.");
                             scheduleNextUpdate();
                             return;
                         }
-                        console.log("Triggering auto-update...");
-                        const preparedConfig = await prepareFreshclamConfig(settings);
+                        console.log(`Triggering automatic ${updateTarget} signature update...`);
+                        const preparedConfig = await prepareFreshclamConfig(settings, {
+                            includeOfficial: updateTarget === "clamav",
+                            includeSecuriteInfo: updateTarget === "securiteinfo"
+                        });
                         const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
                         freshclamUpdateInProgress = true;
                         const child = spawn(settings.freshclamPath, args, { windowsHide: true });
@@ -5447,26 +5649,24 @@ async function startServer() {
                             freshclamUpdateInProgress = false;
                             await preparedConfig.cleanup();
                             if (code === 0) await reloadClamdDatabases(settings);
-                            if (preparedConfig.securiteInfoEnabled) {
-                                settings = {
-                                    ...settings,
-                                    lastSecuriteInfoUpdate: code === 0
-                                        ? new Date().toISOString()
-                                        : settings.lastSecuriteInfoUpdate,
-                                    lastSecuriteInfoUpdateResult: code === 0 ? "Updated" : "Update failed"
-                                };
-                                await saveConfig(settings);
-                            }
+                            settings = {
+                                ...settings,
+                                lastClamAVUpdate: updateTarget === "clamav" && code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
+                                lastClamAVUpdateResult: updateTarget === "clamav" ? (code === 0 ? "Updated" : "Update failed") : settings.lastClamAVUpdateResult,
+                                lastSecuriteInfoUpdate: updateTarget === "securiteinfo" && code === 0 ? new Date().toISOString() : settings.lastSecuriteInfoUpdate,
+                                lastSecuriteInfoUpdateResult: updateTarget === "securiteinfo" ? (code === 0 ? "Updated" : "Update failed") : settings.lastSecuriteInfoUpdateResult
+                            };
+                            await saveConfig(settings);
                             await addHistory({
                                 type: "update",
-                                target: preparedConfig.securiteInfoEnabled ? "ClamAV + SecuriteInfo (Auto)" : "ClamAV (Auto)",
+                                target: updateTarget === "securiteinfo" ? "SecuriteInfo (Auto)" : "ClamAV (Auto)",
                                 result: code === 0 ? 0 : 1,
                                 threatsFound: 0,
                                 scannedFiles: 0,
                                 duration: 1, 
                                 actionTaken: code === 0 ? "Updated" : "Failed"
                             });
-                            if (code === 0 && settings.saneSecurityEnabled && !saneSecurityUpdateInProgress) {
+                            if (saneDue) {
                                 try {
                                     await startSaneSecurityUpdate("automatic");
                                 } catch (e: any) {
@@ -5475,6 +5675,12 @@ async function startServer() {
                             }
                             console.log(`Auto-update finished with code ${code}`);
                         });
+                    } else if (saneDue) {
+                        try {
+                            await startSaneSecurityUpdate("automatic");
+                        } catch (e: any) {
+                            console.error("Could not start automatic SaneSecurity update:", e?.message || e);
+                        }
                     }
                 }
             } catch (e) {
@@ -5593,6 +5799,24 @@ async function startServer() {
         }
         if ("saneSecurityProfile" in requestedSettings) {
             requestedSettings.saneSecurityProfile = normalizeSaneSecurityProfile(requestedSettings.saneSecurityProfile);
+        }
+        if ("clamavUpdateIntervalHours" in requestedSettings) {
+            requestedSettings.clamavUpdateIntervalHours = Math.max(24, normalizePositiveNumber(requestedSettings.clamavUpdateIntervalHours, 24, 24, 720));
+        }
+        if ("securiteInfoUpdateIntervalHours" in requestedSettings) {
+            requestedSettings.securiteInfoUpdateIntervalHours = normalizePositiveNumber(requestedSettings.securiteInfoUpdateIntervalHours, 1, 1, 24);
+        }
+        if ("saneSecurityUpdateIntervalHours" in requestedSettings) {
+            requestedSettings.saneSecurityUpdateIntervalHours = normalizePositiveNumber(requestedSettings.saneSecurityUpdateIntervalHours, 1, 1, 24);
+        }
+        if ("manualScanIntensity" in requestedSettings) {
+            requestedSettings.manualScanIntensity = normalizeScanIntensity(requestedSettings.manualScanIntensity, 75);
+        }
+        if ("scheduledScanIntensity" in requestedSettings) {
+            requestedSettings.scheduledScanIntensity = normalizeScanIntensity(requestedSettings.scheduledScanIntensity, 60);
+        }
+        if ("shieldScanIntensity" in requestedSettings) {
+            requestedSettings.shieldScanIntensity = normalizeScanIntensity(requestedSettings.shieldScanIntensity, 25);
         }
         const securiteInfoDatabaseSelectionChanged =
             ("securiteInfoPlan" in requestedSettings && requestedSettings.securiteInfoPlan !== settings.securiteInfoPlan) ||
@@ -6078,62 +6302,18 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         Promise.resolve().then(async () => {
             saveJobProgress(jobId, { phase: isResume ? "Loading saved scan" : "Enumerating files" });
-            let allScanFiles: string[] = [];
-            let scanFiles: string[] = [];
-            let scannedFiles = 0;
             const shouldSkipScanFile = createManualScanPathSkipper(settings, scanType);
-
-            if (isResume) {
-                const fileRows = scanSessions.getFiles(jobId);
-                for (const row of fileRows) {
-                    if (shouldSkipScanFile(row.file_path)) continue;
-                    allScanFiles.push(row.file_path);
-                    const fingerprint = await getFileFingerprint(row.file_path);
-                    if (row.status === "done" && fileRecordMatches(row, fingerprint)) {
-                        scannedFiles++;
-                    } else {
-                        scanFiles.push(row.file_path);
-                        scanSessions.markFilePending(jobId, row.file_path, fingerprint?.size || 0, fingerprint?.mtimeMs || 0);
-                    }
-                }
-            } else {
-                allScanFiles = await enumerateScanTargets(settings, scanType, scanTarget);
-                scanFiles = allScanFiles;
-                if (canResumeScanType(scanType)) {
-                    scanSessions.saveFiles(jobId, await getScanFileRecords(allScanFiles));
-                }
-            }
-
-            if (allScanFiles.length === 0) {
-                appendJobLogs(jobId, ["No readable files found for this scan target."]);
-                activeJobs[jobId].status = "done";
-                activeJobs[jobId].result = 0;
-                saveJobProgress(jobId, {
-                    status: "done",
-                    phase: "No readable files",
-                    currentFile: "Complete",
-                    completedAt: Date.now(),
-                    result: 0
-                });
-                return;
-            }
-
-            saveJobProgress(jobId, {
-                phase: isResume ? "Resuming" : "Queued",
-                totalFiles: allScanFiles.length,
-                scannedFiles,
-                currentFile: scanFiles[0] || "Preparing final checks"
-            });
+            const resumableScan = canResumeScanType(scanType);
+            let totalFiles = isResume
+                ? Math.max(Number(resumeSession?.total_files || 0), scanSessions.countFiles(jobId))
+                : 0;
+            let scannedFiles = isResume ? Number(resumeSession?.scanned_files || 0) : 0;
+            const memoryYaraTargets: string[] = [];
 
             if (scanType === "disk" && process.platform === "win32") {
                 appendJobLogs(jobId, [
                     "Skipping Windows locked paging/system files that cannot be opened while Windows is running:",
                     "C:\\pagefile.sys, C:\\swapfile.sys, C:\\hiberfil.sys, C:\\DumpStack.log.tmp"
-                ]);
-            }
-            if (scanType === "memory" && process.platform === "win32") {
-                appendJobLogs(jobId, [
-                    `Running programs found: ${scanFiles.length}`
                 ]);
             }
 
@@ -6147,9 +6327,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
             }
             const exePath = isClamd ? settings.clamdscanPath : settings.clamscanPath;
-            const chunkSize = getAdaptiveScanBatchSize(scanFiles.length);
-            const chunkDelayMs = Math.round(normalizePositiveNumber(settings.scanBatchDelayMs, 0, 0, 60000));
-            const chunks = chunkItems(scanFiles, chunkSize);
+            const chunkSize = getScanBatchSizeForMode(settings, totalFiles, scanSource);
+            const chunkDelayMs = getScanBatchDelayForMode(settings, scanSource);
             let threatsFound = 0;
             let errorsFound = 0;
             let actionTaken = "None";
@@ -6159,7 +6338,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             appendJobLogs(jobId, [
                 isResume ? "Resuming interrupted scan..." : (scanType === "memory" ? "Scanning running programs..." : "Scanning selected files..."),
-                isResume ? `Files remaining: ${scanFiles.length}` : `Files to scan: ${scanFiles.length}`
+                isResume ? `Files remaining: ${Math.max(0, totalFiles - scannedFiles)}` : "Preparing scan queue..."
             ]);
 
             const handleFoundLine = async (line: string) => {
@@ -6215,22 +6394,22 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 saveJobProgress(jobId, { threatsFound, actionTaken });
             };
 
-            for (let i = 0; i < chunks.length; i++) {
+            const scanChunk = async (chunk: string[], batchNumber: number, totalBatches?: number) => {
                 const job = activeJobs[jobId];
-                if (!job || job.status !== "running") break;
-                const chunk = chunks[i];
+                if (!job || job.status !== "running" || chunk.length === 0) return false;
                 const listPath = await createScanFileList(chunk);
                 const args = buildClamFileListArgs(settings, isClamd, listPath);
                 const chunkLines: string[] = [];
                 saveJobProgress(jobId, {
-                    phase: `ClamAV batch ${i + 1}/${chunks.length}`,
+                    phase: totalBatches ? `ClamAV batch ${batchNumber}/${totalBatches}` : `ClamAV batch ${batchNumber}`,
                     currentFile: chunk[0] || "",
                     scannedFiles,
-                    totalFiles: allScanFiles.length
+                    totalFiles
                 });
                 const code = await new Promise<number>((resolve) => {
                     const child = spawn(exePath, args, { windowsHide: true });
                     activeJobs[jobId].process = child;
+                    applyScanProcessPriority(child, settings, scanSource, isClamd ? "clamdscan" : "clamscan");
                     let lastCurrentFileUpdateAt = 0;
                     const handleEngineLines = (lines: string[]) => {
                         chunkLines.push(...lines);
@@ -6262,7 +6441,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 await fs.unlink(listPath).catch(() => {});
                 if (activeJobs[jobId]?.process) activeJobs[jobId].process = null;
                 if (activeJobs[jobId]?.status !== "running") {
-                    break;
+                    return false;
                 }
 
                 let suppressedCleanLines = 0;
@@ -6282,10 +6461,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
                 if (suppressedCleanLines > 0 || suppressedFileWarningLines > 0) {
                     appendJobLogs(jobId, [
-                        `Batch ${i + 1}/${chunks.length} complete.`
+                        totalBatches ? `Batch ${batchNumber}/${totalBatches} complete.` : `Batch ${batchNumber} complete.`
                     ]);
                 }
-                if (canResumeScanType(scanType)) {
+                if (resumableScan) {
                     scanSessions.markFilesDone(jobId, await getScanFileRecords(chunk));
                 }
                 scannedFiles += chunk.length;
@@ -6293,10 +6472,114 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     scannedFiles,
                     errorsFound,
                     currentFile: chunk[chunk.length - 1] || "",
-                    phase: `ClamAV batch ${i + 1}/${chunks.length}`,
+                    phase: totalBatches ? `ClamAV batch ${batchNumber}/${totalBatches}` : `ClamAV batch ${batchNumber}`,
                     result: code
                 });
-                if (chunkDelayMs > 0 && i < chunks.length - 1) await sleep(chunkDelayMs);
+                return true;
+            };
+
+            if (!isResume) {
+                if (resumableScan) scanSessions.saveFiles(jobId, []);
+                const enumerationBatchSize = Math.max(chunkSize, 1000);
+                let pendingRecords: Array<{ filePath: string, size: number, mtimeMs: number }> = [];
+                let firstFile = "";
+                for await (const filePath of enumerateScanTargetFiles(settings, scanType, scanTarget)) {
+                    const fingerprint = await getFileFingerprint(filePath);
+                    const record = {
+                        filePath,
+                        size: fingerprint?.size || 0,
+                        mtimeMs: fingerprint?.mtimeMs || 0
+                    };
+                    pendingRecords.push(record);
+                    if (!firstFile) firstFile = filePath;
+                    if (scanType === "memory") memoryYaraTargets.push(filePath);
+                    if (pendingRecords.length >= enumerationBatchSize) {
+                        if (resumableScan) scanSessions.appendFiles(jobId, pendingRecords, totalFiles);
+                        totalFiles += pendingRecords.length;
+                        saveJobProgress(jobId, {
+                            phase: "Enumerating files",
+                            totalFiles,
+                            currentFile: filePath
+                        });
+                        pendingRecords = [];
+                        await sleep(1);
+                    }
+                }
+                if (pendingRecords.length > 0) {
+                    if (resumableScan) scanSessions.appendFiles(jobId, pendingRecords, totalFiles);
+                    totalFiles += pendingRecords.length;
+                    saveJobProgress(jobId, {
+                        phase: "Enumerating files",
+                        totalFiles,
+                        currentFile: pendingRecords[pendingRecords.length - 1].filePath
+                    });
+                }
+                if (!resumableScan && scanType === "memory") {
+                    totalFiles = memoryYaraTargets.length;
+                }
+                if (scanType === "memory" && process.platform === "win32") {
+                    appendJobLogs(jobId, [`Running programs found: ${totalFiles}`]);
+                }
+                if (totalFiles === 0) {
+                    appendJobLogs(jobId, ["No readable files found for this scan target."]);
+                    activeJobs[jobId].status = "done";
+                    activeJobs[jobId].result = 0;
+                    saveJobProgress(jobId, {
+                        status: "done",
+                        phase: "No readable files",
+                        currentFile: "Complete",
+                        completedAt: Date.now(),
+                        result: 0
+                    });
+                    return;
+                }
+                saveJobProgress(jobId, {
+                    phase: "Queued",
+                    totalFiles,
+                    scannedFiles: 0,
+                    currentFile: firstFile || "Preparing final checks"
+                });
+            } else if (totalFiles === 0) {
+                appendJobLogs(jobId, ["No saved files were found for this resumable scan."]);
+                activeJobs[jobId].status = "done";
+                activeJobs[jobId].result = 0;
+                saveJobProgress(jobId, {
+                    status: "done",
+                    phase: "No saved files",
+                    currentFile: "Complete",
+                    completedAt: Date.now(),
+                    result: 0
+                });
+                return;
+            }
+
+            let batchNumber = 0;
+            if (resumableScan) {
+                while (activeJobs[jobId]?.status === "running") {
+                    const pendingPage = scanSessions.getPendingFilesPage(jobId, getScanBatchSizeForMode(settings, totalFiles, scanSource));
+                    if (pendingPage.length === 0) break;
+                    const skipped = pendingPage.filter((file: any) => shouldSkipScanFile(file.filePath));
+                    if (skipped.length > 0) {
+                        scanSessions.markFilesDone(jobId, skipped);
+                        scannedFiles += skipped.length;
+                        saveJobProgress(jobId, { scannedFiles, totalFiles });
+                    }
+                    const chunk = pendingPage
+                        .filter((file: any) => !shouldSkipScanFile(file.filePath))
+                        .map((file: any) => file.filePath);
+                    if (chunk.length === 0) continue;
+                    batchNumber++;
+                    const scanned = await scanChunk(chunk, batchNumber);
+                    if (!scanned) break;
+                    if (chunkDelayMs > 0) await sleep(chunkDelayMs);
+                }
+            } else {
+                const chunks = chunkItems(memoryYaraTargets, getScanBatchSizeForMode(settings, totalFiles, scanSource));
+                for (let i = 0; i < chunks.length; i++) {
+                    const scanned = await scanChunk(chunks[i], i + 1, chunks.length);
+                    if (!scanned) break;
+                    if (chunkDelayMs > 0 && i < chunks.length - 1) await sleep(chunkDelayMs);
+                }
             }
             clearInterval(heartbeat);
             if (activeJobs[jobId]?.status !== "running") {
@@ -6305,7 +6588,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             if (activeJobs[jobId]?.status === "running") {
                 saveJobProgress(jobId, { phase: "YARA scan", currentFile: "" });
-                const yaraTargets = scanType === "memory" ? scanFiles : (effectiveTarget ? [effectiveTarget] : []);
+                const yaraTargets = scanType === "memory" ? memoryYaraTargets : (effectiveTarget ? [effectiveTarget] : []);
                 const yaraResult = await runYaraScanForTargets(settings, yaraTargets, {
                     activeJobs,
                     appendJobLogs,
@@ -6362,6 +6645,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 errorsFound,
                 actionTaken: isThreat ? actionTaken : "None"
             });
+            scanSessions.compactCompletedFileLists();
         }).catch(e => {
             const job = activeJobs[jobId];
             if (!job) return;
@@ -6781,8 +7065,12 @@ if ($dialog.ShowDialog() -eq 'OK') {
     app.post("/api/update", async (req, res) => {
         const jobId = Date.now().toString();
         let preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>> | null = null;
+        const requestedTarget = req.body?.target === "securiteinfo" ? "securiteinfo" : "clamav";
         if (freshclamUpdateInProgress) {
             return res.status(409).json({ error: "A signature update is already running." });
+        }
+        if (requestedTarget === "securiteinfo" && settings.securiteInfoEnabled !== true) {
+            return res.status(400).json({ error: "SecuriteInfo signatures are not enabled." });
         }
         if (isSimulated) {
             setTimeout(async () => {
@@ -6806,13 +7094,16 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
             }
             appendJobLogs(jobId, ["Preparing FreshClam configuration..."]);
-            preparedConfig = await prepareFreshclamConfig(settings);
+            preparedConfig = await prepareFreshclamConfig(settings, {
+                includeOfficial: requestedTarget === "clamav",
+                includeSecuriteInfo: requestedTarget === "securiteinfo"
+            });
             await saveConfig(settings);
 
             const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
             appendJobLogs(jobId, [
-                preparedConfig.securiteInfoEnabled
-                    ? `Downloading official ClamAV and SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases...`
+                requestedTarget === "securiteinfo"
+                    ? `Downloading SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases...`
                     : "Downloading official ClamAV virus definitions..."
             ]);
             const child = spawn(settings.freshclamPath, args, { windowsHide: true });
@@ -6857,8 +7148,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (processStartFailed) return;
                 if (code === 0) {
                     appendJobLogs(jobId, [
-                        preparedConfig?.securiteInfoEnabled
-                            ? "Official ClamAV and SecuriteInfo databases updated successfully."
+                        requestedTarget === "securiteinfo"
+                            ? "SecuriteInfo databases updated successfully."
                             : "Virus definitions updated successfully."
                     ]);
                 } else {
@@ -6867,16 +7158,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         "Check your internet connection, firewall, proxy, or ClamAV mirror access."
                     ]);
                 }
-                if (preparedConfig?.securiteInfoEnabled) {
-                    settings = {
-                        ...settings,
-                        lastSecuriteInfoUpdate: code === 0
-                            ? new Date().toISOString()
-                            : settings.lastSecuriteInfoUpdate,
-                        lastSecuriteInfoUpdateResult: code === 0 ? "Updated" : "Update failed"
-                    };
-                    await saveConfig(settings);
-                }
+                settings = {
+                    ...settings,
+                    lastClamAVUpdate: requestedTarget === "clamav" && code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
+                    lastClamAVUpdateResult: requestedTarget === "clamav" ? (code === 0 ? "Updated" : "Update failed") : settings.lastClamAVUpdateResult,
+                    lastSecuriteInfoUpdate: requestedTarget === "securiteinfo" && code === 0 ? new Date().toISOString() : settings.lastSecuriteInfoUpdate,
+                    lastSecuriteInfoUpdateResult: requestedTarget === "securiteinfo" ? (code === 0 ? "Updated" : "Update failed") : settings.lastSecuriteInfoUpdateResult
+                };
+                await saveConfig(settings);
                 if (code === 0) await reloadClamdDatabases(settings);
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = code ?? 0;
@@ -6885,7 +7174,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 
                 await addHistory({
                     type: "update",
-                    target: preparedConfig?.securiteInfoEnabled ? "ClamAV + SecuriteInfo" : "ClamAV",
+                    target: requestedTarget === "securiteinfo" ? "SecuriteInfo" : "ClamAV",
                     result: code === 0 ? 0 : 1,
                     threatsFound: 0,
                     scannedFiles: 0,
@@ -7040,11 +7329,36 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.get("/api/results", async (req, res) => {
-        const results = await getScanResults();
-        res.json(results.map((result: any) => ({
-            ...result,
-            available: Boolean(result.originalPath && existsSync(result.originalPath))
-        })));
+        const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined;
+        if (!hasPagedQuery) {
+            const results = await getScanResults();
+            res.json(results.map((result: any) => ({
+                ...result,
+                available: Boolean(result.originalPath && existsSync(result.originalPath))
+            })));
+            return;
+        }
+
+        const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
+        const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+        const pageSize = requestedPageSize === "all"
+            ? null
+            : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
+        const offset = pageSize ? (page - 1) * pageSize : 0;
+        const paged = await getScanResultsPage({
+            limit: pageSize,
+            offset,
+            date: typeof req.query.date === "string" ? req.query.date : ""
+        });
+        res.json({
+            items: paged.items.map((result: any) => ({
+                ...result,
+                available: Boolean(result.originalPath && existsSync(result.originalPath))
+            })),
+            total: paged.total,
+            page,
+            pageSize: pageSize || "all"
+        });
     });
 
     app.post("/api/results/virustotal-md5-all", async (_req, res) => {
@@ -7449,7 +7763,25 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.get("/api/quarantine", async (req, res) => {
         try {
-            res.json(await getQuarantineItems(settings.quarantineDir));
+            const items = await getQuarantineItems(settings.quarantineDir);
+            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined;
+            if (!hasPagedQuery) {
+                res.json(items);
+                return;
+            }
+
+            const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
+            const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+            const pageSize = requestedPageSize === "all"
+                ? null
+                : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
+            const offset = pageSize ? (page - 1) * pageSize : 0;
+            res.json({
+                items: pageSize ? items.slice(offset, offset + pageSize) : items,
+                total: items.length,
+                page,
+                pageSize: pageSize || "all"
+            });
         } catch (e: any) {
             console.error("Error reading quarantine dir:", e);
             res.status(500).json({ error: e.message, items: [] });

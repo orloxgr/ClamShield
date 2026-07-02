@@ -38,6 +38,11 @@
       gap: 10px;
     }
 
+    .title {
+      min-width: 0;
+      flex: 1;
+    }
+
     .icon {
       width: 34px;
       height: 34px;
@@ -113,6 +118,23 @@
       cursor: default;
     }
 
+    .close {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 999px;
+      background: transparent;
+      border-color: transparent;
+      color: #94a3b8;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .close:hover {
+      background: rgba(148, 163, 184, 0.12);
+      color: #e2e8f0;
+    }
+
     .secondary {
       background: #1e293b;
       color: #cbd5e1;
@@ -135,10 +157,11 @@
     <audio id="alertSound" src="/alert.wav" preload="auto"></audio>
     <section class="header">
       <div class="icon">!</div>
-      <div>
+      <div class="title">
         <h1>Threat Detected</h1>
         <div class="sub">ClamShield found a suspicious file</div>
       </div>
+      <button id="closeBtn" class="close" type="button" aria-label="Close alert" title="Close alert">&times;</button>
     </section>
 
     <section class="details">
@@ -160,8 +183,13 @@
     const name = params.get("name") || "Unknown threat";
     const filePath = params.get("path") || "Unknown path";
     const playSound = params.get("playSound") !== "false";
+    const bridge = window.clamshieldAlert;
 
     function logPopupError(message, details) {
+      if (bridge && typeof bridge.log === "function") {
+        bridge.log({ level: "error", message, details }).catch(() => {});
+        return;
+      }
       fetch(`http://127.0.0.1:${port}/api/client-log`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -190,6 +218,11 @@
 
     document.getElementById("threatName").textContent = name;
     document.getElementById("threatPath").textContent = filePath;
+    document.getElementById("closeBtn").addEventListener("click", () => window.close());
+    window.addEventListener("keydown", event => {
+      if (event.key === "Escape") window.close();
+    });
+
     if (playSound) {
       const audio = document.getElementById("alertSound");
       audio.volume = 0.55;
@@ -200,12 +233,16 @@
       const buttons = document.querySelectorAll("button");
       buttons.forEach(button => button.disabled = true);
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action })
-        });
-        if (!response.ok) throw new Error("Action failed");
+        if (bridge && typeof bridge.sendAction === "function") {
+          await bridge.sendAction({ id: threatId, action });
+        } else {
+          const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action })
+          });
+          if (!response.ok) throw new Error("Action failed");
+        }
         window.close();
       } catch {
         buttons.forEach(button => button.disabled = false);
