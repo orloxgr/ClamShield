@@ -430,7 +430,7 @@ export default function Updates() {
   const signatureProgressLabel = output.at(-1) || (signatureTarget === "securiteinfo" ? "SecuriteInfo is checking signature sources..." : "FreshClam is checking signature sources...");
 
   return (
-    <div className="px-8 max-w-4xl mx-auto space-y-8 pb-20 flex flex-col">
+    <div className="px-8 max-w-4xl mx-auto pb-20 flex flex-col gap-8">
       <PageHeader title="Updates" description="Update signatures, engines, YARA Forge rules, and ClamShield." />
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
