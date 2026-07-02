@@ -15,6 +15,7 @@ export default function Updates() {
   const [output, setOutput] = useState<string[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [isSimulated, setIsSimulated] = useState(false);
+  const [signatureTarget, setSignatureTarget] = useState<"clamav" | "securiteinfo">("clamav");
   const [saneUpdateState, setSaneUpdateState] = useState<"idle" | "running" | "done">("idle");
   const [saneOutput, setSaneOutput] = useState<string[]>([]);
   const [saneJobId, setSaneJobId] = useState<string | null>(null);
@@ -74,8 +75,9 @@ export default function Updates() {
 
   const runUpdate = async (target: "clamav" | "securiteinfo" = "clamav") => {
     closeJobStream(updateEventSourceRef);
+    setSignatureTarget(target);
     setUpdateState("running");
-    setOutput([target === "securiteinfo" ? "Triggering SecuriteInfo FreshClam update..." : "Triggering ClamAV FreshClam update..."]);
+    setOutput([target === "securiteinfo" ? "Triggering SecuriteInfo update..." : "Triggering ClamAV FreshClam update..."]);
     try {
       const res = await fetch("/api/update", {
         method: "POST",
@@ -255,8 +257,12 @@ export default function Updates() {
   const updateSettings = status?.settings || {};
   const signatureUpdateActive = updateState === "running" || status?.isSignatureUpdateRunning;
   const saneUpdateActive = saneUpdateState === "running" || status?.isSaneSecurityUpdateRunning;
+  const yaraUpdateActive = yaraUpdateState === "running";
+  const appUpdateActive = appUpdateState === "checking" || appUpdateState === "running";
   const signatureUpdateFailed = updateState === "done" && output.some(line => /error|failed/i.test(line));
   const saneUpdateFailed = saneUpdateState === "done" && saneOutput.some(line => /error|failed/i.test(line));
+  const yaraUpdateFailed = yaraUpdateState === "done" && yaraOutput.some(line => /error|failed/i.test(line));
+  const appUpdateFailed = appUpdateState === "done" && appOutput.some(line => /error|failed/i.test(line));
 
   const formatExact = (value?: string | null) => value ? new Date(value).toLocaleString() : "Never";
   const formatAge = (value?: string | null) => {
@@ -278,6 +284,12 @@ export default function Updates() {
   };
   const signatureProgress = progressValue(updateState, signatureUpdateActive, output);
   const saneProgress = progressValue(saneUpdateState, saneUpdateActive, saneOutput);
+  const yaraProgress = progressValue(yaraUpdateState, yaraUpdateActive, yaraOutput);
+  const appProgress = appUpdateActive
+    ? Math.min(94, Math.max(12, 20 + appOutput.length * 4))
+    : appUpdateState !== "idle" ? 100 : 0;
+  const signatureOutputTitle = signatureTarget === "securiteinfo" ? "SecuriteInfo Output" : "FreshClam Output";
+  const signatureProgressLabel = output.at(-1) || (signatureTarget === "securiteinfo" ? "SecuriteInfo is checking signature sources..." : "FreshClam is checking signature sources...");
 
   return (
     <div className="px-8 max-w-4xl mx-auto space-y-8 pb-20">
@@ -312,6 +324,21 @@ export default function Updates() {
               <span className="text-xs font-medium text-slate-400">Update interval (hours)</span>
               <input type="number" min={24} max={720} value={updateSettings.clamavUpdateIntervalHours || updateSettings.updateIntervalHours || 24} onChange={event => updateNumberSetting("clamavUpdateIntervalHours", event.target.value, 24, 24, 720)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" />
             </label>
+          </div>
+        )}
+        {signatureTarget === "clamav" && (signatureUpdateActive || updateState === "done") && (
+          <ProgressPanel
+            title={signatureUpdateActive ? "Updating official ClamAV signatures" : signatureUpdateFailed ? "ClamAV update failed" : "ClamAV update complete"}
+            progress={signatureProgress}
+            failed={signatureUpdateFailed}
+            active={signatureUpdateActive}
+            label={signatureProgressLabel}
+            barClass="bg-gradient-to-r from-emerald-500 to-cyan-400"
+          />
+        )}
+        {signatureTarget === "clamav" && (updateState === "running" || updateState === "done") && (
+          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title={signatureOutputTitle} running={updateState === "running"} lines={output} />
           </div>
         )}
       </section>
@@ -358,6 +385,22 @@ export default function Updates() {
             </label>
           </div>
         )}
+        {signatureTarget === "securiteinfo" && (signatureUpdateActive || updateState === "done") && (
+          <ProgressPanel
+            title={signatureUpdateActive ? "Updating SecuriteInfo signatures" : signatureUpdateFailed ? "SecuriteInfo update failed" : "SecuriteInfo update complete"}
+            progress={signatureProgress}
+            failed={signatureUpdateFailed}
+            active={signatureUpdateActive}
+            label={signatureProgressLabel}
+            barClass="bg-gradient-to-r from-cyan-500 to-sky-400"
+            borderClass="border-cyan-500/20"
+          />
+        )}
+        {signatureTarget === "securiteinfo" && (updateState === "running" || updateState === "done") && (
+          <div className="px-8 pb-8 pt-4 border-t border-cyan-500/20">
+            <Terminal title={signatureOutputTitle} running={updateState === "running"} lines={output} accent="text-cyan-300/80" />
+          </div>
+        )}
       </section>
 
       <section className="bg-slate-900 border border-violet-500/20 rounded-xl overflow-hidden">
@@ -394,6 +437,22 @@ export default function Updates() {
             </label>
           </div>
         )}
+        {(saneUpdateActive || saneUpdateState === "done") && (
+          <ProgressPanel
+            title={saneUpdateActive ? "Downloading and verifying SaneSecurity databases" : saneUpdateFailed ? "SaneSecurity update failed" : "SaneSecurity update complete"}
+            progress={saneProgress}
+            failed={saneUpdateFailed}
+            active={saneUpdateActive}
+            label={saneOutput.at(-1) || "SaneSecurity is preparing its signed database update..."}
+            barClass="bg-gradient-to-r from-violet-500 to-fuchsia-400"
+            borderClass="border-violet-500/20"
+          />
+        )}
+        {(saneUpdateState === "running" || saneUpdateState === "done") && (
+          <div className="px-8 pb-8 pt-4 border-t border-violet-500/20">
+            <Terminal title="SaneSecurity Output" running={saneUpdateState === "running"} lines={saneOutput} accent="text-violet-300/80" />
+          </div>
+        )}
       </section>
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -421,6 +480,21 @@ export default function Updates() {
               <label className="block"><span className="text-xs font-medium text-slate-400">Ruleset</span><select value={updateSettings.yaraRuleset || "core"} onChange={event => saveUpdateSettings({ yaraRuleset: event.target.value })} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"><option value="core">Core</option><option value="extended">Extended</option><option value="full">Full</option></select></label>
               <label className="block"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.yaraUpdateIntervalHours || 168} onChange={event => updateNumberSetting("yaraUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
             </div>
+          </div>
+        )}
+        {(yaraUpdateActive || yaraUpdateState === "done") && (
+          <ProgressPanel
+            title={yaraUpdateActive ? "Updating YARA Forge rules" : yaraUpdateFailed ? "YARA update failed" : "YARA update complete"}
+            progress={yaraProgress}
+            failed={yaraUpdateFailed}
+            active={yaraUpdateActive}
+            label={yaraOutput.at(-1) || "YARA Forge is checking rules..."}
+            barClass="bg-gradient-to-r from-indigo-500 to-emerald-400"
+          />
+        )}
+        {(yaraUpdateState === "running" || yaraUpdateState === "done") && (
+          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title="YARA Output" running={yaraUpdateState === "running"} lines={yaraOutput} />
           </div>
         )}
       </section>
@@ -455,42 +529,23 @@ export default function Updates() {
             <label className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Silent install ClamShield updates</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></label>
           </div>
         )}
+        {appUpdateState !== "idle" && (
+          <ProgressPanel
+            title={appUpdateActive ? "Checking ClamShield updates" : appUpdateFailed ? "ClamShield update check failed" : appUpdateState === "available" ? "ClamShield update available" : "ClamShield update check complete"}
+            progress={appProgress}
+            failed={appUpdateFailed}
+            active={appUpdateActive}
+            label={appOutput.at(-1) || "ClamShield is checking GitHub releases..."}
+            barClass="bg-gradient-to-r from-cyan-500 to-indigo-400"
+          />
+        )}
+        {appUpdateState !== "idle" && (
+          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title="ClamShield Output" running={appUpdateActive} lines={appOutput} />
+          </div>
+        )}
       </section>
 
-      {(saneUpdateActive || saneUpdateState === "done") && (
-        <div className="bg-slate-900 border border-violet-500/20 rounded-xl px-6 py-5 space-y-3">
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <span className="text-slate-300 font-medium">{saneUpdateActive ? "Downloading and verifying SaneSecurity databases" : saneUpdateFailed ? "SaneSecurity update failed" : "SaneSecurity update complete"}</span>
-            <span className="text-slate-500 tabular-nums">{saneProgress}%</span>
-          </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-slate-800"><div className={`h-full rounded-full transition-all duration-700 ${saneUpdateFailed ? "bg-gradient-to-r from-rose-600 to-orange-400" : "bg-gradient-to-r from-violet-500 to-fuchsia-400"} ${saneUpdateActive ? "animate-pulse" : ""}`} style={{ width: `${saneProgress}%` }} /></div>
-          <p className="text-xs text-slate-500 truncate">{saneOutput.at(-1) || "SaneSecurity is preparing its signed database update..."}</p>
-        </div>
-      )}
-
-      {(signatureUpdateActive || updateState === "done") && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl px-6 py-5 space-y-3">
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <span className="text-slate-300 font-medium">{signatureUpdateActive ? "Updating signature databases" : signatureUpdateFailed ? "Signature update failed" : "Signature update complete"}</span>
-            <span className="text-slate-500 tabular-nums">{signatureProgress}%</span>
-          </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-slate-800"><div className={`h-full rounded-full transition-all duration-700 ${signatureUpdateFailed ? "bg-gradient-to-r from-rose-600 to-orange-400" : "bg-gradient-to-r from-emerald-500 to-cyan-400"} ${signatureUpdateActive ? "animate-pulse" : ""}`} style={{ width: `${signatureProgress}%` }} /></div>
-          <p className="text-xs text-slate-500 truncate">{output.at(-1) || "FreshClam is checking signature sources..."}</p>
-        </div>
-      )}
-
-      {(updateState === "running" || updateState === "done") && (
-        <Terminal title="FreshClam Output" running={updateState === "running"} lines={output} />
-      )}
-      {(saneUpdateState === "running" || saneUpdateState === "done") && (
-        <Terminal title="SaneSecurity Output" running={saneUpdateState === "running"} lines={saneOutput} accent="text-violet-300/80" />
-      )}
-      {(yaraUpdateState === "running" || yaraUpdateState === "done") && (
-        <Terminal title="YARA Output" running={yaraUpdateState === "running"} lines={yaraOutput} />
-      )}
-      {appUpdateState !== "idle" && (
-        <Terminal title="ClamShield Output" running={appUpdateState === "checking" || appUpdateState === "running"} lines={appOutput} />
-      )}
     </div>
   );
 }
@@ -507,6 +562,40 @@ function Terminal({ title, running, lines, accent = "text-emerald-400/80" }: { t
       <div className={`flex-1 p-4 overflow-auto font-mono text-xs ${accent} leading-relaxed space-y-1 flex flex-col justify-end`}>
         {lines.map((line, index) => <div key={index}>{line}</div>)}
       </div>
+    </div>
+  );
+}
+
+function ProgressPanel({
+  title,
+  progress,
+  failed,
+  active,
+  label,
+  barClass,
+  borderClass = "border-slate-800"
+}: {
+  title: string;
+  progress: number;
+  failed: boolean;
+  active: boolean;
+  label: string;
+  barClass: string;
+  borderClass?: string;
+}) {
+  return (
+    <div className={`px-8 py-5 border-t ${borderClass} space-y-3`}>
+      <div className="flex items-center justify-between gap-4 text-sm">
+        <span className="text-slate-300 font-medium">{title}</span>
+        <span className="text-slate-500 tabular-nums">{progress}%</span>
+      </div>
+      <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ${failed ? "bg-gradient-to-r from-rose-600 to-orange-400" : barClass} ${active ? "animate-pulse" : ""}`}
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+      <p className="text-xs text-slate-500 truncate">{label}</p>
     </div>
   );
 }

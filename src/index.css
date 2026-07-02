@@ -21,3 +21,19 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-slate-600/50;
 }
+
+.date-picker-control {
+  color-scheme: dark;
+}
+
+.date-picker-control::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.85;
+  filter: invert(82%) sepia(9%) saturate(405%) hue-rotate(176deg) brightness(89%) contrast(88%);
+  transition: filter 150ms ease, opacity 150ms ease;
+}
+
+.date-picker-control:hover::-webkit-calendar-picker-indicator {
+  opacity: 1;
+  filter: invert(64%) sepia(10%) saturate(396%) hue-rotate(176deg) brightness(90%) contrast(88%);
+}

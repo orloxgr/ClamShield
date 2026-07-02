@@ -299,7 +299,7 @@ export default function ResultsPage() {
                   type="date"
                   value={dateFilter}
                   onChange={e => setDateFilter(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  className="date-picker-control bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
                 />
               </label>
               {dateFilter && (

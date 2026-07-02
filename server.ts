@@ -2374,13 +2374,13 @@ function getYaraRulesFile(settings: any) {
     return path.join(settings.yaraRulesDir || yaraForgeRulesDir, yaraForgePackages[ruleset].fileName);
 }
 
-async function downloadToFile(url: string, destination: string, onProgress?: (message: string) => void) {
+async function downloadToFile(url: string, destination: string, onProgress?: (message: string) => void, headers: Record<string, string> = {}) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
     const response = await axios({
         url,
         method: "GET",
         responseType: "stream",
-        headers: { "User-Agent": "ClamShield" }
+        headers: { "User-Agent": "ClamShield", ...headers }
     });
     const total = Number(response.headers["content-length"] || 0);
     let downloaded = 0;
@@ -2402,6 +2402,15 @@ async function downloadToFile(url: string, destination: string, onProgress?: (me
         writer.on("error", reject);
         response.data.on("error", reject);
     });
+}
+
+async function buildFreshclamLikeUserAgent(settings: any) {
+    const versionText = await getClamAVEngineVersion(settings, Boolean(settings?.clamscanPath && existsSync(settings.clamscanPath)));
+    const versionMatch = String(versionText || "").match(/\bClamAV\s+([^\s]+)/i);
+    const version = versionMatch?.[1] || "1.0.0";
+    const osLabel = process.platform === "win32" ? "Windows" : process.platform;
+    const arch = os.arch() === "x64" ? "x86_64" : os.arch();
+    return `ClamAV/${version} (OS: ${osLabel}, ARCH: ${arch}, CPU: ${arch})`;
 }
 
 async function extractZip(zipPath: string, destination: string) {
@@ -2464,7 +2473,7 @@ function compareVersions(a: string, b: string) {
 }
 
 async function getCurrentAppVersion() {
-    let pkgVersion = process.env.npm_package_version || "1.0.95";
+    let pkgVersion = process.env.npm_package_version || "1.0.96";
     const candidatePaths = Array.from(new Set([
         path.join(runtimeDir, "package.json"),
         path.join(runtimeDir, "..", "package.json"),
@@ -3507,6 +3516,49 @@ async function prepareFreshclamConfig(settings: any, options: { includeOfficial?
             ]);
         }
     };
+}
+
+async function updateSecuriteInfoDatabases(settings: any, onProgress?: (message: string) => void) {
+    const token = await loadSecuriteInfoToken();
+    if (!token) {
+        throw new Error("SecuriteInfo is enabled but its encrypted account token is unavailable. Reconnect the account from Dashboard.");
+    }
+    const databases = getConfiguredSecuriteInfoDatabaseNames(settings);
+    if (databases.length === 0) {
+        throw new Error("No SecuriteInfo databases are enabled.");
+    }
+
+    await fs.mkdir(settings.databaseDir, { recursive: true });
+    const userAgent = await buildFreshclamLikeUserAgent(settings);
+    let updatedCount = 0;
+    for (const fileName of databases) {
+        const destination = path.join(settings.databaseDir, fileName);
+        const temporaryPath = path.join(settings.databaseDir, `.clamshield-${fileName}-${Date.now()}-${randomBytes(4).toString("hex")}.tmp`);
+        const url = `${securiteInfoBaseUrl}/${token}/${fileName}`;
+        try {
+            onProgress?.(`Downloading ${fileName}...`);
+            await downloadToFile(url, temporaryPath, message => onProgress?.(`${fileName}: ${message}`), {
+                "User-Agent": userAgent,
+                "Accept": "*/*",
+                "Connection": "close"
+            });
+            const stat = await fs.stat(temporaryPath);
+            if (stat.size <= 0) {
+                throw new Error("downloaded file is empty");
+            }
+            await fs.rename(temporaryPath, destination);
+            updatedCount++;
+            onProgress?.(`Installed ${fileName}.`);
+        } catch (e: any) {
+            await fs.unlink(temporaryPath).catch(() => {});
+            if (e?.response?.status === 403) {
+                throw new Error(`SecuriteInfo rejected ${fileName} with HTTP 403. Reconnect SecuriteInfo from Dashboard using the full DatabaseCustomURL text and verify that this account can download the selected ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan)} databases.`);
+            }
+            throw new Error(`Failed to download ${fileName}: ${e?.message || e}`);
+        }
+    }
+
+    return { updatedCount, databases };
 }
 
 async function retryRemovePath(targetPath: string, attempts = 5) {
@@ -5631,6 +5683,51 @@ async function startServer() {
                             return;
                         }
                         console.log(`Triggering automatic ${updateTarget} signature update...`);
+                        if (updateTarget === "securiteinfo") {
+                            freshclamUpdateInProgress = true;
+                            const startedAt = Date.now();
+                            let resultCode = 1;
+                            let actionTaken = "Failed";
+                            try {
+                                const result = await updateSecuriteInfoDatabases(settings, message => console.log(`SecuriteInfo auto-update: ${message}`));
+                                await reloadClamdDatabases(settings);
+                                settings = {
+                                    ...settings,
+                                    lastSecuriteInfoUpdate: new Date().toISOString(),
+                                    lastSecuriteInfoUpdateResult: `Updated ${result.updatedCount} databases`
+                                };
+                                resultCode = 0;
+                                actionTaken = `Updated ${result.updatedCount} databases`;
+                            } catch (e: any) {
+                                const message = redactSecuriteInfoSecret(e?.message || String(e));
+                                settings = {
+                                    ...settings,
+                                    lastSecuriteInfoUpdateResult: `Update failed: ${message}`.slice(0, 500)
+                                };
+                                console.error("Automatic SecuriteInfo update failed:", message);
+                            } finally {
+                                freshclamUpdateInProgress = false;
+                                await saveConfig(settings).catch(() => {});
+                                await addHistory({
+                                    type: "update",
+                                    target: "SecuriteInfo (Auto)",
+                                    result: resultCode,
+                                    threatsFound: 0,
+                                    scannedFiles: 0,
+                                    duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                                    actionTaken
+                                }).catch(() => {});
+                            }
+                            if (saneDue) {
+                                try {
+                                    await startSaneSecurityUpdate("automatic");
+                                } catch (e: any) {
+                                    console.error("Could not start automatic SaneSecurity update:", e?.message || e);
+                                }
+                            }
+                            scheduleNextUpdate();
+                            return;
+                        }
                         const preparedConfig = await prepareFreshclamConfig(settings, {
                             includeOfficial: updateTarget === "clamav",
                             includeSecuriteInfo: updateTarget === "securiteinfo"
@@ -7090,6 +7187,69 @@ if ($dialog.ShowDialog() -eq 'OK') {
         try {
             freshclamUpdateInProgress = true;
             activeJobs[jobId] = { status: "running", logs: [] };
+            if (requestedTarget === "securiteinfo") {
+                res.json({ jobId, status: "started" });
+                (async () => {
+                    const startedAt = Date.now();
+                    try {
+                        appendJobLogs(jobId, [
+                            `Downloading SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases...`
+                        ]);
+                        const result = await updateSecuriteInfoDatabases(settings, message => {
+                            if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
+                        });
+                        await reloadClamdDatabases(settings);
+                        settings = {
+                            ...settings,
+                            lastSecuriteInfoUpdate: new Date().toISOString(),
+                            lastSecuriteInfoUpdateResult: `Updated ${result.updatedCount} databases`
+                        };
+                        await saveConfig(settings);
+                        if (!activeJobs[jobId]) return;
+                        appendJobLogs(jobId, [`SecuriteInfo update complete: ${result.updatedCount} databases installed.`]);
+                        activeJobs[jobId].status = "done";
+                        activeJobs[jobId].result = 0;
+                        activeJobs[jobId].process = null;
+                        broadcastJobEvent(jobId);
+                        await addHistory({
+                            type: "update",
+                            target: "SecuriteInfo",
+                            result: 0,
+                            threatsFound: 0,
+                            scannedFiles: result.updatedCount,
+                            duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                            actionTaken: `Updated ${result.updatedCount} databases`
+                        });
+                    } catch (e: any) {
+                        const message = redactSecuriteInfoSecret(e?.message || String(e));
+                        settings = {
+                            ...settings,
+                            lastSecuriteInfoUpdateResult: `Update failed: ${message}`.slice(0, 500)
+                        };
+                        await saveConfig(settings).catch(() => {});
+                        if (activeJobs[jobId]) {
+                            appendJobLogs(jobId, [`Error: ${message}`]);
+                            activeJobs[jobId].status = "done";
+                            activeJobs[jobId].result = 1;
+                            activeJobs[jobId].process = null;
+                            broadcastJobEvent(jobId);
+                        }
+                        await addHistory({
+                            type: "update",
+                            target: "SecuriteInfo",
+                            result: 1,
+                            threatsFound: 0,
+                            scannedFiles: 0,
+                            duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                            actionTaken: "Failed"
+                        }).catch(() => {});
+                    } finally {
+                        freshclamUpdateInProgress = false;
+                    }
+                })();
+                return;
+            }
+
             if (!await pathExists(settings.freshclamPath)) {
                 throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
             }
