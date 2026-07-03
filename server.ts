@@ -4185,6 +4185,9 @@ let cachedIsAdmin = false;
 let clamdProcess: any = null;
 let clamdConfSignature = "";
 let clamdStartupOutput: string[] = [];
+let clamdDatabaseReloadPending = false;
+let clamdDatabaseReloadInProgress = false;
+let shouldDeferClamdDatabaseReload: (() => boolean) | null = null;
 
 function recordClamdOutput(lines: string[]) {
     if (!lines.length) return;
@@ -4318,14 +4321,40 @@ async function manageClamd(settings: any) {
     }
 }
 
+async function performClamdDatabaseReload(settings: any) {
+    if (!settings.offloadToMemory || !clamdProcess) return;
+    if (clamdDatabaseReloadInProgress) {
+        clamdDatabaseReloadPending = true;
+        return;
+    }
+    clamdDatabaseReloadInProgress = true;
+    console.log("Reloading clamd after database update.");
+    try {
+        clamdProcess.kill();
+        clamdProcess = null;
+        clamdConfSignature = "";
+        await sleep(500);
+        await manageClamd(settings);
+    } finally {
+        clamdDatabaseReloadInProgress = false;
+    }
+}
+
 async function reloadClamdDatabases(settings: any) {
     if (!settings.offloadToMemory || !clamdProcess) return;
-    console.log("Reloading clamd after database update.");
-    clamdProcess.kill();
-    clamdProcess = null;
-    clamdConfSignature = "";
-    await sleep(500);
-    await manageClamd(settings);
+    if (shouldDeferClamdDatabaseReload?.()) {
+        clamdDatabaseReloadPending = true;
+        console.log("Deferring clamd reload until active scans finish.");
+        return;
+    }
+    clamdDatabaseReloadPending = false;
+    await performClamdDatabaseReload(settings);
+}
+
+async function flushPendingClamdDatabaseReload(settings: any) {
+    if (!clamdDatabaseReloadPending || shouldDeferClamdDatabaseReload?.()) return;
+    clamdDatabaseReloadPending = false;
+    await performClamdDatabaseReload(settings);
 }
 
 async function checkIsAdmin() {
@@ -5496,7 +5525,12 @@ async function startServer() {
     cachedIsAdmin = await checkIsAdmin();
 
     const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
-    const activeJobs: Record<string, { status: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, processes?: Set<any>, lastOutputAt?: number, progress?: ScanProgress }> = {};
+    const activeJobs: Record<string, { status: string, kind?: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, processes?: Set<any>, lastOutputAt?: number, progress?: ScanProgress }> = {};
+    const isRunningClamdScanJob = () => Object.values(activeJobs).some(job =>
+        job.status === "running" &&
+        (job.kind === "scan" || job.kind === "shield-scan")
+    );
+    shouldDeferClamdDatabaseReload = isRunningClamdScanJob;
     let scheduledScanRuntime = {
         state: "idle",
         message: settings.scheduledScanEnabled ? "Waiting for the next scheduled scan." : "Scheduled scanning is disabled.",
@@ -5888,7 +5922,7 @@ async function startServer() {
             }
 
             const jobId = "shield-" + Date.now() + Math.random().toString(36).substring(7);
-            activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
+            activeJobs[jobId] = { status: "running", kind: "shield-scan", logs: [], analysisLogs: [] };
             appendJobLogs(jobId, [
                 `Real-time protection is checking: ${displayFileName(filePath)}`
             ]);
@@ -6082,9 +6116,9 @@ async function startServer() {
 
                     const isThreat = code === 1 || threatsFound > 0;
                     appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
-                    if (isThreat) {
-                        console.log(`Shield: Threat found in ${filePath}`);
-                    }
+            if (isThreat) {
+                console.log(`Shield: Threat found in ${filePath}`);
+            }
 
                     const lockedOrUnstable = !isThreat && (activeJobs[jobId].logs || []).some(isLockedOrUnstableClamLine);
                     if (lockedOrUnstable) {
@@ -6112,10 +6146,13 @@ async function startServer() {
                     
                     delete activeJobs[jobId];
                     filesBeingScanned.delete(normalizedPath);
+                    await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
                 });
             } catch (err) {
                 console.error("Shield scan failed", err);
                 filesBeingScanned.delete(normalizedPath);
+                if (activeJobs[jobId]) delete activeJobs[jobId];
+                await flushPendingClamdDatabaseReload(settings).catch((e: any) => console.warn("Deferred clamd reload failed:", e.message));
             }
         };
 
@@ -6202,6 +6239,9 @@ async function startServer() {
     app.post("/api/install-engine", async (req, res) => {
         if (process.platform !== "win32") {
             return res.status(400).json({ error: "Auto-install is only supported on Windows 64-bit." });
+        }
+        if (isRunningClamdScanJob()) {
+            return res.status(409).json({ error: "Stop active scans before installing or replacing the ClamAV Engine." });
         }
         if (isInstalling) {
             return res.json({ status: "already_installing" });
@@ -6374,6 +6414,11 @@ async function startServer() {
                 const intervalMs = normalizePositiveNumber(settings.yaraUpdateIntervalHours, 168, 1, 8760) * 60 * 60 * 1000;
                 const shouldUpdate = !lastAttempt || Date.now() - new Date(lastAttempt.date).getTime() > intervalMs;
                 if (shouldUpdate) {
+                    if (isRunningClamdScanJob()) {
+                        console.log("YARA Forge auto-update deferred because a scan is running.");
+                        scheduleNextYaraUpdate();
+                        return;
+                    }
                     console.log("Triggering YARA Forge auto-update...");
                     await updateYaraForgeRules(settings, message => console.log(`YARA auto-update: ${message}`));
                     await addHistory({
@@ -6419,9 +6464,13 @@ async function startServer() {
                     let actionTaken = update.updateAvailable ? `Available ${update.latestVersion}` : "No update";
                     let shouldExitForUpdate = false;
                     if (update.updateAvailable && settings.appSilentAutoInstall === true) {
-                        const result = await downloadAndLaunchClamShieldInstaller(settings, message => console.log(`ClamShield update: ${message}`));
-                        actionTaken = result.handoffReady ? `Installer queued ${update.latestVersion}` : "No update";
-                        shouldExitForUpdate = result.handoffReady;
+                        if (isRunningClamdScanJob()) {
+                            actionTaken = `Available ${update.latestVersion}; install deferred because a scan is running`;
+                        } else {
+                            const result = await downloadAndLaunchClamShieldInstaller(settings, message => console.log(`ClamShield update: ${message}`));
+                            actionTaken = result.handoffReady ? `Installer queued ${update.latestVersion}` : "No update";
+                            shouldExitForUpdate = result.handoffReady;
+                        }
                     }
                     await addHistory({
                         type: "app-update-check",
@@ -6969,6 +7018,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json({ jobId, status: "started", simulated: true });
             activeJobs[jobId] = {
                 status: "running",
+                kind: "scan",
                 logs: ["Starting simulated scan..."],
                 progress: createInitialScanProgress(jobId, scanType, scanTarget)
             };
@@ -7037,6 +7087,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         activeJobs[jobId] = {
             status: "running",
+            kind: "scan",
             logs: [],
             analysisLogs: [],
             progress: isResume
@@ -7307,6 +7358,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         completedAt: Date.now(),
                         result: 0
                     });
+                    await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
                     return;
                 }
                 saveJobProgress(jobId, {
@@ -7327,6 +7379,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     completedAt: Date.now(),
                     result: 0
                 });
+                await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
                 return;
             }
 
@@ -7454,6 +7507,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 actionTaken: scanFailed ? "Scanner error" : isThreat ? actionTaken : "None"
             });
             scanSessions.compactCompletedFileLists();
+            await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
         }).catch(e => {
             const job = activeJobs[jobId];
             if (!job) return;
@@ -7470,6 +7524,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 completedAt: resumable ? undefined : Date.now(),
                 result: -1
             });
+            flushPendingClamdDatabaseReload(settings).catch((reloadError: any) => console.warn("Deferred clamd reload failed:", reloadError.message));
         });
     });
 
@@ -7484,7 +7539,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             // Simulated scan
             res.json({ jobId, status: "started", simulated: true });
             
-            activeJobs[jobId] = { status: "running", logs: [] };
+            activeJobs[jobId] = { status: "running", kind: "scan", logs: [] };
             appendJobLogs(jobId, ["Starting simulated scan..."]);
             
             // Simulate run
@@ -7574,7 +7629,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
         let args = buildClamScanArgs(settings, isClamd, type, scanTarget);
         
         try {
-            activeJobs[jobId] = { status: "running", logs: [], analysisLogs: [] };
+            activeJobs[jobId] = { status: "running", kind: "scan", logs: [], analysisLogs: [] };
             if (type === "disk" && process.platform === "win32") {
                 appendJobLogs(jobId, [
                     "Skipping Windows locked paging/system files that cannot be opened while Windows is running:",
@@ -7740,6 +7795,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = code ?? 0;
                 activeJobs[jobId].process = null;
+                await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
             });
 
             child.on("error", (err) => {
@@ -7752,6 +7808,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 activeJobs[jobId].status = "done";
                 activeJobs[jobId].result = -1;
                 activeJobs[jobId].process = null;
+                flushPendingClamdDatabaseReload(settings).catch((reloadError: any) => console.warn("Deferred clamd reload failed:", reloadError.message));
             });
             
             res.json({ jobId, status: "started" });
@@ -7773,7 +7830,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
-    app.post("/api/scan/:jobId/discard", (req, res) => {
+    app.post("/api/scan/:jobId/discard", async (req, res) => {
         try {
             const job = activeJobs[req.params.jobId];
             if (job?.process) job.process.kill();
@@ -7784,6 +7841,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             if (job) job.status = "done";
             scanSessions.discard(req.params.jobId);
             broadcastJobEvent(req.params.jobId, ["Interrupted scan discarded."]);
+            await flushPendingClamdDatabaseReload(settings);
             res.json({ success: true });
         } catch (e: any) {
             res.status(500).json({ error: e.message || "Failed to discard scan." });
@@ -7840,7 +7898,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
         job.logs = [];
     });
 
-    app.post("/api/scan/:jobId/cancel", (req, res) => {
+    app.post("/api/scan/:jobId/cancel", async (req, res) => {
         const job = activeJobs[req.params.jobId];
         if (job) {
             const discardProgress = req.body?.discard === true;
@@ -7878,6 +7936,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         : "Scan cancelled by user."
             ]);
             broadcastJobEvent(req.params.jobId);
+            await flushPendingClamdDatabaseReload(settings);
             res.json({ status: resumable ? "paused" : "cancelled" });
         } else {
             res.status(404).json({ error: "Job not found" });
@@ -8090,6 +8149,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
             settings = { ...settings, yaraRuleset: requestedRuleset };
             await saveConfig(settings);
         }
+        if (isRunningClamdScanJob()) {
+            return res.status(409).json({ error: "Stop active scans before updating YARA rules." });
+        }
         activeJobs[jobId] = { status: "running", logs: [] };
         res.json({ jobId, status: "started" });
 
@@ -8184,6 +8246,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.post("/api/app-update/install", async (req, res) => {
+        if (isRunningClamdScanJob()) {
+            return res.status(409).json({ error: "Stop active scans before installing a ClamShield application update." });
+        }
         const jobId = "app-update-" + Date.now().toString();
         activeJobs[jobId] = { status: "running", logs: [] };
         res.json({ jobId, status: "started" });
@@ -8275,10 +8340,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.post("/api/clamav-engine-update/install", async (req, res) => {
-        const runningScan = Object.values(activeJobs).some((job: any) =>
-            job?.status === "running" && ["disk", "folder", "file", "memory"].includes(job.progress?.type || "")
-        );
-        if (runningScan || freshclamUpdateInProgress) {
+        if (isRunningClamdScanJob() || freshclamUpdateInProgress) {
             return res.status(409).json({ error: "Stop active scans or signature updates before replacing the ClamAV Engine." });
         }
         const jobId = "clamav-engine-update-" + Date.now().toString();
@@ -8381,10 +8443,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.post("/api/yara-engine-update/install", async (req, res) => {
-        const runningScan = Object.values(activeJobs).some((job: any) =>
-            job?.status === "running" && ["disk", "folder", "file", "memory"].includes(job.progress?.type || "")
-        );
-        if (runningScan) {
+        if (isRunningClamdScanJob()) {
             return res.status(409).json({ error: "Stop active scans before replacing the YARA Engine." });
         }
         const jobId = "yara-engine-update-" + Date.now().toString();

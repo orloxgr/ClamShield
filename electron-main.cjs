@@ -790,14 +790,47 @@ async function publishScheduledScanRuntime(port, payload) {
   }
 }
 
+function activeScanJobIds(status, currentJobId = '') {
+  return Array.isArray(status?.activeScanJobIds)
+    ? status.activeScanJobIds.filter(jobId => jobId && jobId !== currentJobId)
+    : [];
+}
+
+async function publishScheduledScanWaitingForScan(port, idleSeconds, queueIndex = 0, totalTargets = 0) {
+  await publishScheduledScanRuntime(port, {
+    state: 'waiting-scan',
+    message: 'Waiting for the current on-demand or scheduled scan to finish.',
+    activeJobId: '',
+    currentTarget: '',
+    queueIndex,
+    totalTargets,
+    idleSeconds
+  });
+}
+
 async function startScheduledScanTarget(port) {
   if (!scheduledScanRun || scheduledScanRun.index >= scheduledScanRun.queue.length) return false;
+  const status = await requestJson(port, '/api/status');
+  const idleSeconds = scheduledScanRun.idleOnly ? powerMonitor.getSystemIdleTime() : 0;
+  if (activeScanJobIds(status, scheduledScanRun.jobId).length > 0) {
+    await publishScheduledScanWaitingForScan(port, idleSeconds, scheduledScanRun.index + 1, scheduledScanRun.queue.length);
+    return false;
+  }
   const target = scheduledScanRun.queue[scheduledScanRun.index];
-  const response = await requestJson(port, '/api/scan', 'POST', {
-    type: target.type,
-    target: target.target,
-    source: 'scheduled'
-  });
+  let response;
+  try {
+    response = await requestJson(port, '/api/scan', 'POST', {
+      type: target.type,
+      target: target.target,
+      source: 'scheduled'
+    });
+  } catch (error) {
+    if (/another .*scan.*running/i.test(error.message || '')) {
+      await publishScheduledScanWaitingForScan(port, idleSeconds, scheduledScanRun.index + 1, scheduledScanRun.queue.length);
+      return false;
+    }
+    throw error;
+  }
   scheduledScanRun.jobId = response.jobId;
   scheduledScanRun.currentTarget = target;
   await publishScheduledScanRuntime(port, {
@@ -807,7 +840,7 @@ async function startScheduledScanTarget(port) {
     currentTarget: target.label,
     queueIndex: scheduledScanRun.index + 1,
     totalTargets: scheduledScanRun.queue.length,
-    idleSeconds: scheduledScanRun.idleOnly ? powerMonitor.getSystemIdleTime() : 0
+    idleSeconds
   });
   return true;
 }
@@ -857,6 +890,19 @@ function pollScheduledScans(port) {
           return;
         }
 
+        if (!scheduledScanRun.jobId) {
+          if (scheduledScanRun.index >= scheduledScanRun.queue.length) {
+            scheduledScanRun = null;
+            return;
+          }
+          if (activeScanJobIds(status).length > 0) {
+            await publishScheduledScanWaitingForScan(port, idleSeconds, scheduledScanRun.index + 1, scheduledScanRun.queue.length);
+            return;
+          }
+          await startScheduledScanTarget(port);
+          return;
+        }
+
         const job = await requestJson(port, `/api/scan/${encodeURIComponent(scheduledScanRun.jobId)}`);
         if (job.status !== 'done') {
           await publishScheduledScanRuntime(port, {
@@ -879,10 +925,7 @@ function pollScheduledScans(port) {
         scheduledScanRun.index += 1;
         scheduledScanRun.jobId = '';
 
-        if (scheduledScanRun.index < scheduledScanRun.queue.length) {
-          await startScheduledScanTarget(port);
-          return;
-        }
+        if (scheduledScanRun.index < scheduledScanRun.queue.length) return;
 
         const completedAt = new Date().toISOString();
         const lastResult = scheduledScanRun.detections ? 'Completed with detections' : 'Completed with no detections';
@@ -981,12 +1024,8 @@ function pollScheduledScans(port) {
         return;
       }
 
-      if (Array.isArray(status.activeScanJobIds) && status.activeScanJobIds.length > 0) {
-        await publishScheduledScanRuntime(port, {
-          state: 'waiting-scan',
-          message: 'Waiting for the current on-demand scan to finish.',
-          idleSeconds
-        });
+      if (activeScanJobIds(status).length > 0) {
+        await publishScheduledScanWaitingForScan(port, idleSeconds);
         return;
       }
 
