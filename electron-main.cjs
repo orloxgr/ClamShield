@@ -845,10 +845,11 @@ async function startScheduledScanTarget(port) {
   return true;
 }
 
-async function stopScheduledScan(port, reason, resultLabel) {
+async function stopScheduledScan(port, reason, resultLabel, options = {}) {
+  const discardProgress = options.discard !== false;
   if (scheduledScanRun?.jobId) {
     await requestJson(port, `/api/scan/${encodeURIComponent(scheduledScanRun.jobId)}/cancel`, 'POST', {
-      discard: true,
+      discard: discardProgress,
       reason
     }).catch(error => console.warn('Failed to stop scheduled scan job', error.message));
   }
@@ -886,7 +887,7 @@ function pollScheduledScans(port) {
         const userActivityResumed = idleSeconds + 2 < previousIdleSeconds;
         scheduledScanRun.lastIdleSeconds = idleSeconds;
         if (settings.scheduledScanIdleOnly !== false && userActivityResumed) {
-          await stopScheduledScan(port, 'User activity resumed; the scheduled scan was stopped.', 'Stopped when user activity resumed');
+          await stopScheduledScan(port, 'User activity resumed; the scheduled scan was paused.', 'Paused when user activity resumed', { discard: false });
           return;
         }
 
