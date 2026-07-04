@@ -35,7 +35,7 @@ function isProgressLine(line: string) {
     /^(YARA )?Threat found:/i.test(line) ||
     /^Action:/i.test(line) ||
     /^Quarantine failed/i.test(line) ||
-    /File path check failure|Can't get file status|Can't open file or directory|Access denied/i.test(line) ||
+    /File path check failure|Can't get file status|Can't open file(?: or directory)?|Can't access file|Can't fstat descriptor|Access denied|Permission denied|queued for rescan/i.test(line) ||
     /^YARA (scan started|ruleset:|scanned files:|skipped|process error|matches:)/i.test(line) ||
     /^(Scan complete|Updating real-time protection cache|Protection cache)/i.test(line);
 }
@@ -48,7 +48,9 @@ function fileNameFromPath(filePath: string) {
 function normalizeProgressLine(line: string) {
   if (/^-{3,}\s*SCAN SUMMARY\s*-{3,}$/i.test(line)) return "----------- SCAN PROGRESS -----------";
   if (/^Time:/i.test(line)) return line.replace(/^Time:/i, "Time per batch:");
-  const unreadableMatch = line.match(/^(.+?):\s+(File path check failure|Can't get file status|Can't open file or directory|Access denied)/i);
+  const directAccessMatch = line.match(/^ERROR:\s+Can't access file\s+(.+)$/i);
+  if (directAccessMatch) return `Skipped unreadable file: ${fileNameFromPath(directAccessMatch[1])}`;
+  const unreadableMatch = line.match(/^(.+?):\s+(File path check failure|Can't get file status|Can't open file(?: or directory)?|Access denied|Permission denied)/i);
   if (unreadableMatch) return `Skipped unreadable file: ${fileNameFromPath(unreadableMatch[1])}`;
   return line;
 }

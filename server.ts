@@ -2397,7 +2397,7 @@ function isNoisyClamFileLine(line: string) {
 }
 
 function isLockedOrUnstableClamLine(line: string) {
-    return /File path check failure|Can't get file status|Can't open file or directory|Access denied/i.test(line);
+    return /File path check failure|Can't get file status|Can't open file(?: or directory)?|Can't access file|Can't fstat descriptor|Access denied|Permission denied/i.test(line);
 }
 
 function isImportantClamOutputLine(line: string) {
@@ -2408,6 +2408,36 @@ function isImportantClamOutputLine(line: string) {
     if (isLockedOrUnstableClamLine(line)) return true;
     if (line.includes(" ERROR") && !isNoisyClamFileLine(line)) return true;
     return false;
+}
+
+function extractClamFailedFilePath(line: string) {
+    const trimmed = String(line || "").trim();
+    const directAccessMatch = trimmed.match(/^ERROR:\s+Can't access file\s+(.+)$/i);
+    if (directAccessMatch) return directAccessMatch[1].trim();
+    const openFileMatch = trimmed.match(/^(?:LibClamAV\s+)?(?:Warning|Error):\s+Can't open file\s+(.+?)(?::\s*\d+)?$/i);
+    if (openFileMatch) return openFileMatch[1].trim();
+    const pathCheckMatch = trimmed.match(/File path check failure for:\s+(.+)$/i);
+    if (pathCheckMatch) return pathCheckMatch[1].trim();
+    const statusMatch = trimmed.match(/^(.+?):\s+Can't get file status(?:\s+ERROR)?$/i);
+    if (statusMatch) return statusMatch[1].trim();
+    if (isLockedOrUnstableClamLine(trimmed)) {
+        const outputPath = parseClamOutputPath(trimmed);
+        if (outputPath && !/^ERROR$/i.test(outputPath)) return outputPath.trim();
+    }
+    return "";
+}
+
+function uniqueFailedFilePathsFromClamLines(lines: string[]) {
+    const seen = new Set<string>();
+    const paths: string[] = [];
+    for (const line of lines) {
+        const failedPath = extractClamFailedFilePath(line);
+        const key = normalizeCachePath(failedPath);
+        if (!failedPath || !key || seen.has(key)) continue;
+        seen.add(key);
+        paths.push(failedPath);
+    }
+    return paths;
 }
 
 function displayFileName(filePath: string) {
@@ -3442,6 +3472,25 @@ function getAppStateDb() {
         );
         CREATE INDEX IF NOT EXISTS idx_scan_results_timestamp ON scan_results(timestamp);
         CREATE INDEX IF NOT EXISTS idx_scan_results_normalized_path ON scan_results(normalized_path);
+        CREATE TABLE IF NOT EXISTS scan_failed_files (
+            id TEXT PRIMARY KEY,
+            timestamp INTEGER NOT NULL,
+            job_id TEXT,
+            source TEXT,
+            scan_type TEXT,
+            target TEXT,
+            batch_number INTEGER,
+            exit_code INTEGER,
+            original_path TEXT,
+            normalized_path TEXT,
+            reason TEXT,
+            status TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            last_retry_at INTEGER,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scan_failed_files_status ON scan_failed_files(status, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_scan_failed_files_normalized_path ON scan_failed_files(normalized_path);
         CREATE TABLE IF NOT EXISTS results_reminder (
             key TEXT PRIMARY KEY,
             value INTEGER NOT NULL
@@ -3637,6 +3686,71 @@ function insertScanResultRow(db: any, result: any, fallbackIndex = 0) {
         appStateJson(asRecord(payload.virusTotalChecks)),
         appStateJson({ ...payload, id, timestamp })
     );
+}
+
+function insertScanFailedFileRow(db: any, failure: any, fallbackIndex = 0) {
+    const payload = asRecord(failure);
+    const timestamp = optionalNumber(payload.timestamp) || Date.now();
+    const originalPath = String(payload.originalPath || "");
+    const normalizedPath = normalizedStatePath(originalPath);
+    if (!originalPath || !normalizedPath) return;
+    const id = String(payload.id || `${timestamp}-${fallbackIndex}-${randomBytes(3).toString("hex")}`);
+    db.prepare(`
+        INSERT INTO scan_failed_files(
+            id, timestamp, job_id, source, scan_type, target, batch_number, exit_code,
+            original_path, normalized_path, reason, status, retry_count, last_retry_at, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            timestamp = excluded.timestamp,
+            job_id = excluded.job_id,
+            source = excluded.source,
+            scan_type = excluded.scan_type,
+            target = excluded.target,
+            batch_number = excluded.batch_number,
+            exit_code = excluded.exit_code,
+            original_path = excluded.original_path,
+            normalized_path = excluded.normalized_path,
+            reason = excluded.reason,
+            status = excluded.status,
+            payload = excluded.payload
+    `).run(
+        id,
+        timestamp,
+        String(payload.jobId || ""),
+        String(payload.source || ""),
+        String(payload.scanType || ""),
+        String(payload.target || ""),
+        optionalNumber(payload.batchNumber),
+        optionalNumber(payload.exitCode),
+        originalPath,
+        normalizedPath,
+        String(payload.reason || ""),
+        String(payload.status || "pending"),
+        optionalNumber(payload.retryCount) || 0,
+        optionalNumber(payload.lastRetryAt),
+        appStateJson({ ...payload, id, timestamp, originalPath, normalizedPath, status: payload.status || "pending" })
+    );
+}
+
+async function addScanFailedFiles(failures: any[]) {
+    const rows = failures.map(asRecord).filter(row => String(row.originalPath || "").trim());
+    if (rows.length === 0) return 0;
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    let inserted = 0;
+    runAppStateTransaction(db, () => {
+        const clearExisting = db.prepare(`
+            DELETE FROM scan_failed_files
+            WHERE normalized_path = ?
+              AND status = 'pending'
+        `);
+        rows.forEach((failure, index) => {
+            clearExisting.run(normalizedStatePath(String(failure.originalPath || "")));
+            insertScanFailedFileRow(db, failure, index);
+            inserted++;
+        });
+    });
+    return inserted;
 }
 
 function cleanupDuplicateScanResults(db: any) {
@@ -5042,6 +5156,56 @@ async function getScanResultsPage(options: { limit?: number | null, offset?: num
         ? db.prepare(sql).all(...params, limit, safeOffset)
         : db.prepare(sql).all(...params);
     return { items: rows.map(mapScanResultRow), total };
+}
+
+function scanFailedFileSelectSql() {
+    return `SELECT id, timestamp, job_id, source, scan_type, target, batch_number, exit_code,
+                   original_path, normalized_path, reason, status, retry_count, last_retry_at, payload
+            FROM scan_failed_files`;
+}
+
+function mapScanFailedFileRow(row: any) {
+    const payload = asRecord(parseAppStateJson(row.payload, {}));
+    return {
+        ...payload,
+        id: row.id,
+        timestamp: Number(row.timestamp || payload.timestamp || 0),
+        jobId: row.job_id || payload.jobId,
+        source: row.source || payload.source,
+        scanType: row.scan_type || payload.scanType,
+        target: row.target || payload.target,
+        batchNumber: row.batch_number === null || row.batch_number === undefined ? payload.batchNumber : Number(row.batch_number),
+        exitCode: row.exit_code === null || row.exit_code === undefined ? payload.exitCode : Number(row.exit_code),
+        originalPath: row.original_path || payload.originalPath,
+        normalizedPath: row.normalized_path || payload.normalizedPath,
+        reason: row.reason || payload.reason,
+        status: row.status || payload.status || "pending",
+        retryCount: row.retry_count === null || row.retry_count === undefined ? Number(payload.retryCount || 0) : Number(row.retry_count),
+        lastRetryAt: row.last_retry_at === null || row.last_retry_at === undefined ? payload.lastRetryAt : Number(row.last_retry_at)
+    };
+}
+
+async function getScanFailedFilesPage(options: { limit?: number | null, offset?: number, status?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    const status = String(options.status || "pending").trim().toLowerCase();
+    if (status && status !== "all") {
+        clauses.push("status = ?");
+        params.push(status);
+    }
+    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const db = getAppStateDb();
+    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM scan_failed_files${whereSql}`).get(...params)?.count || 0);
+    const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
+    const limit = options.limit === null || options.limit === undefined
+        ? null
+        : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 100)));
+    const sql = `${scanFailedFileSelectSql()}${whereSql} ORDER BY timestamp DESC${limit ? " LIMIT ? OFFSET ?" : ""}`;
+    const rows = limit
+        ? db.prepare(sql).all(...params, limit, safeOffset)
+        : db.prepare(sql).all(...params);
+    return { items: rows.map(mapScanFailedFileRow), total };
 }
 
 async function saveScanResults(results: any[]) {
@@ -6910,6 +7074,25 @@ async function startServer() {
         }
     });
 
+    app.get("/api/scan/failed-files", async (req, res) => {
+        try {
+            const requestedPageSize = String(req.query.pageSize || "100").toLowerCase();
+            const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+            const pageSize = requestedPageSize === "all"
+                ? null
+                : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 100)));
+            const offset = pageSize ? (page - 1) * pageSize : 0;
+            const paged = await getScanFailedFilesPage({
+                limit: pageSize,
+                offset,
+                status: typeof req.query.status === "string" ? req.query.status : "pending"
+            });
+            res.json({ items: paged.items, total: paged.total, page, pageSize: pageSize || "all" });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
     app.get("/api/select-folder", async (req, res) => {
         if (process.platform === "win32") {
             const script = `
@@ -7141,6 +7324,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             let threatsFound = 0;
             let errorsFound = 0;
             let fatalScanErrors = 0;
+            let scannerFailureBatches = 0;
+            let failedFilesQueuedForRescan = 0;
             let actionTaken = "None";
             const startedAt = Date.now();
             const heartbeat = createScanHeartbeat(jobId, "Scan");
@@ -7204,6 +7389,35 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 saveJobProgress(jobId, { threatsFound, actionTaken });
             };
 
+            const queueFailedFilesForRescan = async (pathsToQueue: string[], batchNumber: number, exitCode: number, reason: string) => {
+                const seen = new Set<string>();
+                const uniquePaths = pathsToQueue.filter(filePath => {
+                    const normalizedPath = normalizeCachePath(filePath);
+                    if (!filePath || !normalizedPath || seen.has(normalizedPath)) return false;
+                    seen.add(normalizedPath);
+                    return true;
+                });
+                if (uniquePaths.length === 0) return 0;
+                const timestamp = Date.now();
+                const queued = await addScanFailedFiles(uniquePaths.map(filePath => ({
+                    timestamp,
+                    jobId,
+                    source: scanSource,
+                    scanType,
+                    target: scanTarget,
+                    batchNumber,
+                    exitCode,
+                    originalPath: filePath,
+                    reason,
+                    status: "pending"
+                }))).catch((e: any) => {
+                    appendJobLogs(jobId, [`Failed to queue files for rescan: ${e?.message || e}`]);
+                    return 0;
+                });
+                failedFilesQueuedForRescan += queued;
+                return queued;
+            };
+
             const scanChunk = async (chunk: string[], batchNumber: number, totalBatches?: number) => {
                 const job = activeJobs[jobId];
                 if (!job || job.status !== "running" || chunk.length === 0) return false;
@@ -7258,23 +7472,42 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (activeJobs[jobId]?.status !== "running") {
                     return false;
                 }
+                let scannerExitQueuedForRescan = false;
                 if (code !== 0 && code !== 1) {
-                    fatalScanErrors++;
+                    if (code === -1) {
+                        fatalScanErrors++;
+                        errorsFound++;
+                        appendJobLogs(jobId, [
+                            "Scanner process could not be started.",
+                            "The scan was stopped because the scanner process itself failed."
+                        ]);
+                        saveJobProgress(jobId, { errorsFound, result: -1, actionTaken: "Scanner error" });
+                        return false;
+                    }
+                    scannerFailureBatches++;
                     errorsFound++;
+                    const failedPaths = uniqueFailedFilePathsFromClamLines(chunkLines);
+                    const queuedCount = await queueFailedFilesForRescan(
+                        failedPaths.length > 0 ? failedPaths : chunk,
+                        batchNumber,
+                        code,
+                        failedPaths.length > 0 ? "File access error during scan" : `Scanner exit code ${code}`
+                    );
                     appendJobLogs(jobId, [
-                        `Scanner process failed for batch ${batchNumber} with exit code ${code}.`,
-                        "This batch was not treated as clean."
+                        `Scanner process returned exit code ${code} for batch ${batchNumber}.`,
+                        `${queuedCount.toLocaleString()} file${queuedCount === 1 ? "" : "s"} queued for rescan; continuing scan.`
                     ]);
-                    saveJobProgress(jobId, { errorsFound, result: -1, actionTaken: "Scanner error" });
-                    return false;
+                    actionTaken = "Queued files for rescan";
+                    scannerExitQueuedForRescan = true;
+                    saveJobProgress(jobId, { errorsFound, result: 0, actionTaken });
                 }
 
                 let suppressedCleanLines = 0;
                 let suppressedFileWarningLines = 0;
                 for (const line of chunkLines) {
                     if (line.includes(" FOUND")) await handleFoundLine(line);
-                    else if (isNoisyClamFileLine(line)) {
-                        if (line.includes(" ERROR") || line.startsWith("WARNING:")) {
+                    else if (isNoisyClamFileLine(line) || isLockedOrUnstableClamLine(line)) {
+                        if (line.includes(" ERROR") || line.startsWith("ERROR:") || line.startsWith("WARNING:") || line.startsWith("LibClamAV Error:")) {
                             errorsFound++;
                             suppressedFileWarningLines++;
                         } else {
@@ -7284,9 +7517,28 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         errorsFound++;
                     }
                 }
+                if (!scannerExitQueuedForRescan) {
+                    const failedPaths = uniqueFailedFilePathsFromClamLines(chunkLines);
+                    if (failedPaths.length > 0) {
+                        const queuedCount = await queueFailedFilesForRescan(
+                            failedPaths,
+                            batchNumber,
+                            code,
+                            "File access error during scan"
+                        );
+                        if (queuedCount > 0) {
+                            appendJobLogs(jobId, [
+                                `${queuedCount.toLocaleString()} inaccessible file${queuedCount === 1 ? "" : "s"} queued for rescan.`
+                            ]);
+                            actionTaken = "Queued files for rescan";
+                        }
+                    }
+                }
                 if (suppressedCleanLines > 0 || suppressedFileWarningLines > 0) {
                     appendJobLogs(jobId, [
-                        totalBatches ? `Batch ${batchNumber}/${totalBatches} complete.` : `Batch ${batchNumber} complete.`
+                        scannerExitQueuedForRescan
+                            ? (totalBatches ? `Batch ${batchNumber}/${totalBatches} complete with inaccessible files.` : `Batch ${batchNumber} complete with inaccessible files.`)
+                            : (totalBatches ? `Batch ${batchNumber}/${totalBatches} complete.` : `Batch ${batchNumber} complete.`)
                     ]);
                 }
                 if (resumableScan) {
@@ -7300,7 +7552,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     errorsFound,
                     currentFile: chunk[chunk.length - 1] || "",
                     phase: totalBatches ? `ClamAV batch ${batchNumber}/${totalBatches}` : `ClamAV batch ${batchNumber}`,
-                    result: code
+                    result: code === 1 ? 1 : 0
                 });
                 return true;
             };
@@ -7458,8 +7710,23 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             const isThreat = threatsFound > 0;
             const scanFailed = fatalScanErrors > 0;
+            const hasRescanQueue = failedFilesQueuedForRescan > 0;
             const duration = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-            appendJobLogs(jobId, [scanFailed ? "Scan stopped with scanner errors." : isThreat ? "Scan complete: detections found" : "Scan complete: no active threats found"]);
+            const rescanAction = hasRescanQueue
+                ? `${failedFilesQueuedForRescan.toLocaleString()} file${failedFilesQueuedForRescan === 1 ? "" : "s"} queued for rescan`
+                : "";
+            const finalActionTaken = scanFailed
+                ? "Scanner error"
+                : hasRescanQueue
+                    ? (isThreat && actionTaken !== "None" ? `${actionTaken}; ${rescanAction}` : rescanAction)
+                    : isThreat ? actionTaken : "None";
+            appendJobLogs(jobId, [
+                scanFailed
+                    ? "Scan stopped with scanner errors."
+                    : hasRescanQueue
+                        ? `Scan complete; ${rescanAction}.`
+                        : isThreat ? "Scan complete: detections found" : "Scan complete: no active threats found"
+            ]);
             await addHistory({
                 type: scanSource === "scheduled" ? `scheduled-scan-${scanType}` : `scan-${scanType}`,
                 target: scanTarget,
@@ -7467,13 +7734,13 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 threatsFound,
                 scannedFiles,
                 duration,
-                actionTaken: scanFailed ? "Scanner error" : isThreat ? actionTaken : "None"
+                actionTaken: finalActionTaken
             });
             if (isThreat && scanSource !== "scheduled") {
                 sendScanSummary({
                     title: scanSource === "scheduled" ? "Scheduled scan found threats" : "Scan found threats",
                     message: `${threatsFound} threat${threatsFound === 1 ? "" : "s"} found.`,
-                    detail: `Action: ${actionTaken}`,
+                    detail: `Action: ${finalActionTaken}`,
                     target: scanTarget,
                     action: actionTaken === "Quarantined" ? "quarantine" : "results"
                 });
@@ -7497,14 +7764,14 @@ if ($dialog.ShowDialog() -eq 'OK') {
             activeJobs[jobId].process = null;
             saveJobProgress(jobId, {
                 status: "done",
-                phase: scanFailed ? "Scanner error" : "Complete",
+                phase: scanFailed ? "Scanner error" : hasRescanQueue ? "Complete with rescan queue" : "Complete",
                 currentFile: scanFailed ? "Scanner error" : "Complete",
                 completedAt: Date.now(),
                 result: scanFailed ? -1 : isThreat ? 1 : 0,
                 scannedFiles,
                 threatsFound,
                 errorsFound,
-                actionTaken: scanFailed ? "Scanner error" : isThreat ? actionTaken : "None"
+                actionTaken: finalActionTaken
             });
             scanSessions.compactCompletedFileLists();
             await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
