@@ -27,6 +27,7 @@ const programDataDir = process.platform === "win32"
 
 const engineBaseDir = path.join(programDataDir, "engine");
 const defaultLogsDir = path.join(programDataDir, "logs");
+const falsePositiveExportsDir = path.join(programDataDir, "exports", "false-positives");
 const yaraBaseDir = path.join(programDataDir, "yara");
 const yaraForgeRulesDir = path.join(yaraBaseDir, "rules", "forge");
 const yaraCustomRulesDir = path.join(yaraBaseDir, "rules", "custom");
@@ -2237,6 +2238,11 @@ const windowsSecuritySoftwareDataDirs = [
     ...windowsSecuritySoftwareProgramDirs
 ];
 
+const windowsSecuritySoftwareRootDirs = [
+    ["AdwCleaner", "FileQuarantine"],
+    ["AdwCleaner", "Quarantine"]
+];
+
 function escapeRegex(value: string) {
     return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
@@ -2253,11 +2259,13 @@ function getWindowsSecuritySoftwareExclusionPaths() {
     const programFiles = process.env.ProgramFiles || process.env.PROGRAMFILES || "C:\\Program Files";
     const programFilesX86 = process.env["ProgramFiles(x86)"] || process.env.PROGRAMFILES_X86 || "C:\\Program Files (x86)";
     const programW6432 = process.env.ProgramW6432 || process.env.PROGRAMW6432 || programFiles;
+    const systemDrive = process.env.SystemDrive || process.env.SYSTEMDRIVE || "C:";
 
     const programRoots = dedupePaths([programFiles, programFilesX86, programW6432].filter(Boolean));
     const paths = [
         ...windowsSecuritySoftwareDataDirs.map(parts => path.join(programData, ...parts)),
-        ...programRoots.flatMap(root => windowsSecuritySoftwareProgramDirs.map(parts => path.join(root, ...parts)))
+        ...programRoots.flatMap(root => windowsSecuritySoftwareProgramDirs.map(parts => path.join(root, ...parts))),
+        ...windowsSecuritySoftwareRootDirs.map(parts => path.join(`${systemDrive}\\`, ...parts))
     ];
     return dedupePaths(paths);
 }
@@ -3772,6 +3780,41 @@ function cleanupDuplicateScanResults(db: any) {
     `).run();
 }
 
+function escapeSqlLike(value: string) {
+    return value.replace(/[\\%_]/g, match => `\\${match}`);
+}
+
+async function cleanupBuiltInExcludedScanResults(settings: any) {
+    await ensureAppStateReady();
+    const excludedPaths = getClamShieldScanExclusionPaths(settings)
+        .map(normalizedStatePath)
+        .filter(Boolean);
+    if (excludedPaths.length === 0) return 0;
+
+    const db = getAppStateDb();
+    let removedCount = 0;
+    try {
+        runAppStateTransaction(db, () => {
+            const deletePath = db.prepare(`
+                DELETE FROM scan_results
+                WHERE normalized_path = ?
+                   OR normalized_path LIKE ? ESCAPE '\\'
+            `);
+            for (const excludedPath of excludedPaths) {
+                const result: any = deletePath.run(excludedPath, `${escapeSqlLike(excludedPath)}${escapeSqlLike(path.sep)}%`);
+                removedCount += Number(result?.changes || 0);
+            }
+        });
+        if (removedCount > 0) {
+            console.log(`Removed ${removedCount} scan result(s) from built-in provider-safety exclusions.`);
+        }
+    } catch (e: any) {
+        console.warn("Failed to remove built-in excluded scan results:", e?.message || e);
+        return 0;
+    }
+    return removedCount;
+}
+
 async function migrateLegacyAppState(db: any) {
     await runLegacyAppStateMigration(db, "settings.json", async () => {
         const settings = asRecord(await readLegacyJsonState(legacySettingsPath, null));
@@ -4763,18 +4806,67 @@ async function getExceptions() {
         .map((row: any) => row.path);
 }
 
-async function getExceptionItemsPage(options: { limit?: number | null, offset?: number, date?: string }) {
-    await ensureAppStateReady();
-    const clauses: string[] = [];
-    const params: any[] = [];
-    const dateRange = getLocalDateRangeMs(options.date);
+function exceptionProviderSql() {
+    return `
+        CASE
+            WHEN r.normalized_path IS NULL THEN 'No report'
+            WHEN LOWER(COALESCE(r.engine, '')) = 'yara' OR LOWER(COALESCE(r.threat_name, '')) LIKE 'yara:%' THEN 'YARA'
+            WHEN INSTR(LOWER(COALESCE(r.threat_name, '')), 'securiteinfo.com') > 0
+                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'securiteinfo.%'
+                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'securiteinfo_%'
+                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'securiteinfo-%' THEN 'SecuriteInfo'
+            WHEN LOWER(COALESCE(r.threat_name, '')) LIKE 'sanesecurity.%'
+                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'sanesecurity_%'
+                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'sanesecurity-%' THEN 'SaneSecurity'
+            ELSE 'ClamAV'
+        END
+    `;
+}
+
+function addExceptionDateClause(clauses: string[], params: any[], date: any) {
+    const dateRange = getLocalDateRangeMs(date);
     if (dateRange) {
         clauses.push("e.added_at >= ? AND e.added_at <= ?");
         params.push(dateRange.start, dateRange.end);
     }
+}
+
+async function getExceptionProviderOptions(options: { date?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    addExceptionDateClause(clauses, params, options.date);
+    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const rows = getAppStateDb().prepare(`
+        SELECT DISTINCT ${exceptionProviderSql()} AS provider
+        FROM exceptions e
+        LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path
+        ${whereSql}
+        ORDER BY provider COLLATE NOCASE
+    `).all(...params);
+    return rows
+        .map((row: any) => String(row.provider || "").trim())
+        .filter(Boolean);
+}
+
+async function getExceptionItemsPage(options: { limit?: number | null, offset?: number, date?: string, provider?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    addExceptionDateClause(clauses, params, options.date);
+    const provider = String(options.provider || "").trim();
+    if (provider && provider.toLowerCase() !== "all") {
+        clauses.push(`${exceptionProviderSql()} = ?`);
+        params.push(provider);
+    }
     const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
     const db = getAppStateDb();
-    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM exceptions e${whereSql}`).get(...params)?.count || 0);
+    const total = Number(db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM exceptions e
+        LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path
+        ${whereSql}
+    `).get(...params)?.count || 0);
     const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
     const limit = options.limit === null || options.limit === undefined
         ? null
@@ -4928,6 +5020,250 @@ function getFalsePositiveProvider(report: any) {
         name: "ClamAV / Cisco Talos",
         method: "form",
         url: "https://www.clamav.net/reports/fp"
+    };
+}
+
+function falsePositiveProviderFolderName(provider: any) {
+    const id = String(provider?.id || "unknown");
+    if (id === "clamav") return "ClamAV";
+    if (id === "securiteinfo") return "SecuriteInfo";
+    if (id === "sanesecurity") return "SaneSecurity";
+    if (id === "yara-forge") return "YARA";
+    return id.replace(/[^a-z0-9._-]+/gi, "-") || "Unknown";
+}
+
+function csvCell(value: any) {
+    const text = String(value ?? "");
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function safeExportFileName(value: string) {
+    return String(value || "file")
+        .replace(/[<>:"/\\|?*\x00-\x1F]+/g, "_")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120) || "file";
+}
+
+function detectionSignatureName(threatName: any) {
+    return String(threatName || "Unknown Threat").replace(/\.UNOFFICIAL$/i, "");
+}
+
+function buildFalsePositiveManifestRows(items: any[]) {
+    const headers = [
+        "provider",
+        "signature",
+        "detection",
+        "original_path",
+        "file_name",
+        "available",
+        "size_bytes",
+        "md5",
+        "sha1",
+        "sha256",
+        "scan_origin",
+        "scan_type",
+        "target",
+        "detected_at",
+        "engine",
+        "yara_ruleset",
+        "sample_file"
+    ];
+    const lines = [headers.map(csvCell).join(",")];
+    for (const item of items) {
+        const provider = getFalsePositiveProvider(item);
+        lines.push([
+            provider.name,
+            detectionSignatureName(item.threatName),
+            item.threatName || "",
+            item.originalPath || "",
+            path.basename(String(item.originalPath || "")),
+            item.available === false ? "no" : "yes",
+            item.sizeBytes || "",
+            item.md5 || "",
+            item.sha1 || "",
+            item.sha256 || "",
+            item.source || "",
+            item.scanType || "",
+            item.target || "",
+            item.timestamp ? new Date(Number(item.timestamp)).toISOString() : "",
+            item.engine || "",
+            item.yaraRuleset || "",
+            item.sampleFile || ""
+        ].map(csvCell).join(","));
+    }
+    return `${lines.join("\n")}\n`;
+}
+
+function buildFalsePositiveProviderReport(provider: any, items: any[], options: any) {
+    const lines = [
+        `# ClamShield False Positive Export - ${provider.name}`,
+        "",
+        `Generated: ${new Date().toISOString()}`,
+        `ClamShield version: ${process.env.npm_package_version || "unknown"}`,
+        `Items: ${items.length}`,
+        `Samples included: ${options.includeSamples ? "yes" : "no"}`,
+        ""
+    ];
+    if (options.userNote) {
+        lines.push("## User note", "", String(options.userNote), "");
+    }
+    lines.push("## Submission guidance");
+    if (provider.id === "clamav") {
+        lines.push(
+            "Submit false positives through the ClamAV/Cisco Talos false-positive flow. Include the exact detection name, hashes, and sample only if you are comfortable sharing it.",
+            "ClamAV states submitted files are retained, so review samples before sending."
+        );
+    } else if (provider.id === "securiteinfo") {
+        lines.push(
+            "Use SecuriteInfo's contact channel for false positives. Include the SecuriteInfo signature name, hashes, and a sample or SHA-256 when appropriate."
+        );
+    } else if (provider.id === "sanesecurity") {
+        lines.push(
+            "SaneSecurity asks for the signature name and, for email detections, the raw message including headers where possible."
+        );
+    } else if (provider.id === "yara-forge") {
+        lines.push(
+            "Open a YARA Forge GitHub issue with the matching rule name, ruleset, file hash, file type/path context, and a minimal reproducer or sample if shareable."
+        );
+    }
+    lines.push("", "## Items");
+    for (const item of items) {
+        lines.push(
+            "",
+            `### ${item.threatName || "Unknown Threat"}`,
+            "",
+            `- Signature: ${detectionSignatureName(item.threatName)}`,
+            `- File: ${item.originalPath || "Unavailable"}`,
+            `- SHA-256: ${item.sha256 || "Unavailable"}`,
+            `- MD5: ${item.md5 || "Unavailable"}`,
+            `- Scan origin: ${item.source || "scan"}`,
+            `- Detected at: ${item.timestamp ? new Date(Number(item.timestamp)).toISOString() : "Unknown"}`,
+            item.sampleFile ? `- Included sample: ${item.sampleFile}` : "- Included sample: no"
+        );
+        if (item.yaraRuleset) lines.push(`- YARA ruleset: ${item.yaraRuleset}`);
+    }
+    lines.push("");
+    return `${lines.join("\n")}\n`;
+}
+
+function buildYaraGithubIssue(items: any[], options: any) {
+    const lines = [
+        "## False positive report from ClamShield",
+        "",
+        `Generated: ${new Date().toISOString()}`,
+        `ClamShield version: ${process.env.npm_package_version || "unknown"}`,
+        ""
+    ];
+    if (options.userNote) lines.push("### User note", "", String(options.userNote), "");
+    lines.push("### Matches");
+    for (const item of items) {
+        lines.push(
+            "",
+            `- Rule/signature: \`${detectionSignatureName(item.threatName).replace(/^YARA:\s*/i, "")}\``,
+            `  - File path: \`${item.originalPath || "Unavailable"}\``,
+            `  - SHA-256: \`${item.sha256 || "Unavailable"}\``,
+            `  - Ruleset: \`${item.yaraRuleset || "unknown"}\``,
+            `  - Sample included in local export: ${item.sampleFile ? "yes" : "no"}`
+        );
+    }
+    lines.push("", "### Expected result", "", "These file(s) should not match the listed YARA rule(s).", "");
+    return `${lines.join("\n")}\n`;
+}
+
+async function copyFalsePositiveSample(item: any, destinationDir: string) {
+    if (!item.originalPath || !existsSync(item.originalPath)) return "";
+    await fs.mkdir(destinationDir, { recursive: true });
+    const hash = item.sha256 || await hashFile(item.originalPath).catch(() => "");
+    const suffix = hash ? hash.slice(0, 12) : randomBytes(4).toString("hex");
+    const fileName = `${suffix}-${safeExportFileName(path.basename(item.originalPath))}`;
+    const relativePath = path.join(path.basename(destinationDir), fileName);
+    await fs.copyFile(item.originalPath, path.join(destinationDir, fileName));
+    return relativePath;
+}
+
+async function compressDirectoryToZip(sourceDir: string, zipPath: string) {
+    if (process.platform === "win32") {
+        await runPowerShellFile(`
+$ErrorActionPreference = 'Stop'
+$source = ${JSON.stringify(path.join(sourceDir, "*"))}
+$destination = ${JSON.stringify(zipPath)}
+if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Force }
+Compress-Archive -Path $source -DestinationPath $destination -Force
+`);
+        return;
+    }
+    const escapedSource = sourceDir.replace(/'/g, "'\\''");
+    const escapedZip = zipPath.replace(/'/g, "'\\''");
+    await execAsync(`cd '${escapedSource}' && zip -qr '${escapedZip}' .`);
+}
+
+async function exportFalsePositiveResults(settings: any, results: any[], options: any) {
+    const includeSamples = options.includeSamples === true;
+    const userNote = String(options.userNote || "").trim().slice(0, 4000);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const exportRoot = path.join(falsePositiveExportsDir, `ClamShield-FalsePositives-${timestamp}`);
+    const zipPath = `${exportRoot}.zip`;
+    await fs.mkdir(exportRoot, { recursive: true });
+
+    const enriched: any[] = [];
+    for (const result of results) {
+        const item = { ...result };
+        item.available = Boolean(item.originalPath && existsSync(item.originalPath));
+        if (item.available) {
+            const stat = await fs.stat(item.originalPath).catch(() => null);
+            item.sizeBytes = stat?.size || "";
+            item.sha256 = item.sha256 || await hashFile(item.originalPath, "sha256").catch(() => "");
+            item.sha1 = item.sha1 || await hashFile(item.originalPath, "sha1").catch(() => "");
+            item.md5 = item.md5 || await hashFile(item.originalPath, "md5").catch(() => "");
+        }
+        enriched.push(item);
+    }
+
+    const groups = new Map<string, { provider: any, items: any[] }>();
+    for (const item of enriched) {
+        const provider = getFalsePositiveProvider(item);
+        const folder = falsePositiveProviderFolderName(provider);
+        if (!groups.has(folder)) groups.set(folder, { provider, items: [] });
+        groups.get(folder)!.items.push(item);
+    }
+
+    for (const [folder, group] of groups) {
+        const providerDir = path.join(exportRoot, folder);
+        const samplesDirName = group.provider.id === "sanesecurity" ? "raw-emails-or-samples" : "samples";
+        await fs.mkdir(providerDir, { recursive: true });
+        if (includeSamples) {
+            for (const item of group.items) {
+                item.sampleFile = await copyFalsePositiveSample(item, path.join(providerDir, samplesDirName)).catch(() => "");
+            }
+        }
+        await fs.writeFile(path.join(providerDir, "manifest.csv"), buildFalsePositiveManifestRows(group.items), "utf8");
+        await fs.writeFile(path.join(providerDir, "report.md"), buildFalsePositiveProviderReport(group.provider, group.items, { includeSamples, userNote }), "utf8");
+        if (group.provider.id === "yara-forge") {
+            await fs.writeFile(path.join(providerDir, "github-issue.md"), buildYaraGithubIssue(group.items, { userNote }), "utf8");
+        }
+    }
+
+    await fs.writeFile(path.join(exportRoot, "README.md"), [
+        "# ClamShield False Positive Export",
+        "",
+        "This package is grouped by provider. Review all files before sharing anything externally.",
+        "",
+        includeSamples
+            ? "Samples are included because the user explicitly opted in. Do not send samples that contain sensitive or private data."
+            : "Samples are not included. Use the hashes and paths to decide whether you want to submit files manually.",
+        "",
+        "ClamShield does not upload false positives automatically.",
+        ""
+    ].join("\n"), "utf8");
+
+    await compressDirectoryToZip(exportRoot, zipPath);
+    return {
+        exportRoot,
+        zipPath,
+        providerCount: groups.size,
+        itemCount: enriched.length,
+        providers: Array.from(groups.values()).map(group => group.provider.name)
     };
 }
 
@@ -5104,16 +5440,44 @@ function scanResultSelectSql() {
             FROM scan_results`;
 }
 
+function getScanResultFindingSource(result: any) {
+    const threatName = String(result?.threatName || result?.threat_name || "");
+    const engine = String(result?.engine || "");
+    if (/^yara:/i.test(threatName) || engine.toLowerCase() === "yara") return "YARA";
+    if (/securiteinfo\.com(?:[._-]|$)/i.test(threatName) || /^securiteinfo[._-]/i.test(threatName)) return "SecuriteInfo";
+    if (/^sanesecurity[._-]/i.test(threatName)) return "SaneSecurity";
+    return "ClamAV";
+}
+
+function scanResultFindingSourceSql() {
+    return `
+        CASE
+            WHEN LOWER(COALESCE(engine, '')) = 'yara' OR LOWER(COALESCE(threat_name, '')) LIKE 'yara:%' THEN 'YARA'
+            WHEN INSTR(LOWER(COALESCE(threat_name, '')), 'securiteinfo.com') > 0
+                 OR LOWER(COALESCE(threat_name, '')) LIKE 'securiteinfo.%'
+                 OR LOWER(COALESCE(threat_name, '')) LIKE 'securiteinfo_%'
+                 OR LOWER(COALESCE(threat_name, '')) LIKE 'securiteinfo-%' THEN 'SecuriteInfo'
+            WHEN LOWER(COALESCE(threat_name, '')) LIKE 'sanesecurity.%'
+                 OR LOWER(COALESCE(threat_name, '')) LIKE 'sanesecurity_%'
+                 OR LOWER(COALESCE(threat_name, '')) LIKE 'sanesecurity-%' THEN 'SaneSecurity'
+            ELSE 'ClamAV'
+        END
+    `;
+}
+
 function mapScanResultRow(row: any) {
     const payload = asRecord(parseAppStateJson(row.payload, {}));
     const virusTotalChecks = asRecord(parseAppStateJson(row.virus_total_checks, {}));
+    const threatName = row.threat_name || payload.threatName;
+    const engine = row.engine || payload.engine;
     return {
         ...payload,
         id: row.id,
         timestamp: Number(row.timestamp || payload.timestamp || 0),
         originalPath: row.original_path || payload.originalPath,
-        threatName: row.threat_name || payload.threatName,
-        engine: row.engine || payload.engine,
+        threatName,
+        engine,
+        findingSource: getScanResultFindingSource({ threatName, engine }),
         source: row.source || payload.source,
         scanType: row.scan_type || payload.scanType,
         target: row.target || payload.target,
@@ -5131,11 +5495,8 @@ async function getScanResults() {
     return rows.map(mapScanResultRow);
 }
 
-async function getScanResultsPage(options: { limit?: number | null, offset?: number, date?: string }) {
-    await ensureAppStateReady();
-    const clauses: string[] = [];
-    const params: any[] = [];
-    const dateValue = String(options.date || "").trim();
+function addScanResultDateClause(clauses: string[], params: any[], date: any) {
+    const dateValue = String(date || "").trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
         const start = new Date(`${dateValue}T00:00:00`).getTime();
         const end = new Date(`${dateValue}T23:59:59.999`).getTime();
@@ -5143,6 +5504,34 @@ async function getScanResultsPage(options: { limit?: number | null, offset?: num
             clauses.push("timestamp >= ? AND timestamp <= ?");
             params.push(start, end);
         }
+    }
+}
+
+async function getScanResultFindingSourceOptions(options: { date?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    addScanResultDateClause(clauses, params, options.date);
+    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const rows = getAppStateDb().prepare(`
+        SELECT DISTINCT ${scanResultFindingSourceSql()} AS finding_source
+        FROM scan_results${whereSql}
+        ORDER BY finding_source COLLATE NOCASE
+    `).all(...params);
+    return rows
+        .map((row: any) => String(row.finding_source || "").trim())
+        .filter(Boolean);
+}
+
+async function getScanResultsPage(options: { limit?: number | null, offset?: number, date?: string, findingSource?: string }) {
+    await ensureAppStateReady();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    addScanResultDateClause(clauses, params, options.date);
+    const findingSourceValue = String(options.findingSource || "").trim();
+    if (findingSourceValue && findingSourceValue.toLowerCase() !== "all") {
+        clauses.push(`${scanResultFindingSourceSql()} = ?`);
+        params.push(findingSourceValue);
     }
     const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
     const db = getAppStateDb();
@@ -8769,7 +9158,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.get("/api/results", async (req, res) => {
-        const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined;
+        const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined || req.query.engine !== undefined || req.query.findingSource !== undefined;
+        await cleanupBuiltInExcludedScanResults(settings);
         if (!hasPagedQuery) {
             const results = await getScanResults();
             res.json(results.map((result: any) => ({
@@ -8781,15 +9171,23 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
         const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+        const date = typeof req.query.date === "string" ? req.query.date : "";
         const pageSize = requestedPageSize === "all"
             ? null
             : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
         const offset = pageSize ? (page - 1) * pageSize : 0;
-        const paged = await getScanResultsPage({
-            limit: pageSize,
-            offset,
-            date: typeof req.query.date === "string" ? req.query.date : ""
-        });
+        const findingSource = typeof req.query.findingSource === "string"
+            ? req.query.findingSource
+            : typeof req.query.engine === "string" ? req.query.engine : "";
+        const [paged, findingSourceOptions] = await Promise.all([
+            getScanResultsPage({
+                limit: pageSize,
+                offset,
+                date,
+                findingSource
+            }),
+            getScanResultFindingSourceOptions({ date })
+        ]);
         res.json({
             items: paged.items.map((result: any) => ({
                 ...result,
@@ -8797,7 +9195,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
             })),
             total: paged.total,
             page,
-            pageSize: pageSize || "all"
+            pageSize: pageSize || "all",
+            findingSourceOptions,
+            engineOptions: findingSourceOptions
         });
     });
 
@@ -9237,7 +9637,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.get("/api/exceptions/reporting", async (req, res) => {
         try {
-            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined;
+            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined || req.query.provider !== undefined;
             if (hasPagedQuery) {
                 const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
                 const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
@@ -9245,12 +9645,16 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     ? null
                     : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
                 const offset = pageSize ? (page - 1) * pageSize : 0;
+                const date = typeof req.query.date === "string" ? req.query.date : "";
+                const provider = typeof req.query.provider === "string" ? req.query.provider : "";
                 const paged = await getExceptionItemsPage({
                     limit: pageSize,
                     offset,
-                    date: typeof req.query.date === "string" ? req.query.date : ""
+                    date,
+                    provider
                 });
-                res.json({ items: paged.items, total: paged.total, page, pageSize: pageSize || "all" });
+                const providerOptions = await getExceptionProviderOptions({ date });
+                res.json({ items: paged.items, total: paged.total, page, pageSize: pageSize || "all", providerOptions });
                 return;
             }
             const [exceptions, reports] = await Promise.all([getExceptions(), getExceptionReports()]);
@@ -9291,6 +9695,63 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json({ success: true, removedCount });
         } catch (e: any) {
             res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/exceptions/export-false-positives", async (req, res) => {
+        try {
+            const paths = Array.isArray(req.body?.paths)
+                ? req.body.paths.map((item: any) => String(item || "")).filter(Boolean)
+                : [];
+            if (paths.length === 0) return res.status(400).json({ success: false, error: "No exceptions selected." });
+
+            const exceptions = await getExceptions();
+            const exceptionSet = new Set(exceptions.map(item => normalizedStatePath(item)));
+            const reports = await getExceptionReports();
+            const selectedReports: any[] = [];
+            for (const exceptionPath of paths) {
+                const normalized = normalizedStatePath(exceptionPath);
+                if (!exceptionSet.has(normalized)) continue;
+                const report = reports[normalized] || {};
+                selectedReports.push({
+                    originalPath: exceptionPath,
+                    threatName: report.threatName || "Unknown Threat",
+                    engine: report.engine || "",
+                    source: report.source || "exception",
+                    scanType: report.scanType || "",
+                    target: report.target || "",
+                    yaraRuleset: report.yaraRuleset || "",
+                    sha256: report.sha256 || "",
+                    timestamp: report.detectedAt || report.addedAt || Date.now()
+                });
+            }
+            if (selectedReports.length === 0) return res.status(404).json({ success: false, error: "Selected exceptions were not found." });
+
+            const exportResult = await exportFalsePositiveResults(settings, selectedReports, {
+                includeSamples: req.body?.includeSamples === true,
+                userNote: req.body?.userNote
+            });
+
+            if (process.platform === "win32") {
+                exec(`explorer /select,"${exportResult.zipPath}"`);
+            }
+
+            await addHistory({
+                type: "exceptions-export-false-positives",
+                target: exportResult.zipPath,
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: selectedReports.length,
+                duration: 0,
+                actionTaken: `Exported ${selectedReports.length} exception false positive candidate${selectedReports.length === 1 ? "" : "s"}`
+            });
+
+            res.json({
+                success: true,
+                ...exportResult
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
         }
     });
 

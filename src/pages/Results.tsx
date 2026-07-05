@@ -1,5 +1,6 @@
 import { AlertTriangle, Archive, CheckCircle2, Loader2, SearchCheck, ShieldCheck, Trash2, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
+import DropdownSelect, { type DropdownOption } from "../components/DropdownSelect";
 import PageHeader from "../components/PageHeader";
 import { formatSystemDateTime } from "../lib/dateFormat";
 
@@ -13,6 +14,8 @@ export default function ResultsPage() {
   const [pageSize, setPageSize] = useState<PageSize>(50);
   const [page, setPage] = useState(1);
   const [dateFilter, setDateFilter] = useState("");
+  const [findingSourceFilter, setFindingSourceFilter] = useState("all");
+  const [findingSourceOptions, setFindingSourceOptions] = useState<string[]>(["ClamAV", "SecuriteInfo", "SaneSecurity", "YARA"]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState<"exception" | "quarantine" | "clear" | null>(null);
   const [message, setMessage] = useState("");
@@ -41,12 +44,23 @@ export default function ResultsPage() {
         pageSize: String(pageSize)
       });
       if (dateFilter) params.set("date", dateFilter);
+      if (findingSourceFilter !== "all") params.set("findingSource", findingSourceFilter);
       const res = await fetch(`/api/results?${params.toString()}`);
       const data = await res.json();
       const sourceItems = Array.isArray(data) ? data : data.items;
       const sorted = Array.isArray(sourceItems) ? sourceItems.sort((a: any, b: any) => Number(b.timestamp || 0) - Number(a.timestamp || 0)) : [];
       setItems(sorted);
       setTotalItems(Array.isArray(data) ? sorted.length : Number(data.total || 0));
+      const optionSource = !Array.isArray(data) && Array.isArray(data.findingSourceOptions)
+        ? data.findingSourceOptions
+        : !Array.isArray(data) && Array.isArray(data.engineOptions) ? data.engineOptions : null;
+      if (optionSource) {
+        const nextOptions = optionSource
+          .map((source: any) => String(source || "").trim())
+          .filter(Boolean);
+        if (findingSourceFilter !== "all" && !nextOptions.includes(findingSourceFilter)) nextOptions.push(findingSourceFilter);
+        setFindingSourceOptions(nextOptions.length > 0 ? nextOptions : ["ClamAV", "SecuriteInfo", "SaneSecurity", "YARA"]);
+      }
       setCheckedVirusTotal(prev => {
         const next = { ...prev };
         sorted.forEach((item: any) => {
@@ -75,11 +89,11 @@ export default function ResultsPage() {
 
   useEffect(() => {
     fetchItems();
-  }, [page, pageSize, dateFilter]);
+  }, [page, pageSize, dateFilter, findingSourceFilter]);
 
   useEffect(() => {
     setPage(1);
-  }, [pageSize, dateFilter]);
+  }, [pageSize, dateFilter, findingSourceFilter]);
 
   const handleAction = async (id: string, action: "quarantine" | "exception") => {
     setBusyId(id);
@@ -212,6 +226,18 @@ export default function ResultsPage() {
   const currentPage = Math.min(page, pageCount);
   const rangeStart = totalItems === 0 ? 0 : pageSize === "all" ? 1 : (currentPage - 1) * pageSize + 1;
   const rangeEnd = pageSize === "all" ? totalItems : Math.min(totalItems, (currentPage - 1) * pageSize + pageSize);
+  const hasActiveFilters = Boolean(dateFilter || findingSourceFilter !== "all");
+  const pageSizeOptions: DropdownOption[] = [
+    { value: "50", label: "50" },
+    { value: "100", label: "100" },
+    { value: "200", label: "200" },
+    { value: "500", label: "500" },
+    { value: "all", label: "All" }
+  ];
+  const findingSourceDropdownOptions: DropdownOption[] = [
+    { value: "all", label: "All sources" },
+    ...findingSourceOptions.map(source => ({ value: source, label: source }))
+  ];
 
   return (
     <div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
@@ -269,16 +295,19 @@ export default function ResultsPage() {
           <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mb-4">
             <ShieldCheck className="w-8 h-8" />
           </div>
-          <h3 className="text-lg font-medium text-slate-200 mb-2">{dateFilter ? "No results for this date" : "No undecided results"}</h3>
+          <h3 className="text-lg font-medium text-slate-200 mb-2">{hasActiveFilters ? "No results for these filters" : "No undecided results"}</h3>
           <p className="text-slate-500 max-w-md">
-            {dateFilter ? "Pick another date or clear the filter to see all undecided results." : "Manual scan detections and silent shield detections will appear here for review."}
+            {hasActiveFilters ? "Pick another filter or clear filters to see all undecided results." : "Manual scan detections and silent shield detections will appear here for review."}
           </p>
-          {dateFilter && (
+          {hasActiveFilters && (
             <button
-              onClick={() => setDateFilter("")}
+              onClick={() => {
+                setDateFilter("");
+                setFindingSourceFilter("all");
+              }}
               className="mt-4 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700"
             >
-              Clear date
+              Clear filters
             </button>
           )}
         </div>
@@ -308,17 +337,13 @@ export default function ResultsPage() {
               )}
               <label className="flex items-center gap-2 text-slate-400">
                 Rows
-                <select
-                  value={pageSize}
-                  onChange={e => setPageSize(e.target.value === "all" ? "all" : Number(e.target.value) as PageSize)}
-                  className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                >
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                  <option value={200}>200</option>
-                  <option value={500}>500</option>
-                  <option value="all">All</option>
-                </select>
+                <DropdownSelect
+                  ariaLabel="Rows per page"
+                  value={String(pageSize)}
+                  options={pageSizeOptions}
+                  onChange={value => setPageSize(value === "all" ? "all" : Number(value) as PageSize)}
+                  align="right"
+                />
               </label>
               {pageSize !== "all" && (
                 <div className="flex items-center gap-2">
@@ -361,8 +386,24 @@ export default function ResultsPage() {
                   />
                 </th>
                 <th className="px-6 py-4 font-medium">Detection</th>
-                <th className="px-6 py-4 font-medium">Engine</th>
-                <th className="px-6 py-4 font-medium">Source</th>
+                <th className="px-6 py-4 font-medium">
+                  <div className="flex flex-col items-start gap-1">
+                    <DropdownSelect
+                      ariaLabel="Filter results by finding source"
+                      value={findingSourceFilter}
+                      options={findingSourceDropdownOptions}
+                      onChange={setFindingSourceFilter}
+                      compact
+                      active={findingSourceFilter !== "all"}
+                    />
+                    {findingSourceFilter !== "all" && (
+                      <span className="max-w-full truncate rounded bg-indigo-500/10 px-1.5 py-0.5 text-[11px] font-medium text-indigo-300">
+                        {findingSourceFilter}
+                      </span>
+                    )}
+                  </div>
+                </th>
+                <th className="px-6 py-4 font-medium">Scan</th>
                 <th className="px-6 py-4 font-medium">Date</th>
               </tr>
             </thead>
@@ -452,7 +493,7 @@ export default function ResultsPage() {
                   </td>
                   <td className="px-6 py-4 text-slate-400">
                     <div className="flex flex-col gap-1">
-                      <span>{item.engine || "ClamAV"}</span>
+                      <span>{item.findingSource || item.engine || "ClamAV"}</span>
                       {item.yaraRuleset && <span className="text-xs text-slate-500 capitalize">{item.yaraRuleset}</span>}
                     </div>
                   </td>
