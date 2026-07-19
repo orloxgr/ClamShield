@@ -26,6 +26,9 @@ let scheduledScanRun = null;
 let currentApiPort = null;
 const apiSessionToken = randomBytes(32).toString('hex');
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const scheduledScanTransientErrorLimit = 6;
+const transientApiErrorCodes = new Set(['ECONNRESET', 'ECONNABORTED', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE']);
+const maxDebugLogBytes = 25 * 1024 * 1024;
 
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -33,6 +36,13 @@ if (!gotSingleInstanceLock) {
 
 function apiHeaders(extra = {}) {
   return { ...extra, 'X-ClamShield-Session': apiSessionToken };
+}
+
+function isTransientApiConnectionError(error) {
+  const code = error && (error.code || error.errno);
+  const message = String(error?.message || error || '');
+  return transientApiErrorCodes.has(code) ||
+    /\b(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)\b|socket hang up/i.test(message);
 }
 
 async function setApiSessionCookie(port) {
@@ -74,10 +84,23 @@ function logArgToString(arg) {
 function writeMainLog(level, args) {
   try {
     fs.mkdirSync(getLogsDir(), { recursive: true });
+    const logPath = path.join(getLogsDir(), 'electron-main.log');
+    rotateLogIfNeeded(logPath);
     const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] ${args.map(logArgToString).join(' ')}\n`;
-    fs.appendFileSync(path.join(getLogsDir(), 'electron-main.log'), line, 'utf8');
+    fs.appendFileSync(logPath, line, 'utf8');
   } catch {
     // Logging must never stop the app from launching.
+  }
+}
+
+function rotateLogIfNeeded(logPath) {
+  try {
+    if (!fs.existsSync(logPath) || fs.statSync(logPath).size < maxDebugLogBytes) return;
+    const rotatedPath = `${logPath}.1`;
+    try { fs.rmSync(rotatedPath, { force: true }); } catch {}
+    fs.renameSync(logPath, rotatedPath);
+  } catch {
+    // Best-effort only; logging must never break app startup.
   }
 }
 
@@ -833,6 +856,7 @@ async function startScheduledScanTarget(port) {
   }
   scheduledScanRun.jobId = response.jobId;
   scheduledScanRun.currentTarget = target;
+  scheduledScanRun.transientApiErrors = 0;
   await publishScheduledScanRuntime(port, {
     state: 'running',
     message: `Scanning ${target.label}`,
@@ -905,6 +929,7 @@ function pollScheduledScans(port) {
         }
 
         const job = await requestJson(port, `/api/scan/${encodeURIComponent(scheduledScanRun.jobId)}`);
+        scheduledScanRun.transientApiErrors = 0;
         if (job.status !== 'done') {
           await publishScheduledScanRuntime(port, {
             state: 'running',
@@ -1048,7 +1073,8 @@ function pollScheduledScans(port) {
         currentTarget: null,
         detections: false,
         lastIdleSeconds: idleSeconds,
-        idleOnly: settings.scheduledScanIdleOnly !== false
+        idleOnly: settings.scheduledScanIdleOnly !== false,
+        transientApiErrors: 0
       };
       await publishScheduledScanRuntime(port, {
         state: 'running',
@@ -1067,6 +1093,21 @@ function pollScheduledScans(port) {
     } catch (error) {
       console.warn('Scheduled scan check failed', error.message);
       if (scheduledScanRun) {
+        if (isTransientApiConnectionError(error)) {
+          scheduledScanRun.transientApiErrors = Number(scheduledScanRun.transientApiErrors || 0) + 1;
+          if (scheduledScanRun.transientApiErrors <= scheduledScanTransientErrorLimit) {
+            await publishScheduledScanRuntime(port, {
+              state: 'running',
+              message: `Scanner is still running; retrying local status (${scheduledScanRun.transientApiErrors}/${scheduledScanTransientErrorLimit}).`,
+              activeJobId: scheduledScanRun.jobId || '',
+              currentTarget: scheduledScanRun.currentTarget?.label || '',
+              queueIndex: scheduledScanRun.index + 1,
+              totalTargets: scheduledScanRun.queue.length,
+              idleSeconds: scheduledScanRun.idleOnly ? powerMonitor.getSystemIdleTime() : 0
+            });
+            return;
+          }
+        }
         await publishScheduledScanRuntime(port, {
           state: 'error',
           message: `Scheduled scan error: ${error.message}`,

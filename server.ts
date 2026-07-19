@@ -1,6 +1,6 @@
 import express from "express";
 import fs from "fs/promises";
-import { appendFileSync, createWriteStream, createReadStream, existsSync, mkdirSync } from "fs";
+import { appendFileSync, createWriteStream, createReadStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from "fs";
 import path from "path";
 import os from "os";
 import { exec, spawn } from "child_process";
@@ -214,6 +214,7 @@ const dnsProtectionProfiles = [
 ];
 let debugLoggingEnabled = false;
 let currentLogsDir = defaultLogsDir;
+const maxDebugLogBytes = 25 * 1024 * 1024;
 
 function logArgToString(arg: any) {
     if (arg instanceof Error) return arg.stack || arg.message;
@@ -228,10 +229,23 @@ function logArgToString(arg: any) {
 function writeAppLog(fileName: string, level: string, args: any[]) {
     try {
         mkdirSync(currentLogsDir, { recursive: true });
+        const logPath = path.join(currentLogsDir, fileName);
+        rotateLogIfNeeded(logPath);
         const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${args.map(logArgToString).join(" ")}\n`;
-        appendFileSync(path.join(currentLogsDir, fileName), line, "utf8");
+        appendFileSync(logPath, line, "utf8");
     } catch {
         // Logging must never break protection or scans.
+    }
+}
+
+function rotateLogIfNeeded(logPath: string) {
+    try {
+        if (!existsSync(logPath) || statSync(logPath).size < maxDebugLogBytes) return;
+        const rotatedPath = `${logPath}.1`;
+        try { rmSync(rotatedPath, { force: true }); } catch {}
+        renameSync(logPath, rotatedPath);
+    } catch {
+        // Best-effort only; logging must never break protection or scans.
     }
 }
 
@@ -2131,15 +2145,41 @@ class ScanSessionStore {
 
     compactCompletedFileLists() {
         try {
+            const latestResumable = this.db.prepare(`
+                SELECT job_id
+                FROM scan_sessions
+                WHERE status IN ('running', 'paused', 'error')
+                  AND type IN ('disk', 'folder', 'file')
+                ORDER BY updated_at DESC
+                LIMIT 1
+            `).get();
+            const retainedJobId = String(latestResumable?.job_id || "");
+            this.db.exec("BEGIN");
             this.db.prepare(`
                 DELETE FROM scan_session_files
                 WHERE job_id IN (
                     SELECT job_id
                     FROM scan_sessions
                     WHERE status NOT IN ('running', 'paused', 'error')
+                       OR (
+                            status IN ('running', 'paused', 'error')
+                            AND type IN ('disk', 'folder', 'file')
+                            AND job_id <> ?
+                       )
                 )
-            `).run();
+            `).run(retainedJobId);
+            this.db.prepare(`
+                UPDATE scan_sessions
+                SET status = 'discarded',
+                    phase = 'Superseded interrupted scan',
+                    updated_at = ?
+                WHERE status IN ('running', 'paused', 'error')
+                  AND type IN ('disk', 'folder', 'file')
+                  AND job_id <> ?
+            `).run(Date.now(), retainedJobId);
+            this.db.exec("COMMIT");
         } catch (e: any) {
+            try { this.db.exec("ROLLBACK"); } catch {}
             console.warn("Failed to compact completed scan file lists:", e?.message || e);
         }
     }
@@ -2294,15 +2334,20 @@ function getClamShieldScanExclusionPatterns(settings: any) {
 }
 
 function buildClamdConfContent(settings: any) {
+    const maxFileSize = normalizePositiveNumber(settings.maxFileSize, 50, 1, 4096);
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
         "TCPAddr 127.0.0.1",
-        "TCPSocket 3310"
+        "TCPSocket 3310",
+        `MaxFileSize ${maxFileSize}M`,
+        `MaxScanSize ${Math.max(maxFileSize, maxFileSize * 2)}M`,
+        `ScanArchive ${settings.scanArchives === false ? "no" : "yes"}`,
+        `FollowDirectorySymlinks ${settings.followSymlinks ? "yes" : "no"}`,
+        `FollowFileSymlinks ${settings.followSymlinks ? "yes" : "no"}`
     ];
     if (settings.enableDebugLog === true) {
         lines.push(`LogFile ${path.join(settings.logsDir, "clamd.log")}`);
         lines.push("LogTime yes");
-        lines.push("LogVerbose yes");
     }
     getClamShieldScanExclusionPatterns(settings)
         .forEach((pattern: string) => lines.push(`ExcludePath ${pattern}`));
@@ -4345,6 +4390,37 @@ let clamdStartupOutput: string[] = [];
 let clamdDatabaseReloadPending = false;
 let clamdDatabaseReloadInProgress = false;
 let shouldDeferClamdDatabaseReload: (() => boolean) | null = null;
+const clamdOutputSuppression = new Map<string, { count: number, lastLoggedAt: number }>();
+
+function getNoisyClamdOutputKey(line: string) {
+    if (/^LibClamAV Warning: cl_scanfile_callback: scanned_out exceeds UINT32_MAX/i.test(line)) {
+        return "scanned_out exceeds UINT32_MAX";
+    }
+    return "";
+}
+
+function logClamdOutput(line: string, level: "log" | "warn") {
+    const key = getNoisyClamdOutputKey(line);
+    if (!key) {
+        console[level](`clamd: ${line}`);
+        return;
+    }
+
+    const now = Date.now();
+    const state = clamdOutputSuppression.get(key) || { count: 0, lastLoggedAt: 0 };
+    state.count++;
+    if (state.count === 1 || now - state.lastLoggedAt >= 60000) {
+        const repeats = state.count - 1;
+        console[level](`clamd: ${line}${repeats > 0 ? ` (suppressed ${repeats} repeat${repeats === 1 ? "" : "s"})` : ""}`);
+        state.count = 1;
+        state.lastLoggedAt = now;
+    }
+    clamdOutputSuppression.set(key, state);
+}
+
+function filterClamdStartupOutput(lines: string[]) {
+    return lines.filter(line => !getNoisyClamdOutputKey(line));
+}
 
 function recordClamdOutput(lines: string[]) {
     if (!lines.length) return;
@@ -4383,8 +4459,17 @@ async function pingClamd(timeoutMs = 1500) {
 async function readClamdLogTail(settings: any) {
     const logPath = path.join(settings.logsDir || defaultLogsDir, "clamd.log");
     try {
-        const content = await fs.readFile(logPath, "utf8");
-        return content.split(/\r?\n/).filter(Boolean).slice(-12);
+        const handle = await fs.open(logPath, "r");
+        try {
+            const stat = await handle.stat();
+            const length = Math.min(stat.size, 65536);
+            const buffer = Buffer.alloc(length);
+            await handle.read(buffer, 0, length, Math.max(0, stat.size - length));
+            const content = buffer.toString("utf8");
+            return content.split(/\r?\n/).filter(Boolean).slice(-12);
+        } finally {
+            await handle.close();
+        }
     } catch {
         return [];
     }
@@ -4441,13 +4526,13 @@ async function manageClamd(settings: any) {
                 applyShieldLowImpactPriority(clamdProcess, settings, "clamd");
                 clamdProcess.stdout?.on("data", (data: Buffer) => {
                     const lines = data.toString().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-                    recordClamdOutput(lines);
-                    lines.forEach(line => console.log(`clamd: ${line}`));
+                    recordClamdOutput(filterClamdStartupOutput(lines));
+                    lines.forEach(line => logClamdOutput(line, "log"));
                 });
                 clamdProcess.stderr?.on("data", (data: Buffer) => {
                     const lines = data.toString().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-                    recordClamdOutput(lines);
-                    lines.forEach(line => console.warn(`clamd: ${line}`));
+                    recordClamdOutput(filterClamdStartupOutput(lines));
+                    lines.forEach(line => logClamdOutput(line, "warn"));
                 });
                 clamdProcess.on("error", (err: any) => {
                     console.error("Failed to start clamd:", err.message);
@@ -4899,7 +4984,7 @@ async function saveExceptions(list: string[]) {
     await ensureAppStateReady();
     const db = getAppStateDb();
     const existingRows = db.prepare("SELECT normalized_path, added_at FROM exceptions").all();
-    const existingAddedAt = new Map(existingRows.map((row: any) => [String(row.normalized_path), Number(row.added_at || 0)]));
+    const existingAddedAt = new Map<string, number>(existingRows.map((row: any) => [String(row.normalized_path), Number(row.added_at || 0)]));
     const now = Date.now();
     runAppStateTransaction(db, () => {
         db.prepare("DELETE FROM exceptions").run();
@@ -6897,8 +6982,8 @@ async function startServer() {
                             return;
                         }
                         const preparedConfig = await prepareFreshclamConfig(settings, {
-                            includeOfficial: updateTarget === "clamav",
-                            includeSecuriteInfo: updateTarget === "securiteinfo"
+                            includeOfficial: true,
+                            includeSecuriteInfo: false
                         });
                         const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
                         freshclamUpdateInProgress = true;
@@ -6916,15 +7001,13 @@ async function startServer() {
                             if (code === 0) await reloadClamdDatabases(settings);
                             settings = {
                                 ...settings,
-                                lastClamAVUpdate: updateTarget === "clamav" && code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
-                                lastClamAVUpdateResult: updateTarget === "clamav" ? (code === 0 ? "Updated" : "Update failed") : settings.lastClamAVUpdateResult,
-                                lastSecuriteInfoUpdate: updateTarget === "securiteinfo" && code === 0 ? new Date().toISOString() : settings.lastSecuriteInfoUpdate,
-                                lastSecuriteInfoUpdateResult: updateTarget === "securiteinfo" ? (code === 0 ? "Updated" : "Update failed") : settings.lastSecuriteInfoUpdateResult
+                                lastClamAVUpdate: code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
+                                lastClamAVUpdateResult: code === 0 ? "Updated" : "Update failed"
                             };
                             await saveConfig(settings);
                             await addHistory({
                                 type: "update",
-                                target: updateTarget === "securiteinfo" ? "SecuriteInfo (Auto)" : "ClamAV (Auto)",
+                                target: "ClamAV (Auto)",
                                 result: code === 0 ? 0 : 1,
                                 threatsFound: 0,
                                 scannedFiles: 0,
@@ -8127,7 +8210,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             });
             if (isThreat && scanSource !== "scheduled") {
                 sendScanSummary({
-                    title: scanSource === "scheduled" ? "Scheduled scan found threats" : "Scan found threats",
+                    title: "Scan found threats",
                     message: `${threatsFound} threat${threatsFound === 1 ? "" : "s"} found.`,
                     detail: `Action: ${finalActionTaken}`,
                     target: scanTarget,
@@ -8695,17 +8778,13 @@ if ($dialog.ShowDialog() -eq 'OK') {
             }
             appendJobLogs(jobId, ["Preparing FreshClam configuration..."]);
             preparedConfig = await prepareFreshclamConfig(settings, {
-                includeOfficial: requestedTarget === "clamav",
-                includeSecuriteInfo: requestedTarget === "securiteinfo"
+                includeOfficial: true,
+                includeSecuriteInfo: false
             });
             await saveConfig(settings);
 
             const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
-            appendJobLogs(jobId, [
-                requestedTarget === "securiteinfo"
-                    ? `Downloading SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases...`
-                    : "Downloading official ClamAV virus definitions..."
-            ]);
+            appendJobLogs(jobId, ["Downloading official ClamAV virus definitions..."]);
             const child = spawn(settings.freshclamPath, args, { windowsHide: true });
             activeJobs[jobId].process = child;
             let processStartFailed = false;
@@ -8747,11 +8826,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (!activeJobs[jobId]) return;
                 if (processStartFailed) return;
                 if (code === 0) {
-                    appendJobLogs(jobId, [
-                        requestedTarget === "securiteinfo"
-                            ? "SecuriteInfo databases updated successfully."
-                            : "Virus definitions updated successfully."
-                    ]);
+                    appendJobLogs(jobId, ["Virus definitions updated successfully."]);
                 } else {
                     appendJobLogs(jobId, [
                         `FreshClam failed with exit code ${code ?? "unknown"}.`,
@@ -8760,10 +8835,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
                 settings = {
                     ...settings,
-                    lastClamAVUpdate: requestedTarget === "clamav" && code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
-                    lastClamAVUpdateResult: requestedTarget === "clamav" ? (code === 0 ? "Updated" : "Update failed") : settings.lastClamAVUpdateResult,
-                    lastSecuriteInfoUpdate: requestedTarget === "securiteinfo" && code === 0 ? new Date().toISOString() : settings.lastSecuriteInfoUpdate,
-                    lastSecuriteInfoUpdateResult: requestedTarget === "securiteinfo" ? (code === 0 ? "Updated" : "Update failed") : settings.lastSecuriteInfoUpdateResult
+                    lastClamAVUpdate: code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
+                    lastClamAVUpdateResult: code === 0 ? "Updated" : "Update failed"
                 };
                 await saveConfig(settings);
                 if (code === 0) await reloadClamdDatabases(settings);
@@ -8774,7 +8847,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 
                 await addHistory({
                     type: "update",
-                    target: requestedTarget === "securiteinfo" ? "SecuriteInfo" : "ClamAV",
+                    target: "ClamAV",
                     result: code === 0 ? 0 : 1,
                     threatsFound: 0,
                     scannedFiles: 0,
