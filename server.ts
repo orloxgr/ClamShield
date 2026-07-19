@@ -2137,10 +2137,36 @@ class ScanSessionStore {
         this.markFilePendingStmt.run(size, mtimeMs, jobId, normalizeCachePath(filePath));
     }
 
+    markDiscarded(jobId: string, phase = "Discarded") {
+        this.db.prepare("UPDATE scan_sessions SET status = 'discarded', phase = ?, updated_at = ? WHERE job_id = ?")
+            .run(phase, Date.now(), jobId);
+    }
+
+    deleteFilesForJobPage(jobId: string, limit = 10000) {
+        const result = this.db.prepare(`
+            DELETE FROM scan_session_files
+            WHERE rowid IN (
+                SELECT rowid
+                FROM scan_session_files
+                WHERE job_id = ?
+                LIMIT ?
+            )
+        `).run(jobId, Math.max(1, Math.floor(limit)));
+        return Number(result?.changes || 0);
+    }
+
+    deleteFilesForJob(jobId: string) {
+        let totalDeleted = 0;
+        while (true) {
+            const deleted = this.deleteFilesForJobPage(jobId, 50000);
+            totalDeleted += deleted;
+            if (deleted === 0) return totalDeleted;
+        }
+    }
+
     discard(jobId: string) {
-        this.db.prepare("UPDATE scan_sessions SET status = 'discarded', phase = 'Discarded', updated_at = ? WHERE job_id = ?")
-            .run(Date.now(), jobId);
-        this.db.prepare("DELETE FROM scan_session_files WHERE job_id = ?").run(jobId);
+        this.markDiscarded(jobId);
+        this.deleteFilesForJob(jobId);
     }
 
     compactCompletedFileLists() {
@@ -6181,6 +6207,34 @@ async function startServer() {
     };
     let appUpdateExitScheduled = false;
 
+    const runDeferredMaintenance = (label: string, task: () => Promise<void> | void) => {
+        const timer = setTimeout(() => {
+            Promise.resolve()
+                .then(task)
+                .catch((e: any) => console.warn(`${label} failed:`, e?.message || e));
+        }, 0);
+        timer.unref?.();
+    };
+
+    const cleanupDiscardedScanSession = (jobId: string) => {
+        runDeferredMaintenance(`Discarded scan cleanup ${jobId}`, async () => {
+            let totalDeleted = 0;
+            while (true) {
+                const deleted = scanSessions.deleteFilesForJobPage(jobId, 10000);
+                totalDeleted += deleted;
+                if (deleted === 0) break;
+                await sleep(5);
+            }
+            if (totalDeleted > 0) {
+                console.log(`Discarded scan cleanup removed ${totalDeleted.toLocaleString()} queued files for job ${jobId}.`);
+            }
+        });
+    };
+
+    const flushPendingClamdDatabaseReloadSoon = () => {
+        runDeferredMaintenance("Deferred clamd reload", () => flushPendingClamdDatabaseReload(settings));
+    };
+
     const scheduleAppExitForUpdate = () => {
         if (appUpdateExitScheduled) return;
         appUpdateExitScheduled = true;
@@ -8578,10 +8632,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 job.processes.clear();
             }
             if (job) job.status = "done";
-            scanSessions.discard(req.params.jobId);
+            scanSessions.markDiscarded(req.params.jobId);
             broadcastJobEvent(req.params.jobId, ["Interrupted scan discarded."]);
-            await flushPendingClamdDatabaseReload(settings);
             res.json({ success: true });
+            cleanupDiscardedScanSession(req.params.jobId);
+            flushPendingClamdDatabaseReloadSoon();
         } catch (e: any) {
             res.status(500).json({ error: e.message || "Failed to discard scan." });
         }
@@ -8652,9 +8707,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             }
             job.status = "done";
             let scannedFiles = Number(job.progress?.scannedFiles || 0);
-            if (discardProgress && canResumeScanType(job.progress?.type || "")) {
-                scanSessions.discard(req.params.jobId);
-            } else if (resumable) {
+            const shouldCleanupDiscardedFiles = discardProgress && canResumeScanType(job.progress?.type || "");
+            if (resumable) {
                 scanSessions.resetInProgress(req.params.jobId);
                 scannedFiles = scanSessions.countDoneFiles(req.params.jobId);
             }
@@ -8667,6 +8721,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 result: -1,
                 actionTaken: resumable ? "Paused" : (reason || "Cancelled")
             });
+            if (shouldCleanupDiscardedFiles) {
+                scanSessions.markDiscarded(req.params.jobId, reason || "Discarded");
+            }
             appendJobLogs(req.params.jobId, [
                 resumable
                     ? "Scan paused. You can resume it later."
@@ -8675,8 +8732,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         : "Scan cancelled by user."
             ]);
             broadcastJobEvent(req.params.jobId);
-            await flushPendingClamdDatabaseReload(settings);
             res.json({ status: resumable ? "paused" : "cancelled" });
+            if (shouldCleanupDiscardedFiles) cleanupDiscardedScanSession(req.params.jobId);
+            flushPendingClamdDatabaseReloadSoon();
         } else {
             res.status(404).json({ error: "Job not found" });
         }
