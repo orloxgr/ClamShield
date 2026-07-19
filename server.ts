@@ -2169,6 +2169,57 @@ class ScanSessionStore {
         this.deleteFilesForJob(jobId);
     }
 
+    resetInterruptedRunningSessions() {
+        const now = Date.now();
+        try {
+            this.db.exec("BEGIN");
+            const resetInProgress = this.db.prepare(`
+                UPDATE scan_session_files
+                SET status = 'pending', scanned_at = NULL
+                WHERE status = 'scanning'
+                  AND job_id IN (
+                    SELECT job_id
+                    FROM scan_sessions
+                    WHERE status = 'running'
+                      AND type IN ('disk', 'folder', 'file')
+                  )
+            `).run();
+            const paused = this.db.prepare(`
+                UPDATE scan_sessions
+                SET status = 'paused',
+                    phase = 'Interrupted when ClamShield closed',
+                    current_file = 'Paused',
+                    updated_at = ?,
+                    result = -1,
+                    action_taken = 'Interrupted when ClamShield closed'
+                WHERE status = 'running'
+                  AND type IN ('disk', 'folder', 'file')
+            `).run(now);
+            const completed = this.db.prepare(`
+                UPDATE scan_sessions
+                SET status = 'done',
+                    phase = 'Interrupted when ClamShield closed',
+                    current_file = 'Interrupted',
+                    updated_at = ?,
+                    completed_at = ?,
+                    result = -1,
+                    action_taken = 'Interrupted when ClamShield closed'
+                WHERE status = 'running'
+                  AND type NOT IN ('disk', 'folder', 'file')
+            `).run(now, now);
+            this.db.exec("COMMIT");
+            this.compactCompletedFileLists();
+            return {
+                paused: Number(paused?.changes || 0),
+                completed: Number(completed?.changes || 0),
+                resetFiles: Number(resetInProgress?.changes || 0)
+            };
+        } catch (e) {
+            try { this.db.exec("ROLLBACK"); } catch {}
+            throw e;
+        }
+    }
+
     compactCompletedFileLists() {
         try {
             const latestResumable = this.db.prepare(`
@@ -6189,6 +6240,12 @@ async function startServer() {
     cachedIsAdmin = await checkIsAdmin();
 
     const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
+    const resetSessions = scanSessions.resetInterruptedRunningSessions();
+    if (resetSessions.paused > 0 || resetSessions.completed > 0) {
+        console.log(
+            `Recovered interrupted scan sessions: ${resetSessions.paused} resumable paused, ${resetSessions.completed} non-resumable completed, ${resetSessions.resetFiles.toLocaleString()} files reset.`
+        );
+    }
     const activeJobs: Record<string, { status: string, kind?: string, logs: string[], analysisLogs?: string[], result?: number, process?: any, processes?: Set<any>, lastOutputAt?: number, progress?: ScanProgress }> = {};
     const isRunningClamdScanJob = () => Object.values(activeJobs).some(job =>
         job.status === "running" &&

@@ -1095,10 +1095,12 @@ function pollScheduledScans(port) {
       if (scheduledScanRun) {
         if (isTransientApiConnectionError(error)) {
           scheduledScanRun.transientApiErrors = Number(scheduledScanRun.transientApiErrors || 0) + 1;
-          if (scheduledScanRun.transientApiErrors <= scheduledScanTransientErrorLimit) {
+          if (scheduledScanRun.jobId || scheduledScanRun.transientApiErrors <= scheduledScanTransientErrorLimit) {
             await publishScheduledScanRuntime(port, {
               state: 'running',
-              message: `Scanner is still running; retrying local status (${scheduledScanRun.transientApiErrors}/${scheduledScanTransientErrorLimit}).`,
+              message: scheduledScanRun.jobId
+                ? `Scanner is still running; reconnecting to local status (${scheduledScanRun.transientApiErrors}).`
+                : `Scanner is starting; retrying local status (${scheduledScanRun.transientApiErrors}/${scheduledScanTransientErrorLimit}).`,
               activeJobId: scheduledScanRun.jobId || '',
               currentTarget: scheduledScanRun.currentTarget?.label || '',
               queueIndex: scheduledScanRun.index + 1,
