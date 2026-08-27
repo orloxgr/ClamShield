@@ -3,7 +3,7 @@
   "description": "ClamShield - Windows GUI for ClamAV",
   "author": "Byron Iniotakis",
   "private": true,
-  "version": "1.1.25",
+  "version": "1.1.27",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -15,7 +15,9 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "audit:critical": "npm audit --omit=dev --audit-level=critical",
+    "release:checksums": "node scripts/generate-checksums.cjs"
   },
   "build": {
     "appId": "com.clamshield.app",
@@ -59,35 +61,32 @@
     ]
   },
   "dependencies": {
-    "@google/genai": "^1.29.0",
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
-    "axios": "^1.16.0",
+    "axios": "^1.19.0",
     "chokidar": "^5.0.0",
     "clsx": "^2.1.1",
-    "date-fns": "^4.1.0",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
+    "date-fns": "^4.4.0",
+    "express": "^4.22.2",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
-    "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "react-router-dom": "^7.14.2",
-    "tailwind-merge": "^3.5.0",
-    "unzipper": "^0.12.3",
-    "vite": "^6.2.3"
+    "motion": "^12.43.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2",
+    "tailwind-merge": "^3.6.0",
+    "unzipper": "^0.12.5"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@types/express": "^4.17.21",
-    "@types/node": "^22.14.0",
-    "autoprefixer": "^10.4.21",
-    "concurrently": "^9.2.1",
-    "electron": "^41.5.0",
-    "electron-builder": "^26.8.1",
-    "esbuild": "^0.28.0",
-    "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
+    "@types/node": "^22.20.1",
+    "@vitejs/plugin-react": "^5.2.0",
+    "autoprefixer": "^10.5.4",
+    "concurrently": "^9.2.4",
+    "electron": "^41.10.3",
+    "electron-builder": "^26.15.7",
+    "esbuild": "^0.28.1",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.1",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.4.3"
   }
 }

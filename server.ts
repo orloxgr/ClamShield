@@ -400,6 +400,152 @@ const defaultSettings = {
     lastScheduledScanResult: ""
 };
 
+const pathSettingKeys = new Set([
+    "clamavDir",
+    "clamscanPath",
+    "freshclamPath",
+    "freshclamConf",
+    "clamdPath",
+    "clamdscanPath",
+    "clamdConf",
+    "yaraDir",
+    "yaraPath",
+    "yaraRulesDir",
+    "yaraCustomRulesDir",
+    "yaraCacheDir",
+    "databaseDir",
+    "quarantineDir",
+    "logsDir"
+]);
+
+const pathListSettingKeys = new Set([
+    "customWatchedFolders",
+    "scheduledScanDirectories",
+    "exclusions"
+]);
+
+const booleanSettingKeys = new Set([
+    "scanCompletionPopupEnabled",
+    "autoQuarantine",
+    "autoUpdateEnabled",
+    "securiteInfoIncludePua",
+    "yaraEnabled",
+    "yaraAutoUpdateEnabled",
+    "appUpdateCheckEnabled",
+    "appUpdateNotifyAvailable",
+    "appUpdateNotifyFailed",
+    "appSilentAutoInstall",
+    "clamavEngineUpdateCheckEnabled",
+    "clamavEngineUpdateNotifyAvailable",
+    "clamavEngineUpdateNotifyFailed",
+    "yaraEngineUpdateCheckEnabled",
+    "yaraEngineUpdateNotifyAvailable",
+    "yaraEngineUpdateNotifyFailed",
+    "offloadToMemory",
+    "scanArchives",
+    "recursive",
+    "followSymlinks",
+    "shieldEnabled",
+    "shieldShowPopup",
+    "autoDetectBrowserDownloads",
+    "monitorDownloads",
+    "monitorDesktop",
+    "monitorDocuments",
+    "runOnStartup",
+    "startMinimized",
+    "playSoundOnAlert",
+    "enableDebugLog",
+    "autoDisableDefender",
+    "scheduledScanEnabled",
+    "scheduledScanIdleOnly",
+    "scheduledScanFullDisk",
+    "scheduledScanMemory"
+]);
+
+const numberSettingSpecs: Record<string, { fallback: number, min: number, max: number, integer?: boolean }> = {
+    updateIntervalHours: { fallback: 24, min: 1, max: 720 },
+    clamavUpdateIntervalHours: { fallback: 24, min: 24, max: 720 },
+    securiteInfoUpdateIntervalHours: { fallback: 1, min: 1, max: 24 },
+    saneSecurityUpdateIntervalHours: { fallback: 1, min: 1, max: 24 },
+    yaraUpdateIntervalHours: { fallback: 168, min: 1, max: 8760 },
+    appUpdateIntervalHours: { fallback: 168, min: 1, max: 8760 },
+    clamavEngineUpdateIntervalHours: { fallback: 24, min: 1, max: 8760 },
+    yaraEngineUpdateIntervalHours: { fallback: 24, min: 1, max: 8760 },
+    yaraTimeoutSeconds: { fallback: 15, min: 1, max: 3600, integer: true },
+    yaraMaxFileSize: { fallback: 50, min: 1, max: 4096 },
+    scanBatchSize: { fallback: 250, min: 1, max: 25000, integer: true },
+    scanBatchDelayMs: { fallback: 0, min: 0, max: 60000, integer: true },
+    shieldMaxConcurrentScans: { fallback: 1, min: 1, max: 32, integer: true },
+    shieldDepth: { fallback: 1, min: 0, max: 20, integer: true },
+    shieldPollInterval: { fallback: 1000, min: 100, max: 60000, integer: true },
+    shieldStabilityThreshold: { fallback: 2000, min: 100, max: 120000, integer: true },
+    maxFileSize: { fallback: 50, min: 1, max: 4096 },
+    manualScanIntensity: { fallback: 81, min: 1, max: 100, integer: true },
+    scheduledScanIntensity: { fallback: 81, min: 1, max: 100, integer: true },
+    shieldScanIntensity: { fallback: 41, min: 1, max: 100, integer: true },
+    logRetentionDays: { fallback: 7, min: 1, max: 365, integer: true },
+    defenderEnforceIntervalMinutes: { fallback: 5, min: 1, max: 1440, integer: true },
+    scheduledScanIdleMinutes: { fallback: 15, min: 1, max: 240, integer: true }
+};
+
+const enumSettingKeys = new Set([
+    "defaultAction",
+    "actionOnDetection",
+    "scanDetectionAction",
+    "securiteInfoPlan",
+    "saneSecurityProfile",
+    "yaraRuleset",
+    "scheduledScanFrequency"
+]);
+
+const userWritableSettingKeys = new Set([
+    ...Array.from(pathSettingKeys),
+    ...Array.from(pathListSettingKeys),
+    ...Array.from(booleanSettingKeys),
+    ...Object.keys(numberSettingSpecs),
+    ...Array.from(enumSettingKeys),
+    "scheduledScanWeekdays",
+    "scheduledScanMonthDays",
+    "scheduledScanTime"
+]);
+
+const readOnlySettingKeys = new Set([
+    "securiteInfoToken",
+    "securiteInfoUrl",
+    "securiteInfoSetupText",
+    "securiteInfoEnabled",
+    "saneSecurityEnabled",
+    "dnsProtectionEnabled",
+    "dnsProtectionProfile",
+    "dnsProtectionAppliedAt",
+    "eulaAccepted",
+    "eulaVersion",
+    "eulaAcceptedAt",
+    "lastClamAVUpdate",
+    "lastClamAVUpdateResult",
+    "lastSecuriteInfoUpdate",
+    "lastSecuriteInfoUpdateResult",
+    "lastSaneSecurityUpdate",
+    "lastSaneSecurityUpdateResult",
+    "lastYaraUpdate",
+    "lastYaraRuleset",
+    "lastYaraRuleCount",
+    "lastAppUpdateCheck",
+    "skippedAppVersion",
+    "appUpdateRemindAfter",
+    "clamavEngineSkippedVersion",
+    "clamavEngineRemindAfter",
+    "clamavEngineLastCheck",
+    "clamavEngineLastCheckResult",
+    "yaraEngineSkippedVersion",
+    "yaraEngineRemindAfter",
+    "yaraEngineLastCheck",
+    "yaraEngineLastCheckResult",
+    "lastScheduledScanRunKey",
+    "lastScheduledScanAt",
+    "lastScheduledScanResult"
+]);
+
 function normalizeShieldDetectionAction(raw: any) {
     const value = String(raw || "").toLowerCase();
     if (value === "ask" || value === "warn") return "ask";
@@ -435,6 +581,8 @@ const clamavEngineUpdateLoggers = new Set<(message: string) => void>();
 let yaraEngineUpdateInstallPromise: Promise<any> | null = null;
 const yaraEngineUpdateLoggers = new Set<(message: string) => void>();
 let freshclamUpdateInProgress = false;
+let freshclamUpdateJobId: string | null = null;
+let freshclamUpdateTarget: "clamav" | "securiteinfo" | null = null;
 let saneSecurityUpdateInProgress = false;
 let clamAVVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
 let yaraVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
@@ -1587,6 +1735,111 @@ function normalizeScheduledScanSettings(value: any) {
     };
 }
 
+function getSettingFallback(key: string, currentSettings: any) {
+    const defaults = defaultSettings as Record<string, any>;
+    if (currentSettings && Object.prototype.hasOwnProperty.call(currentSettings, key)) return currentSettings[key];
+    if (Object.prototype.hasOwnProperty.call(defaults, key)) return defaults[key];
+    return undefined;
+}
+
+function normalizeSettingsString(value: any, fallback = "", maxLength = 1024) {
+    if (typeof value !== "string") return fallback;
+    const normalized = value.replace(/\0/g, "").trim();
+    if (!normalized) return fallback;
+    return normalized.slice(0, maxLength);
+}
+
+function normalizeSettingsPath(value: any, fallback: any) {
+    const fallbackValue = typeof fallback === "string" ? fallback : "";
+    const normalized = normalizeSettingsString(value, fallbackValue, 1024);
+    if (!normalized) return fallbackValue;
+    if (/[\r\n"`]/.test(normalized) || /\$\(/.test(normalized)) return fallbackValue;
+    try {
+        if (!path.isAbsolute(normalized)) return fallbackValue;
+        return path.resolve(normalized);
+    } catch {
+        return fallbackValue;
+    }
+}
+
+function normalizeSettingsPathList(value: any, fallback: any[] = []) {
+    const source = Array.isArray(value) ? value : fallback;
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const item of source) {
+        const normalizedPath = normalizeSettingsPath(item, "");
+        if (!normalizedPath) continue;
+        const key = normalizedStatePath(normalizedPath);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        normalized.push(normalizedPath);
+        if (normalized.length >= 100) break;
+    }
+    return normalized;
+}
+
+function normalizeNumberSetting(key: string, value: any) {
+    const spec = numberSettingSpecs[key];
+    if (!spec) return value;
+    if (key === "manualScanIntensity" || key === "scheduledScanIntensity" || key === "shieldScanIntensity") {
+        return normalizeScanIntensity(value, spec.fallback);
+    }
+    const normalized = normalizePositiveNumber(value, spec.fallback, spec.min, spec.max);
+    return spec.integer ? Math.round(normalized) : normalized;
+}
+
+function normalizeEnumSetting(key: string, value: any) {
+    if (key === "defaultAction" || key === "actionOnDetection") return normalizeShieldDetectionAction(value);
+    if (key === "scanDetectionAction") return String(value || "").toLowerCase() === "quarantine" ? "quarantine" : "results";
+    if (key === "securiteInfoPlan") return normalizeSecuriteInfoPlan(value);
+    if (key === "saneSecurityProfile") return normalizeSaneSecurityProfile(value);
+    if (key === "yaraRuleset") return normalizeYaraRuleset(value);
+    if (key === "scheduledScanFrequency") return String(value || "").toLowerCase() === "monthly" ? "monthly" : "weekly";
+    return value;
+}
+
+function normalizeSettingsPatch(rawSettings: any, currentSettings: any) {
+    const body = asRecord(rawSettings);
+    const patch: Record<string, any> = {};
+    const ignoredKeys: string[] = [];
+    const unknownKeys: string[] = [];
+
+    for (const [key, value] of Object.entries(body)) {
+        if (readOnlySettingKeys.has(key)) {
+            ignoredKeys.push(key);
+            continue;
+        }
+        if (!userWritableSettingKeys.has(key)) {
+            unknownKeys.push(key);
+            continue;
+        }
+
+        const fallback = getSettingFallback(key, currentSettings);
+        if (pathSettingKeys.has(key)) {
+            patch[key] = normalizeSettingsPath(value, fallback);
+        } else if (pathListSettingKeys.has(key)) {
+            patch[key] = normalizeSettingsPathList(value, Array.isArray(fallback) ? fallback : []);
+        } else if (booleanSettingKeys.has(key)) {
+            patch[key] = value === true;
+        } else if (Object.prototype.hasOwnProperty.call(numberSettingSpecs, key)) {
+            patch[key] = normalizeNumberSetting(key, value);
+        } else if (enumSettingKeys.has(key)) {
+            patch[key] = normalizeEnumSetting(key, value);
+        } else if (key === "scheduledScanWeekdays") {
+            patch[key] = normalizeIntegerList(value, 0, 6, defaultSettings.scheduledScanWeekdays);
+        } else if (key === "scheduledScanMonthDays") {
+            patch[key] = normalizeIntegerList(value, 1, 31, defaultSettings.scheduledScanMonthDays);
+        } else if (key === "scheduledScanTime") {
+            patch[key] = typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+                ? value
+                : getSettingFallback(key, currentSettings);
+        }
+    }
+
+    const rejectedKeys = [...unknownKeys, ...ignoredKeys];
+    return { patch, rejectedKeys, unknownKeys, ignoredKeys };
+}
+
 function formatDuration(totalSeconds: number) {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -2590,6 +2843,12 @@ async function hashFile(filePath: string, algorithm = "sha256") {
     return hash.digest("hex");
 }
 
+function formatBytes(bytes: number) {
+    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} B`;
+}
+
 const yaraForgePackages: Record<string, { label: string, url: string, fileName: string }> = {
     core: {
         label: "Core",
@@ -2617,31 +2876,101 @@ function getYaraRulesFile(settings: any) {
     return path.join(settings.yaraRulesDir || yaraForgeRulesDir, yaraForgePackages[ruleset].fileName);
 }
 
-async function downloadToFile(url: string, destination: string, onProgress?: (message: string) => void, headers: Record<string, string> = {}) {
+type DownloadToFileOptions = {
+    headers?: Record<string, string>;
+    resume?: boolean;
+    expectedSize?: number;
+};
+
+async function downloadToFile(
+    url: string,
+    destination: string,
+    onProgress?: (message: string) => void,
+    headersOrOptions: Record<string, string> | DownloadToFileOptions = {}
+) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
+    const options: DownloadToFileOptions =
+        Object.prototype.hasOwnProperty.call(headersOrOptions, "headers") ||
+        Object.prototype.hasOwnProperty.call(headersOrOptions, "resume") ||
+        Object.prototype.hasOwnProperty.call(headersOrOptions, "expectedSize")
+            ? headersOrOptions as DownloadToFileOptions
+            : { headers: headersOrOptions as Record<string, string> };
+    const requestHeaders = { ...(options.headers || {}) };
+    let resumeFrom = 0;
+    if (options.resume) {
+        try {
+            const stat = await fs.stat(destination);
+            const expectedSize = Number(options.expectedSize || 0);
+            if (stat.isFile() && stat.size > 0 && (!expectedSize || stat.size < expectedSize)) {
+                resumeFrom = stat.size;
+                requestHeaders.Range = `bytes=${resumeFrom}-`;
+                onProgress?.(`Resuming download from ${formatBytes(resumeFrom)}.`);
+            } else if (stat.isFile() && expectedSize > 0 && stat.size === expectedSize) {
+                onProgress?.(`Using existing download (${formatBytes(stat.size)}).`);
+                return;
+            }
+        } catch {
+            // No partial download to resume.
+        }
+    }
     const response = await axios({
         url,
         method: "GET",
         responseType: "stream",
-        headers: { "User-Agent": "ClamShield", ...headers }
+        headers: { "User-Agent": "ClamShield", ...requestHeaders }
     });
-    const total = Number(response.headers["content-length"] || 0);
-    let downloaded = 0;
-    let lastProgress = 0;
+    if (resumeFrom > 0 && response.status !== 206) {
+        resumeFrom = 0;
+        onProgress?.("Download server did not resume; restarting download.");
+    }
+    const contentLength = Number(response.headers["content-length"] || 0);
+    const total = Number(options.expectedSize || 0) || (resumeFrom > 0 && response.status === 206 ? resumeFrom + contentLength : contentLength);
+    let downloaded = resumeFrom;
+    let lastReportedPercent = -1;
+    let lastReportedAt = 0;
+    const startedAt = Date.now();
+    const formatSpeed = (bytesPerSecond: number) => {
+        if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "0 KB/s";
+        if (bytesPerSecond >= 1024 * 1024) return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`;
+        return `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`;
+    };
+    const formatEta = (seconds: number) => {
+        if (!Number.isFinite(seconds) || seconds <= 0) return "";
+        if (seconds >= 3600) return `${Math.ceil(seconds / 3600)}h`;
+        if (seconds >= 60) return `${Math.ceil(seconds / 60)}m`;
+        return `${Math.ceil(seconds)}s`;
+    };
+    const reportProgress = (force = false) => {
+        const now = Date.now();
+        const elapsedSeconds = Math.max(0.001, (now - startedAt) / 1000);
+        const sessionDownloaded = Math.max(0, downloaded - resumeFrom);
+        const bytesPerSecond = sessionDownloaded / elapsedSeconds;
+        const speed = formatSpeed(bytesPerSecond);
+        if (total > 0) {
+            const percent = Math.min(100, Math.floor((downloaded / total) * 100));
+            if (!force && percent === lastReportedPercent && now - lastReportedAt < 2000) return;
+            if (!force && percent < lastReportedPercent + 2 && now - lastReportedAt < 2000) return;
+            lastReportedPercent = percent;
+            lastReportedAt = now;
+            const eta = formatEta((total - downloaded) / bytesPerSecond);
+            onProgress?.(`Downloaded ${percent}% (${formatBytes(downloaded)} of ${formatBytes(total)}, ${speed}${eta ? `, ${eta} remaining` : ""})`);
+            return;
+        }
+        if (!force && now - lastReportedAt < 2000) return;
+        lastReportedAt = now;
+        onProgress?.(`Downloaded ${formatBytes(downloaded)} (${speed})`);
+    };
     response.data.on("data", (chunk: Buffer) => {
         downloaded += chunk.length;
-        if (total > 0) {
-            const percent = Math.floor((downloaded / total) * 100);
-            if (percent >= lastProgress + 10) {
-                lastProgress = percent;
-                onProgress?.(`Downloaded ${percent}%`);
-            }
-        }
+        reportProgress();
     });
-    const writer = createWriteStream(destination);
+    const writer = createWriteStream(destination, { flags: resumeFrom > 0 ? "a" : "w" });
     response.data.pipe(writer);
     await new Promise<void>((resolve, reject) => {
-        writer.on("finish", resolve);
+        writer.on("finish", () => {
+            reportProgress(true);
+            resolve();
+        });
         writer.on("error", reject);
         response.data.on("error", reject);
     });
@@ -2803,6 +3132,13 @@ async function getLatestClamAVEngineRelease(settings: any) {
     };
 }
 
+function findYaraWin64ReleaseAsset(release: any) {
+    return (release.assets || []).find((item: any) => {
+        const name = String(item.name || "").toLowerCase();
+        return name.includes("win64") && name.endsWith(".zip");
+    });
+}
+
 async function getLatestYaraEngineRelease(settings: any) {
     const currentLabel = await getCurrentYaraEngineVersion(settings);
     const currentVersion = parseBareVersion(currentLabel);
@@ -2810,22 +3146,32 @@ async function getLatestYaraEngineRelease(settings: any) {
         headers: { "User-Agent": "ClamShield" }
     });
     const release = releaseRes.data;
-    const latestVersion = normalizeReleaseVersion(release.tag_name || release.name);
+    let installableRelease = release;
+    let asset = findYaraWin64ReleaseAsset(release);
+
+    if (!asset) {
+        const releasesRes = await axios.get("https://api.github.com/repos/VirusTotal/yara/releases?per_page=20", {
+            headers: { "User-Agent": "ClamShield" }
+        });
+        installableRelease = (releasesRes.data || []).find((item: any) => findYaraWin64ReleaseAsset(item)) || release;
+        asset = findYaraWin64ReleaseAsset(installableRelease);
+    }
+
+    const sourceLatestVersion = normalizeReleaseVersion(release.tag_name || release.name);
+    const latestVersion = normalizeReleaseVersion(installableRelease.tag_name || installableRelease.name);
     const skipped = normalizeVersion(settings.yaraEngineSkippedVersion) === latestVersion;
     const newerVersionAvailable = compareVersions(latestVersion, currentVersion) > 0;
-    const asset = (release.assets || []).find((item: any) => {
-        const name = String(item.name || "").toLowerCase();
-        return name.includes("win64") && name.endsWith(".zip");
-    });
     return {
         currentVersion,
         currentLabel,
         latestVersion,
+        sourceLatestVersion,
+        sourceLatestHasWindowsAsset: Boolean(findYaraWin64ReleaseAsset(release)),
         newerVersionAvailable,
         updateAvailable: newerVersionAvailable && !skipped,
         skipped,
-        releaseUrl: release.html_url,
-        publishedAt: release.published_at,
+        releaseUrl: installableRelease.html_url || release.html_url,
+        publishedAt: installableRelease.published_at || release.published_at,
         assetName: asset?.name || "",
         downloadUrl: asset?.browser_download_url || "",
         assetSize: Number(asset?.size || 0)
@@ -3042,8 +3388,7 @@ async function installClamAVEngine(settings: any, log?: (message: string) => voi
     log?.(`Downloading ClamAV Engine ${update.latestVersion}...`);
     await fs.mkdir(engineBaseDir, { recursive: true });
     const zipPath = path.join(engineBaseDir, "clamav.zip");
-    await fs.rm(zipPath, { force: true }).catch(() => {});
-    await downloadToFile(downloadUrl, zipPath, log);
+    await downloadToFile(downloadUrl, zipPath, log, { resume: true, expectedSize: update.assetSize });
 
     if (clamdProcess) {
         log?.("Stopping clamd before replacing the engine files...");
@@ -3054,7 +3399,12 @@ async function installClamAVEngine(settings: any, log?: (message: string) => voi
     }
 
     log?.(`Extracting ${assetName}...`);
-    await extractZip(zipPath, engineBaseDir);
+    try {
+        await extractZip(zipPath, engineBaseDir);
+    } catch (error) {
+        await fs.rm(zipPath, { force: true }).catch(() => {});
+        throw error;
+    }
     const extractedClamDir = await findExtractedClamavDir();
     if (!extractedClamDir) {
         throw new Error("ClamAV archive was extracted, but clamscan.exe and freshclam.exe were not found.");
@@ -3117,6 +3467,9 @@ async function installYaraEngine(settings: any, log?: (message: string) => void)
     const update = await getLatestYaraEngineRelease(settings);
     if (!update.downloadUrl) {
         throw new Error("Could not find a Windows x64 YARA release asset.");
+    }
+    if (update.sourceLatestVersion && update.sourceLatestVersion !== update.latestVersion) {
+        log?.(`Latest YARA source release is ${update.sourceLatestVersion}, but no Windows x64 package is published for it. Using ${update.latestVersion}.`);
     }
 
     await fs.mkdir(settings.yaraDir || path.dirname(settings.yaraPath), { recursive: true });
@@ -7252,48 +7605,10 @@ async function startServer() {
     scheduleNextAppUpdateCheck();
 
     app.post("/api/settings", async (req, res) => {
-        const requestedSettings = { ...(req.body || {}) };
-        delete requestedSettings.securiteInfoToken;
-        delete requestedSettings.securiteInfoUrl;
-        delete requestedSettings.securiteInfoSetupText;
-        delete requestedSettings.dnsProtectionEnabled;
-        delete requestedSettings.dnsProtectionProfile;
-        delete requestedSettings.dnsProtectionAppliedAt;
-        if ("securiteInfoPlan" in requestedSettings) {
-            requestedSettings.securiteInfoPlan = normalizeSecuriteInfoPlan(requestedSettings.securiteInfoPlan);
-        }
-        if ("securiteInfoIncludePua" in requestedSettings) {
-            requestedSettings.securiteInfoIncludePua = normalizeSecuriteInfoIncludePua(requestedSettings.securiteInfoIncludePua);
-        }
-        if ("saneSecurityProfile" in requestedSettings) {
-            requestedSettings.saneSecurityProfile = normalizeSaneSecurityProfile(requestedSettings.saneSecurityProfile);
-        }
-        if ("clamavUpdateIntervalHours" in requestedSettings) {
-            requestedSettings.clamavUpdateIntervalHours = Math.max(24, normalizePositiveNumber(requestedSettings.clamavUpdateIntervalHours, 24, 24, 720));
-        }
-        if ("securiteInfoUpdateIntervalHours" in requestedSettings) {
-            requestedSettings.securiteInfoUpdateIntervalHours = normalizePositiveNumber(requestedSettings.securiteInfoUpdateIntervalHours, 1, 1, 24);
-        }
-        if ("saneSecurityUpdateIntervalHours" in requestedSettings) {
-            requestedSettings.saneSecurityUpdateIntervalHours = normalizePositiveNumber(requestedSettings.saneSecurityUpdateIntervalHours, 1, 1, 24);
-        }
-        if ("appUpdateIntervalHours" in requestedSettings) {
-            requestedSettings.appUpdateIntervalHours = normalizePositiveNumber(requestedSettings.appUpdateIntervalHours, 168, 1, 8760);
-        }
-        if ("clamavEngineUpdateIntervalHours" in requestedSettings) {
-            requestedSettings.clamavEngineUpdateIntervalHours = normalizePositiveNumber(requestedSettings.clamavEngineUpdateIntervalHours, 24, 1, 8760);
-        }
-        if ("yaraEngineUpdateIntervalHours" in requestedSettings) {
-            requestedSettings.yaraEngineUpdateIntervalHours = normalizePositiveNumber(requestedSettings.yaraEngineUpdateIntervalHours, 24, 1, 8760);
-        }
-        if ("manualScanIntensity" in requestedSettings) {
-            requestedSettings.manualScanIntensity = normalizeScanIntensity(requestedSettings.manualScanIntensity, 81);
-        }
-        if ("scheduledScanIntensity" in requestedSettings) {
-            requestedSettings.scheduledScanIntensity = normalizeScanIntensity(requestedSettings.scheduledScanIntensity, 81);
-        }
-        if ("shieldScanIntensity" in requestedSettings) {
-            requestedSettings.shieldScanIntensity = normalizeScanIntensity(requestedSettings.shieldScanIntensity, 41);
+        const normalizedRequest = normalizeSettingsPatch(req.body, settings);
+        const requestedSettings = normalizedRequest.patch;
+        if (normalizedRequest.unknownKeys.length > 0) {
+            console.warn("Ignored unknown settings keys:", normalizedRequest.unknownKeys.join(", "));
         }
         const securiteInfoDatabaseSelectionChanged =
             ("securiteInfoPlan" in requestedSettings && requestedSettings.securiteInfoPlan !== settings.securiteInfoPlan) ||
@@ -7316,7 +7631,11 @@ async function startServer() {
             await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
             await reloadClamdDatabases(settings);
         }
-        res.json({ success: true, settings });
+        res.json({
+            success: true,
+            settings,
+            ignoredSettings: normalizedRequest.rejectedKeys
+        });
         Promise.resolve()
             .then(async () => {
                 await checkClamAV(settings);
@@ -8802,6 +9121,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
         let preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>> | null = null;
         const requestedTarget = req.body?.target === "securiteinfo" ? "securiteinfo" : "clamav";
         if (freshclamUpdateInProgress) {
+            if (freshclamUpdateTarget === requestedTarget && freshclamUpdateJobId && activeJobs[freshclamUpdateJobId]?.status === "running") {
+                return res.json({ jobId: freshclamUpdateJobId, status: "already_running" });
+            }
             return res.status(409).json({ error: "A signature update is already running." });
         }
         if (requestedTarget === "securiteinfo" && settings.securiteInfoEnabled !== true) {
@@ -8824,6 +9146,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
         try {
             freshclamUpdateInProgress = true;
+            freshclamUpdateJobId = jobId;
+            freshclamUpdateTarget = requestedTarget;
             activeJobs[jobId] = { status: "running", logs: [] };
             if (requestedTarget === "securiteinfo") {
                 res.json({ jobId, status: "started" });
@@ -8882,7 +9206,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
                             actionTaken: "Failed"
                         }).catch(() => {});
                     } finally {
-                        freshclamUpdateInProgress = false;
+                        if (freshclamUpdateJobId === jobId) {
+                            freshclamUpdateInProgress = false;
+                            freshclamUpdateJobId = null;
+                            freshclamUpdateTarget = null;
+                        }
                     }
                 })();
                 return;
@@ -8906,7 +9234,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
             
             child.on("error", (err: any) => {
                 processStartFailed = true;
-                freshclamUpdateInProgress = false;
+                if (freshclamUpdateJobId === jobId) {
+                    freshclamUpdateInProgress = false;
+                    freshclamUpdateJobId = null;
+                    freshclamUpdateTarget = null;
+                }
                 const safeMessage = preparedConfig?.redact(err.message) || err.message;
                 console.error("Failed to start freshclam process:", safeMessage);
                 preparedConfig?.cleanup().catch(() => {});
@@ -8936,7 +9268,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
             });
             
             child.on("close", async (code) => {
-                freshclamUpdateInProgress = false;
+                if (freshclamUpdateJobId === jobId) {
+                    freshclamUpdateInProgress = false;
+                    freshclamUpdateJobId = null;
+                    freshclamUpdateTarget = null;
+                }
                 await preparedConfig?.cleanup();
                 if (!activeJobs[jobId]) return;
                 if (processStartFailed) return;
@@ -8973,7 +9309,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
             res.json({ jobId, status: "started" });
         } catch(e: any) {
-            freshclamUpdateInProgress = false;
+            if (freshclamUpdateJobId === jobId) {
+                freshclamUpdateInProgress = false;
+                freshclamUpdateJobId = null;
+                freshclamUpdateTarget = null;
+            }
             await preparedConfig?.cleanup();
             const safeMessage = preparedConfig?.redact(e.message) || redactSecuriteInfoSecret(e.message);
             if (activeJobs[jobId]) {

@@ -142,7 +142,14 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
     // Poll for status
     const iv = setInterval(async () => {
       const res = await fetch("/api/status").then(r => r.json());
-      setProgressMsg(res.installProgress || "Installing...");
+      const nextProgress = res.installProgress || "Installing...";
+      setProgressMsg(nextProgress);
+      if (nextProgress) {
+        setSetupLogs(prev => {
+          if (prev[prev.length - 1] === nextProgress) return prev;
+          return [...prev, nextProgress].slice(-12);
+        });
+      }
       if (!res.isInstalling && String(res.installProgress || "").startsWith("Error:")) {
         clearInterval(iv);
         setInstalling(false);

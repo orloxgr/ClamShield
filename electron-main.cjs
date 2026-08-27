@@ -656,6 +656,7 @@ async function checkUpdatePrompt(port, settings, config) {
   if (settings[config.notifyAvailableKey] === false) return;
   if (Number(settings[config.remindAfterKey] || 0) > Date.now()) return;
   if (config.skipWhenSilent && settings.appSilentAutoInstall === true) return;
+  if (config.requiresInstalledStatusKey && config.status && config.status[config.requiresInstalledStatusKey] !== true) return;
 
   const intervalMs = Math.max(1, Number(settings[config.intervalKey] || config.defaultIntervalHours)) * 60 * 60 * 1000;
   if (Date.now() - Number(lastUpdateCheckAt[config.id] || 0) < intervalMs) return;
@@ -714,6 +715,7 @@ function pollAppUpdates(port) {
           remindAfterKey: 'clamavEngineRemindAfter',
           intervalKey: 'clamavEngineUpdateIntervalHours',
           defaultIntervalHours: 24,
+          requiresInstalledStatusKey: 'hasEngine',
           checkPath: '/api/clamav-engine-update',
           installPath: '/api/clamav-engine-update/install',
           skipPath: '/api/clamav-engine-update/skip',
@@ -728,6 +730,7 @@ function pollAppUpdates(port) {
           remindAfterKey: 'yaraEngineRemindAfter',
           intervalKey: 'yaraEngineUpdateIntervalHours',
           defaultIntervalHours: 24,
+          requiresInstalledStatusKey: 'hasYaraEngine',
           checkPath: '/api/yara-engine-update',
           installPath: '/api/yara-engine-update/install',
           skipPath: '/api/yara-engine-update/skip',
@@ -735,7 +738,7 @@ function pollAppUpdates(port) {
         }
       ];
       for (const config of updateConfigs) {
-        await checkUpdatePrompt(port, settings, config);
+        await checkUpdatePrompt(port, settings, { ...config, status });
       }
     } finally {
       appUpdateChecking = false;

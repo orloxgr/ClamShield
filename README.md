@@ -116,6 +116,8 @@ YARA matches appear in the Results page with `Engine: YARA`, rule name, source, 
 
 On Windows, ClamShield writes YARA scan lists as UTF-16LE without BOM so the upstream YARA CLI can scan paths with Greek, Cyrillic, Arabic, and other Unicode characters.
 
+YARA engine updates are resolved from official VirusTotal/YARA GitHub releases. If the latest YARA source release does not include a Windows x64 ZIP asset, ClamShield uses the newest recent release that does include a Windows x64 binary package. For example, YARA v4.5.8 was published without Windows ZIP assets, so ClamShield can continue installing the latest available Windows binary instead of failing the first-time setup.
+
 ## Updates
 
 The Updates page has separate actions:
@@ -124,6 +126,7 @@ The Updates page has separate actions:
 - `Update SecuriteInfo`: updates optional account-linked SecuriteInfo databases through FreshClam.
 - `Update SaneSecurity`: downloads and verifies the selected public SaneSecurity database profile.
 - `Update YARA Rules`: checks the local YARA engine and downloads the selected YARA Forge ruleset.
+- `Check YARA`: checks for a newer installable Windows YARA engine package.
 - `Check ClamShield`: checks GitHub Releases for a newer ClamShield installer.
 
 ClamShield update checks can be enabled weekly from Settings. Silent app install is available as an explicit setting; when enabled, ClamShield downloads the latest installer, launches it, and closes itself so the installer can replace application files.
@@ -254,6 +257,12 @@ Release artifacts are written to a versioned directory:
 release/<version>/ClamShield Setup <version>.exe
 ```
 
+Generate SHA-256 checksums for the release directory:
+
+```powershell
+npm run release:checksums
+```
+
 The `release/` and `dist/` folders are build outputs and should not be committed to Git.
 
 ## Release Checklist
@@ -264,14 +273,16 @@ Before publishing a release:
 2. Run `npm install`.
 3. Run `npm run lint`.
 4. Run `npm run build:exe`.
-5. Install the generated `.exe` on a clean Windows test machine or VM.
-6. Install the ClamAV engine from the app.
-7. Update signatures.
-8. Test the EICAR sample detection flow.
-9. Update YARA rules from the Updates page.
-10. Test a YARA detection flow with Core rules enabled.
-11. Test real-time shield with depth `1` and concurrent scans `1`.
-12. Uninstall and verify cleanup:
+5. Run `npm run release:checksums`.
+6. Publish the installer, `latest.yml`, blockmap, and `SHA256SUMS.txt` together.
+7. Install the generated `.exe` on a clean Windows test machine or VM.
+8. Install the ClamAV engine from the app.
+9. Update signatures.
+10. Test the EICAR sample detection flow.
+11. Update YARA rules from the Updates page.
+12. Test a YARA detection flow with Core rules enabled.
+13. Test real-time shield with depth `1` and concurrent scans `1`.
+14. Uninstall and verify cleanup:
 
 ```powershell
 Test-Path "$env:ProgramData\ClamShield"
