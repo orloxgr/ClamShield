@@ -51,7 +51,7 @@ jobs:
             release/${{ steps.package.outputs.version }}/SHA256SUMS.txt
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ClamShield-${{ steps.package.outputs.version }}-windows
           path: |
