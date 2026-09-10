@@ -7066,16 +7066,6 @@ async function startServer() {
                 if (isClamd && clamdProcess) {
                     applyShieldLowImpactPriority(clamdProcess, currentSettings, "clamd");
                 }
-                
-                child.on("error", (err: any) => {
-                    clearInterval(heartbeat);
-                    console.error("Failed to start shield scan process:", err.message);
-                    if (activeJobs[jobId]) {
-                        activeJobs[jobId].status = "error";
-                        appendJobLogs(jobId, ["Process error: " + err.message]);
-                        filesBeingScanned.delete(normalizedPath);
-                    }
-                });
 
                 child.stdout.on("data", (data) => {
                     const lines = data.toString().split('\n').map((l: string) => l.trim()).filter(Boolean);
@@ -7086,169 +7076,193 @@ async function startServer() {
                     appendJobLogs(jobId, lines);
                 });
 
-                child.on("close", async (code) => {
-                    clearInterval(heartbeat);
-                    if (!activeJobs[jobId]) return;
-                    if (code !== 0 && code !== 1) {
-                        appendJobLogs(jobId, [
-                            `Shield scanner process failed with exit code ${code ?? "unknown"}.`,
-                            "This file was not treated as clean."
-                        ]);
-                        activeJobs[jobId].status = "done";
-                        activeJobs[jobId].result = -1;
-                        activeJobs[jobId].process = null;
-                        filesBeingScanned.delete(normalizedPath);
-                        return;
-                    }
-                    let threatsFound = 0;
-                    let scannedFiles = 0;
-                    let duration = 0;
-                    
-                    const qMap = await getQuarantineMap();
-                    const exceptions = await getExceptions();
-                    let quarantineMapChanged = false;
-                    let actionTaken = "None";
+                await new Promise<void>((resolve) => {
+                    let settled = false;
+                    const settle = () => {
+                        if (settled) return;
+                        settled = true;
+                        resolve();
+                    };
 
-                    for (const line of activeJobs[jobId].analysisLogs || []) {
-                        if (line.includes(" FOUND")) {
-                            const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
-                            if (match) {
-                                const originalPath = match[1];
-                                if (shouldSkipShieldPath(originalPath)) {
-                                    appendJobLogs(jobId, [`Ignored (Provider-safety exclusion): ${originalPath}`]);
-                                    continue;
-                                }
-                                if (isExcluded(originalPath, exceptions)) {
-                                    appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
-                                    continue;
-                                }
-                                const threatName = match[2];
-                                const action = normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask"));
-                                const actionKind = shieldActionKind(action);
-                                if (actionKind === "quarantine") {
-                                    try {
-                                        const quarantined = await quarantineFile(originalPath, threatName, currentSettings.quarantineDir);
-                                        qMap[quarantined.fileName] = quarantined.metadata;
-                                        quarantineMapChanged = true;
-                                        appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
-                                        actionTaken = "Quarantined";
-                                        if (shieldActionNotifies(action)) {
-                                            sendApiEvent("threat", {
+                    child.on("error", (err: any) => {
+                        clearInterval(heartbeat);
+                        console.error("Failed to start shield scan process:", err.message);
+                        if (activeJobs[jobId]) {
+                            activeJobs[jobId].status = "error";
+                            appendJobLogs(jobId, ["Process error: " + err.message]);
+                            filesBeingScanned.delete(normalizedPath);
+                        }
+                        settle();
+                    });
+
+                    child.on("close", async (code) => {
+                        try {
+                            clearInterval(heartbeat);
+                            if (!activeJobs[jobId]) return;
+                            if (code !== 0 && code !== 1) {
+                                appendJobLogs(jobId, [
+                                    `Shield scanner process failed with exit code ${code ?? "unknown"}.`,
+                                    "This file was not treated as clean."
+                                ]);
+                                activeJobs[jobId].status = "done";
+                                activeJobs[jobId].result = -1;
+                                activeJobs[jobId].process = null;
+                                filesBeingScanned.delete(normalizedPath);
+                                return;
+                            }
+                            let threatsFound = 0;
+                            let scannedFiles = 0;
+                            let duration = 0;
+                            
+                            const qMap = await getQuarantineMap();
+                            const exceptions = await getExceptions();
+                            let quarantineMapChanged = false;
+                            let actionTaken = "None";
+
+                            for (const line of activeJobs[jobId].analysisLogs || []) {
+                                if (line.includes(" FOUND")) {
+                                    const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
+                                    if (match) {
+                                        const originalPath = match[1];
+                                        if (shouldSkipShieldPath(originalPath)) {
+                                            appendJobLogs(jobId, [`Ignored (Provider-safety exclusion): ${originalPath}`]);
+                                            continue;
+                                        }
+                                        if (isExcluded(originalPath, exceptions)) {
+                                            appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
+                                            continue;
+                                        }
+                                        const threatName = match[2];
+                                        const action = normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask"));
+                                        const actionKind = shieldActionKind(action);
+                                        if (actionKind === "quarantine") {
+                                            try {
+                                                const quarantined = await quarantineFile(originalPath, threatName, currentSettings.quarantineDir);
+                                                qMap[quarantined.fileName] = quarantined.metadata;
+                                                quarantineMapChanged = true;
+                                                appendJobLogs(jobId, [`Quarantined: ${originalPath} -> ${quarantined.destPath}`]);
+                                                actionTaken = "Quarantined";
+                                                if (shieldActionNotifies(action)) {
+                                                    sendApiEvent("threat", {
+                                                        id: Date.now().toString() + Math.random().toString(36).substring(7),
+                                                        originalPath,
+                                                        threatName,
+                                                        mode: "notice",
+                                                        title: "Threat quarantined",
+                                                        subtitle: "ClamShield Shield quarantined this file.",
+                                                        timestamp: Date.now()
+                                                    });
+                                                }
+                                            } catch (e: any) {
+                                                appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
+                                                actionTaken = "Quarantine Failed";
+                                            }
+                                        } else if (actionKind === "ask") {
+                                            const pendingThreat = {
                                                 id: Date.now().toString() + Math.random().toString(36).substring(7),
                                                 originalPath,
                                                 threatName,
-                                                mode: "notice",
-                                                title: "Threat quarantined",
-                                                subtitle: "ClamShield Shield quarantined this file.",
                                                 timestamp: Date.now()
+                                            };
+                                            pendingThreats.push(pendingThreat);
+                                            if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+                                            appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
+                                            actionTaken = "Pending";
+                                        } else {
+                                            await addScanResult({
+                                                source: "shield",
+                                                scanType: "shield",
+                                                target: filePath,
+                                                originalPath,
+                                                threatName
                                             });
+                                            appendJobLogs(jobId, [`Threat found, sent silently to Results: ${originalPath}`]);
+                                            actionTaken = "Sent to Results";
+                                            if (shieldActionNotifies(action)) {
+                                                sendApiEvent("threat", {
+                                                    id: Date.now().toString() + Math.random().toString(36).substring(7),
+                                                    originalPath,
+                                                    threatName,
+                                                    mode: "notice",
+                                                    title: "Threat sent to Results",
+                                                    subtitle: "ClamShield Shield saved this detection for review.",
+                                                    timestamp: Date.now()
+                                                });
+                                            }
                                         }
-                                    } catch (e: any) {
-                                        appendJobLogs(jobId, [`Failed to quarantine ${originalPath}: ${e.message}`]);
-                                        actionTaken = "Quarantine Failed";
-                                    }
-                                } else if (actionKind === "ask") {
-                                    const pendingThreat = {
-                                        id: Date.now().toString() + Math.random().toString(36).substring(7),
-                                        originalPath,
-                                        threatName,
-                                        timestamp: Date.now()
-                                    };
-                                    pendingThreats.push(pendingThreat);
-                                    if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
-                                    appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
-                                    actionTaken = "Pending";
-                                } else {
-                                    await addScanResult({
-                                        source: "shield",
-                                        scanType: "shield",
-                                        target: filePath,
-                                        originalPath,
-                                        threatName
-                                    });
-                                    appendJobLogs(jobId, [`Threat found, sent silently to Results: ${originalPath}`]);
-                                    actionTaken = "Sent to Results";
-                                    if (shieldActionNotifies(action)) {
-                                        sendApiEvent("threat", {
-                                            id: Date.now().toString() + Math.random().toString(36).substring(7),
-                                            originalPath,
-                                            threatName,
-                                            mode: "notice",
-                                            title: "Threat sent to Results",
-                                            subtitle: "ClamShield Shield saved this detection for review.",
-                                            timestamp: Date.now()
-                                        });
                                     }
                                 }
+                                if (line.startsWith("Scanned files:")) {
+                                    const m = line.match(/\d+/);
+                                    if (m) scannedFiles = parseInt(m[0], 10);
+                                }
+                                if (line.startsWith("Infected files:")) {
+                                    const m = line.match(/\d+/);
+                                    if (m) threatsFound = parseInt(m[0], 10);
+                                }
+                                if (line.startsWith("Time:")) {
+                                    const m = line.match(/(\d+\.\d+) sec/);
+                                    if (m) duration = Math.round(parseFloat(m[1]));
+                                }
                             }
-                        }
-                        if (line.startsWith("Scanned files:")) {
-                            const m = line.match(/\d+/);
-                            if (m) scannedFiles = parseInt(m[0], 10);
-                        }
-                        if (line.startsWith("Infected files:")) {
-                            const m = line.match(/\d+/);
-                            if (m) threatsFound = parseInt(m[0], 10);
-                        }
-                        if (line.startsWith("Time:")) {
-                            const m = line.match(/(\d+\.\d+) sec/);
-                            if (m) duration = Math.round(parseFloat(m[1]));
-                        }
-                    }
 
-                    if (quarantineMapChanged) {
-                        await saveQuarantineMap(qMap);
-                    }
+                            if (quarantineMapChanged) {
+                                await saveQuarantineMap(qMap);
+                            }
 
-                    const yaraResult = await runYaraScanForTargets(currentSettings, [filePath], {
-                        activeJobs,
-                        appendJobLogs,
-                        jobId,
-                        source: "shield",
-                        scanType: "shield",
-                        target: filePath,
-                        action: normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask")),
-                        pendingThreats,
-                        notifyThreat: (threat: any) => sendApiEvent("threat", threat)
+                            const yaraResult = await runYaraScanForTargets(currentSettings, [filePath], {
+                                activeJobs,
+                                appendJobLogs,
+                                jobId,
+                                source: "shield",
+                                scanType: "shield",
+                                target: filePath,
+                                action: normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask")),
+                                pendingThreats,
+                                notifyThreat: (threat: any) => sendApiEvent("threat", threat)
+                            });
+                            if (yaraResult.matches > 0) {
+                                threatsFound += yaraResult.matches;
+                                actionTaken = yaraResult.actionTaken;
+                            }
+
+                            const isThreat = code === 1 || threatsFound > 0;
+                            appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
+                            if (isThreat) {
+                                console.log(`Shield: Threat found in ${filePath}`);
+                            }
+
+                            const lockedOrUnstable = !isThreat && (activeJobs[jobId].logs || []).some(isLockedOrUnstableClamLine);
+                            if (lockedOrUnstable) {
+                                const cooldownMs = 10 * 60 * 1000;
+                                lockedFileBackoff.set(normalizedPath, Date.now() + cooldownMs);
+                                console.debug(`Shield: locked/unstable scan backoff applied for ${Math.round(cooldownMs / 60000)} minutes -> ${filePath}`);
+                            }
+
+                            const latestFingerprint = await getFileFingerprint(filePath);
+                            if (latestFingerprint) {
+                                shieldScanCache.set(normalizedPath, latestFingerprint);
+                            } else {
+                                shieldScanCache.delete(normalizedPath);
+                            }
+                            
+                            await addHistory({
+                                type: "scan-shield",
+                                target: filePath,
+                                result: isThreat ? 1 : 0,
+                                threatsFound,
+                                scannedFiles,
+                                duration,
+                                actionTaken: isThreat ? actionTaken : "None"
+                            });
+                            
+                            delete activeJobs[jobId];
+                            filesBeingScanned.delete(normalizedPath);
+                            await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
+                        } finally {
+                            settle();
+                        }
                     });
-                    if (yaraResult.matches > 0) {
-                        threatsFound += yaraResult.matches;
-                        actionTaken = yaraResult.actionTaken;
-                    }
-
-                    const isThreat = code === 1 || threatsFound > 0;
-                    appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
-            if (isThreat) {
-                console.log(`Shield: Threat found in ${filePath}`);
-            }
-
-                    const lockedOrUnstable = !isThreat && (activeJobs[jobId].logs || []).some(isLockedOrUnstableClamLine);
-                    if (lockedOrUnstable) {
-                        const cooldownMs = 10 * 60 * 1000;
-                        lockedFileBackoff.set(normalizedPath, Date.now() + cooldownMs);
-                        console.debug(`Shield: locked/unstable scan backoff applied for ${Math.round(cooldownMs / 60000)} minutes -> ${filePath}`);
-                    }
-
-                    const latestFingerprint = await getFileFingerprint(filePath);
-                    if (latestFingerprint) {
-                        shieldScanCache.set(normalizedPath, latestFingerprint);
-                    } else {
-                        shieldScanCache.delete(normalizedPath);
-                    }
-                    
-                    await addHistory({
-                        type: "scan-shield",
-                        target: filePath,
-                        result: isThreat ? 1 : 0,
-                        threatsFound,
-                        scannedFiles,
-                        duration,
-                        actionTaken: isThreat ? actionTaken : "None"
-                    });
-                    
-                    delete activeJobs[jobId];
-                    filesBeingScanned.delete(normalizedPath);
-                    await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
                 });
             } catch (err) {
                 console.error("Shield scan failed", err);
