@@ -386,7 +386,7 @@ export default function ExceptionsPage() {
                   <span className="text-xs text-slate-600 mt-1 block">Added {formatSystemDateTime((exception as any).date || (exception as any).addedAt)}</span>
                   {exception.report && (
                     <span className="text-xs text-slate-500 mt-1 block">
-                      {exception.report.threatName} · Report to {exception.report.provider.name}
+                      {exception.report.threatName} - Report to {exception.report.provider.name}
                     </span>
                   )}
                   </div>

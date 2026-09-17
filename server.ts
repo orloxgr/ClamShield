@@ -6436,16 +6436,16 @@ async function handleYaraDetection(settings: any, detection: any, options: any) 
 }
 
 async function runYaraScanForTargets(settings: any, targets: string[], options: any) {
-    if (settings.yaraEnabled === false) return { matches: 0, actionTaken: "None" };
+    if (settings.yaraEnabled === false) return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
     const job = options.activeJobs[options.jobId];
-    if (!job) return { matches: 0, actionTaken: "None" };
+    if (!job) return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
 
     const rulesFile = getYaraRulesFile(settings);
     if (!existsSync(rulesFile)) {
         options.appendJobLogs(options.jobId, [
             `YARA skipped: ${path.basename(rulesFile)} is missing. Use Updates -> Update YARA Rules.`
         ]);
-        return { matches: 0, actionTaken: "None" };
+        return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
     }
 
     let yaraPath: string;
@@ -6453,7 +6453,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         yaraPath = await ensureYaraEngine(settings, message => console.debug(`YARA: ${message}`));
     } catch (e: any) {
         options.appendJobLogs(options.jobId, [`YARA skipped: ${e.message}`]);
-        return { matches: 0, actionTaken: "None" };
+        return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
     }
 
     const { listPath, count, unreadablePathCount } = await createYaraTargetList(settings, targets, (indexed) => {
@@ -6467,7 +6467,7 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     if (count === 0) {
         await fs.unlink(listPath).catch(() => {});
         options.appendJobLogs(options.jobId, ["YARA skipped: no eligible files after exclusions and size limits."]);
-        return { matches: 0, actionTaken: "None" };
+        return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
     }
 
     const maxBytes = normalizePositiveNumber(settings.yaraMaxFileSize, 50, 1, 4096) * 1024 * 1024;
@@ -6535,16 +6535,27 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     }
 
     let actionTaken = "None";
+    let activeMatches = 0;
+    let ignoredMatches = 0;
     for (const detection of detectionsByPath.values()) {
         const result = await handleYaraDetection(settings, {
             originalPath: detection.originalPath,
             ruleNames: Array.from(detection.ruleNames).slice(0, 8)
         }, options);
-        if (result !== "Ignored") actionTaken = result;
+        if (result === "Ignored") {
+            ignoredMatches++;
+        } else {
+            activeMatches++;
+            actionTaken = result;
+        }
     }
 
-    options.appendJobLogs(options.jobId, [`YARA matches: ${detectionsByPath.size}`]);
-    return { matches: detectionsByPath.size, actionTaken };
+    options.appendJobLogs(options.jobId, [
+        ignoredMatches > 0
+            ? `YARA matches: ${activeMatches} active, ${ignoredMatches} ignored by exclusions`
+            : `YARA matches: ${activeMatches}`
+    ]);
+    return { matches: activeMatches, ignoredMatches, actionTaken };
 }
 
 async function startServer() {
@@ -7132,6 +7143,7 @@ async function startServer() {
                                             appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
                                             continue;
                                         }
+                                        threatsFound++;
                                         const threatName = match[2];
                                         const action = normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask"));
                                         const actionKind = shieldActionKind(action);
@@ -7197,8 +7209,7 @@ async function startServer() {
                                     if (m) scannedFiles = parseInt(m[0], 10);
                                 }
                                 if (line.startsWith("Infected files:")) {
-                                    const m = line.match(/\d+/);
-                                    if (m) threatsFound = parseInt(m[0], 10);
+                                    continue;
                                 }
                                 if (line.startsWith("Time:")) {
                                     const m = line.match(/(\d+\.\d+) sec/);
@@ -7226,7 +7237,7 @@ async function startServer() {
                                 actionTaken = yaraResult.actionTaken;
                             }
 
-                            const isThreat = code === 1 || threatsFound > 0;
+                            const isThreat = threatsFound > 0;
                             appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
                             if (isThreat) {
                                 console.log(`Shield: Threat found in ${filePath}`);
@@ -8242,6 +8253,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
             let fatalScanErrors = 0;
             let scannerFailureBatches = 0;
             let failedFilesQueuedForRescan = 0;
+            let ignoredDetections = 0;
+            let ignoredExceptionDetections = 0;
+            let ignoredProviderSafetyDetections = 0;
             let actionTaken = "None";
             const startedAt = Date.now();
             const heartbeat = createScanHeartbeat(jobId, "Scan");
@@ -8257,17 +8271,23 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (!match) return;
                 const originalPath = match[1];
                 if (shouldSkipScanFile(originalPath)) {
+                    ignoredDetections++;
+                    ignoredProviderSafetyDetections++;
                     appendJobLogs(jobId, [
                         `Threat found: ${displayFileName(originalPath)}`,
                         "Action: Ignored because this path is excluded from provider-safety scans"
                     ]);
+                    saveJobProgress(jobId, { actionTaken: "Ignored by exclusions" });
                     return;
                 }
                 if (isExcluded(originalPath, exceptions)) {
+                    ignoredDetections++;
+                    ignoredExceptionDetections++;
                     appendJobLogs(jobId, [
                         `Threat found: ${displayFileName(originalPath)}`,
                         "Action: Ignored because it is in Exceptions"
                     ]);
+                    saveJobProgress(jobId, { actionTaken: "Ignored by Exceptions" });
                     return;
                 }
                 threatsFound++;
@@ -8468,7 +8488,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     errorsFound,
                     currentFile: chunk[chunk.length - 1] || "",
                     phase: totalBatches ? `ClamAV batch ${batchNumber}/${totalBatches}` : `ClamAV batch ${batchNumber}`,
-                    result: code === 1 ? 1 : 0
+                    result: threatsFound > 0 ? 1 : 0
                 });
                 return true;
             };
@@ -8622,6 +8642,12 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     actionTaken = yaraResult.actionTaken;
                     saveJobProgress(jobId, { threatsFound, actionTaken });
                 }
+                if (Number(yaraResult.ignoredMatches || 0) > 0) {
+                    ignoredDetections += Number(yaraResult.ignoredMatches || 0);
+                    saveJobProgress(jobId, {
+                        actionTaken: threatsFound > 0 ? actionTaken : "Ignored by exclusions"
+                    });
+                }
             }
 
             const isThreat = threatsFound > 0;
@@ -8635,13 +8661,24 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 ? "Scanner error"
                 : hasRescanQueue
                     ? (isThreat && actionTaken !== "None" ? `${actionTaken}; ${rescanAction}` : rescanAction)
-                    : isThreat ? actionTaken : "None";
+                    : isThreat
+                        ? actionTaken
+                        : ignoredDetections > 0
+                            ? [
+                                ignoredExceptionDetections > 0 ? `${ignoredExceptionDetections.toLocaleString()} ignored by Exceptions` : "",
+                                ignoredProviderSafetyDetections > 0 ? `${ignoredProviderSafetyDetections.toLocaleString()} ignored by provider-safety exclusions` : ""
+                            ].filter(Boolean).join("; ") || `${ignoredDetections.toLocaleString()} ignored by exclusions`
+                            : "None";
             appendJobLogs(jobId, [
                 scanFailed
                     ? "Scan stopped with scanner errors."
                     : hasRescanQueue
                         ? `Scan complete; ${rescanAction}.`
-                        : isThreat ? "Scan complete: detections found" : "Scan complete: no active threats found"
+                        : isThreat
+                            ? "Scan complete: detections found"
+                            : ignoredDetections > 0
+                                ? `Scan complete: no active threats found; ${ignoredDetections.toLocaleString()} detection${ignoredDetections === 1 ? "" : "s"} ignored by exclusions`
+                                : "Scan complete: no active threats found"
             ]);
             await addHistory({
                 type: scanSource === "scheduled" ? `scheduled-scan-${scanType}` : `scan-${scanType}`,
@@ -8884,6 +8921,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                                 appendJobLogs(jobId, [`Ignored (Exception): ${originalPath}`]);
                                 continue;
                             }
+                            threatsFound++;
                             const threatName = match[2];
                             const action = settings.scanDetectionAction || "results";
                             if (action === "quarantine") {
@@ -8915,8 +8953,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         if (m) scannedFiles = parseInt(m[0], 10);
                     }
                     if (line.startsWith("Infected files:")) {
-                        const m = line.match(/\d+/);
-                        if (m) threatsFound = parseInt(m[0], 10);
+                        continue;
                     }
                     if (line.startsWith("Time:")) {
                         const m = line.match(/(\d+\.\d+) sec/);
@@ -8948,9 +8985,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     actionTaken = yaraResult.actionTaken;
                 }
 
-                const isThreat = code === 1 || threatsFound > 0;
-                const exitSummary = code === 1
-                    ? "Scan finished with exit code 1 (threats were found)."
+                const isThreat = threatsFound > 0;
+                const exitSummary = code === 1 && !isThreat
+                    ? "Scan finished with exit code 1, but all detections were ignored by exclusions."
+                    : code === 1
+                    ? "Scan finished with exit code 1 (active threats were found)."
                     : `Scan finished with exit code ${code ?? "unknown"}.`;
                 appendJobLogs(jobId, [exitSummary]);
                 await addHistory({
@@ -8976,7 +9015,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 }
 
                 activeJobs[jobId].status = "done";
-                activeJobs[jobId].result = code ?? 0;
+                activeJobs[jobId].result = isThreat ? 1 : 0;
                 activeJobs[jobId].process = null;
                 await flushPendingClamdDatabaseReload(settings).catch(e => console.warn("Deferred clamd reload failed:", e.message));
             });
