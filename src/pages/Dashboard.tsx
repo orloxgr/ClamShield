@@ -53,7 +53,11 @@ export default function Dashboard() {
       if (!configureRes.ok) throw new Error(configureData.error || "Could not connect SecuriteInfo.");
       fetchStatus();
 
-      const updateRes = await fetch("/api/update", { method: "POST" });
+      const updateRes = await fetch("/api/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "securiteinfo" })
+      });
       const updateData = await updateRes.json();
       if (!updateRes.ok) throw new Error(updateData.error || "Connected, but the signature update could not start.");
 
@@ -83,7 +87,11 @@ export default function Dashboard() {
       const settingsData = await settingsRes.json();
       if (!settingsRes.ok) throw new Error(settingsData.error || "Could not save SecuriteInfo settings.");
 
-      const res = await fetch("/api/update", { method: "POST" });
+      const res = await fetch("/api/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "securiteinfo" })
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not start the signature update.");
       setSecuriteInfoMessage("SecuriteInfo settings saved. Signature update started. Open Updates to view detailed FreshClam output.");

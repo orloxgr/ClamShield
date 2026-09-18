@@ -2976,15 +2976,6 @@ async function downloadToFile(
     });
 }
 
-async function buildFreshclamLikeUserAgent(settings: any) {
-    const versionText = await getClamAVEngineVersion(settings, Boolean(settings?.clamscanPath && existsSync(settings.clamscanPath)));
-    const versionMatch = String(versionText || "").match(/\bClamAV\s+([^\s]+)/i);
-    const version = versionMatch?.[1] || "1.0.0";
-    const osLabel = process.platform === "win32" ? "Windows" : process.platform;
-    const arch = os.arch() === "x64" ? "x86_64" : os.arch();
-    return `ClamAV/${version} (OS: ${osLabel}, ARCH: ${arch}, CPU: ${arch})`;
-}
-
 async function extractZip(zipPath: string, destination: string) {
     await fs.mkdir(destination, { recursive: true });
     const extractStream = createReadStream(zipPath).pipe(unzipper.Extract({ path: destination }));
@@ -4443,7 +4434,8 @@ async function prepareFreshclamConfig(settings: any, options: { includeOfficial?
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
         `UpdateLogFile ${logPath}`,
-        ...(includeOfficial ? ["DatabaseMirror database.clamav.net"] : []),
+        // FreshClam requires at least one mirror even when updating custom URLs.
+        "DatabaseMirror database.clamav.net",
         ...databases.map(fileName => `DatabaseCustomURL ${securiteInfoBaseUrl}/${token}/${fileName}`)
     ];
     await fs.writeFile(configPath, `${lines.join("\n")}\n`, { mode: 0o600 });
@@ -4462,47 +4454,42 @@ async function prepareFreshclamConfig(settings: any, options: { includeOfficial?
     };
 }
 
-async function updateSecuriteInfoDatabases(settings: any, onProgress?: (message: string) => void) {
-    const token = await loadSecuriteInfoToken();
-    if (!token) {
-        throw new Error("SecuriteInfo is enabled but its encrypted account token is unavailable. Reconnect the account from Dashboard.");
+async function runFreshclamWithConfig(settings: any, preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>>, options: {
+    onLine?: (line: string) => void;
+    onProcess?: (child: any) => void;
+} = {}) {
+    if (!await pathExists(settings.freshclamPath)) {
+        throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
     }
-    const databases = getConfiguredSecuriteInfoDatabaseNames(settings);
-    if (databases.length === 0) {
-        throw new Error("No SecuriteInfo databases are enabled.");
+    const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
+    if (preparedConfig.securiteInfoEnabled && !preparedConfig.officialEnabled) {
+        args.push("--update-db=custom");
     }
-
-    await fs.mkdir(settings.databaseDir, { recursive: true });
-    const userAgent = await buildFreshclamLikeUserAgent(settings);
-    let updatedCount = 0;
-    for (const fileName of databases) {
-        const destination = path.join(settings.databaseDir, fileName);
-        const temporaryPath = path.join(settings.databaseDir, `.clamshield-${fileName}-${Date.now()}-${randomBytes(4).toString("hex")}.tmp`);
-        const url = `${securiteInfoBaseUrl}/${token}/${fileName}`;
-        try {
-            onProgress?.(`Downloading ${fileName}...`);
-            await downloadToFile(url, temporaryPath, message => onProgress?.(`${fileName}: ${message}`), {
-                "User-Agent": userAgent,
-                "Accept": "*/*",
-                "Connection": "close"
-            });
-            const stat = await fs.stat(temporaryPath);
-            if (stat.size <= 0) {
-                throw new Error("downloaded file is empty");
-            }
-            await fs.rename(temporaryPath, destination);
-            updatedCount++;
-            onProgress?.(`Installed ${fileName}.`);
-        } catch (e: any) {
-            await fs.unlink(temporaryPath).catch(() => {});
-            if (e?.response?.status === 403) {
-                throw new Error(`SecuriteInfo rejected ${fileName} with HTTP 403. Reconnect SecuriteInfo from Dashboard using the full DatabaseCustomURL text and verify that this account can download the selected ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan)} databases.`);
-            }
-            throw new Error(`Failed to download ${fileName}: ${e?.message || e}`);
-        }
-    }
-
-    return { updatedCount, databases };
+    return await new Promise<number>((resolve, reject) => {
+        let settled = false;
+        const settle = (callback: () => void) => {
+            if (settled) return;
+            settled = true;
+            callback();
+        };
+        const child = spawn(settings.freshclamPath, args, { windowsHide: true });
+        options.onProcess?.(child);
+        const handleOutput = (data: Buffer) => {
+            const lines = data.toString()
+                .split("\n")
+                .map((line: string) => preparedConfig.redact(line.trim()))
+                .filter(Boolean);
+            lines.forEach(line => options.onLine?.(line));
+        };
+        child.stdout.on("data", handleOutput);
+        child.stderr.on("data", handleOutput);
+        child.on("error", (err: any) => {
+            settle(() => reject(new Error(preparedConfig.redact(err.message || String(err)))));
+        });
+        child.on("close", code => {
+            settle(() => resolve(code ?? 0));
+        });
+    });
 }
 
 async function retryRemovePath(targetPath: string, attempts = 5) {
@@ -7430,16 +7417,27 @@ async function startServer() {
                             const startedAt = Date.now();
                             let resultCode = 1;
                             let actionTaken = "Failed";
+                            let preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>> | null = null;
+                            const databaseCount = getConfiguredSecuriteInfoDatabaseNames(settings).length;
                             try {
-                                const result = await updateSecuriteInfoDatabases(settings, message => console.log(`SecuriteInfo auto-update: ${message}`));
+                                preparedConfig = await prepareFreshclamConfig(settings, {
+                                    includeOfficial: false,
+                                    includeSecuriteInfo: true
+                                });
+                                const code = await runFreshclamWithConfig(settings, preparedConfig, {
+                                    onLine: line => console.log(`SecuriteInfo auto-update: ${line}`)
+                                });
+                                if (code !== 0) {
+                                    throw new Error(`FreshClam failed with exit code ${code}.`);
+                                }
                                 await reloadClamdDatabases(settings);
                                 settings = {
                                     ...settings,
                                     lastSecuriteInfoUpdate: new Date().toISOString(),
-                                    lastSecuriteInfoUpdateResult: `Updated ${result.updatedCount} databases`
+                                    lastSecuriteInfoUpdateResult: `FreshClam updated ${databaseCount} configured databases`
                                 };
                                 resultCode = 0;
-                                actionTaken = `Updated ${result.updatedCount} databases`;
+                                actionTaken = `FreshClam updated ${databaseCount} configured databases`;
                             } catch (e: any) {
                                 const message = redactSecuriteInfoSecret(e?.message || String(e));
                                 settings = {
@@ -7448,6 +7446,7 @@ async function startServer() {
                                 };
                                 console.error("Automatic SecuriteInfo update failed:", message);
                             } finally {
+                                await preparedConfig?.cleanup().catch(() => {});
                                 freshclamUpdateInProgress = false;
                                 await saveConfig(settings).catch(() => {});
                                 await addHistory({
@@ -7455,7 +7454,7 @@ async function startServer() {
                                     target: "SecuriteInfo (Auto)",
                                     result: resultCode,
                                     threatsFound: 0,
-                                    scannedFiles: 0,
+                                    scannedFiles: databaseCount,
                                     duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
                                     actionTaken
                                 }).catch(() => {});
@@ -9206,22 +9205,35 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 res.json({ jobId, status: "started" });
                 (async () => {
                     const startedAt = Date.now();
+                    const databaseCount = getConfiguredSecuriteInfoDatabaseNames(settings).length;
                     try {
                         appendJobLogs(jobId, [
-                            `Downloading SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases...`
+                            `Updating SecuriteInfo ${normalizeSecuriteInfoPlan(settings.securiteInfoPlan) === "paid" ? "paid" : "Basic"} databases with FreshClam...`
                         ]);
-                        const result = await updateSecuriteInfoDatabases(settings, message => {
-                            if (activeJobs[jobId]) appendJobLogs(jobId, [message]);
+                        preparedConfig = await prepareFreshclamConfig(settings, {
+                            includeOfficial: false,
+                            includeSecuriteInfo: true
                         });
+                        const code = await runFreshclamWithConfig(settings, preparedConfig, {
+                            onLine: line => {
+                                if (activeJobs[jobId]) appendJobLogs(jobId, [line]);
+                            },
+                            onProcess: child => {
+                                if (activeJobs[jobId]) activeJobs[jobId].process = child;
+                            }
+                        });
+                        if (code !== 0) {
+                            throw new Error(`FreshClam failed with exit code ${code}.`);
+                        }
                         await reloadClamdDatabases(settings);
                         settings = {
                             ...settings,
                             lastSecuriteInfoUpdate: new Date().toISOString(),
-                            lastSecuriteInfoUpdateResult: `Updated ${result.updatedCount} databases`
+                            lastSecuriteInfoUpdateResult: `FreshClam updated ${databaseCount} configured databases`
                         };
                         await saveConfig(settings);
                         if (!activeJobs[jobId]) return;
-                        appendJobLogs(jobId, [`SecuriteInfo update complete: ${result.updatedCount} databases installed.`]);
+                        appendJobLogs(jobId, [`SecuriteInfo FreshClam update complete for ${databaseCount} configured databases.`]);
                         activeJobs[jobId].status = "done";
                         activeJobs[jobId].result = 0;
                         activeJobs[jobId].process = null;
@@ -9231,9 +9243,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                             target: "SecuriteInfo",
                             result: 0,
                             threatsFound: 0,
-                            scannedFiles: result.updatedCount,
+                            scannedFiles: databaseCount,
                             duration: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
-                            actionTaken: `Updated ${result.updatedCount} databases`
+                            actionTaken: `FreshClam updated ${databaseCount} configured databases`
                         });
                     } catch (e: any) {
                         const message = redactSecuriteInfoSecret(e?.message || String(e));
@@ -9259,6 +9271,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                             actionTaken: "Failed"
                         }).catch(() => {});
                     } finally {
+                        await preparedConfig?.cleanup().catch(() => {});
                         if (freshclamUpdateJobId === jobId) {
                             freshclamUpdateInProgress = false;
                             freshclamUpdateJobId = null;
