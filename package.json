@@ -83,7 +83,7 @@
     "concurrently": "^9.2.4",
     "electron": "^41.10.3",
     "electron-builder": "^26.15.7",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.1",
     "typescript": "~5.8.2",
