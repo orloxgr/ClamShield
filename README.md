@@ -12,6 +12,7 @@ For development transparency, runtime AI/cloud-service behavior, CI status, bina
 - One-click FreshClam signature updates.
 - Optional SecuriteInfo third-party signatures using an account-specific FreshClam URL stored with Windows encryption.
 - Optional SaneSecurity signatures downloaded from public rsync mirrors and verified with the provider's official GPG key.
+- Optional VirusTotal Cloud second-opinion layer for Results refinement, real-time Shield cloud checks, and user-controlled unknown-file uploads with configurable size limits.
 - Optional Windows DNS protection using public, account-free filtering resolvers from Cloudflare, AdGuard, CleanBrowsing, or Control D, with saved settings for restoration.
 - Optional YARA scanning powered by ready-to-use YARA Forge rule packages.
 - YARA Forge Core rules are enabled by default, with Extended and Full profiles available for advanced coverage.
@@ -27,7 +28,6 @@ For development transparency, runtime AI/cloud-service behavior, CI status, bina
 - User-controlled shield depth and concurrent scan count.
 - Quarantine management and threat action prompts.
 - Exceptions list for trusted files and folders.
-- Optional VirusTotal Cloud integration for Results refinement, real-time Shield cloud checks, and user-controlled unknown-file uploads with configurable size limits.
 - Results page actions for per-file quarantine, exception, VirusTotal cloud checks, MD5 hash reports, and user-controlled VirusTotal upload checks.
 - One-click false-positive reporting helpers for exceptions with provider-specific routing for ClamAV, SecuriteInfo, SaneSecurity, and YARA Forge detections.
 - Tray app with background monitoring and threat popup alerts.
