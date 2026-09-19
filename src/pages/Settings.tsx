@@ -384,6 +384,18 @@ export default function SettingsPage() {
                 />
               </div>
             )}
+            <div className="flex items-center justify-between py-2 border-t border-slate-800 pt-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Exclude ClamShield YARA and quarantine from Defender</span>
+                <span className="text-slate-500 text-xs">Helps prevent duplicate handling of rule files and quarantined items.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.defenderCompatibilityExclusionsEnabled === true}
+                onChange={e => updateSettings({...settings, defenderCompatibilityExclusionsEnabled: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </div>
             <div className="flex items-start gap-2 bg-slate-800/50 p-3 rounded-lg border border-indigo-500/20 text-indigo-200/80 text-xs">
               <ShieldAlert className="w-4 h-4 shrink-0 text-indigo-400 mt-0.5" />
               <p>

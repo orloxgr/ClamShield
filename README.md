@@ -13,6 +13,7 @@ For development transparency, runtime AI/cloud-service behavior, CI status, bina
 - Optional SecuriteInfo third-party signatures using an account-specific FreshClam URL stored with Windows encryption.
 - Optional SaneSecurity signatures downloaded from public rsync mirrors and verified with the provider's official GPG key.
 - Optional VirusTotal Cloud second-opinion layer for Results refinement, real-time Shield cloud checks, and user-controlled unknown-file uploads with configurable size limits.
+- Optional Microsoft Defender compatibility exclusions for ClamShield YARA folders and quarantine storage.
 - Optional Windows DNS protection using public, account-free filtering resolvers from Cloudflare, AdGuard, CleanBrowsing, or Control D, with saved settings for restoration.
 - Optional YARA scanning powered by ready-to-use YARA Forge rule packages.
 - YARA Forge Core rules are enabled by default, with Extended and Full profiles available for advanced coverage.

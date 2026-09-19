@@ -389,6 +389,7 @@ const defaultSettings = {
     enableDebugLog: false,
     logRetentionDays: 7,
     autoDisableDefender: false,
+    defenderCompatibilityExclusionsEnabled: false,
     defenderEnforceIntervalMinutes: 5,
     dnsProtectionEnabled: false,
     dnsProtectionProfile: "",
@@ -469,6 +470,7 @@ const booleanSettingKeys = new Set([
     "playSoundOnAlert",
     "enableDebugLog",
     "autoDisableDefender",
+    "defenderCompatibilityExclusionsEnabled",
     "scheduledScanEnabled",
     "scheduledScanIdleOnly",
     "scheduledScanFullDisk",
@@ -1643,6 +1645,79 @@ async function getDnsProtectionStatus(settings: any) {
 
 function powershellStringArray(values: string[]) {
     return `@(${values.map(value => `'${value.replace(/'/g, "''")}'`).join(", ")})`;
+}
+
+function getDefenderCompatibilityExclusionPaths(settings: any) {
+    if (process.platform !== "win32") return [];
+    return dedupePaths([
+        settings.yaraDir,
+        settings.yaraRulesDir,
+        settings.yaraCacheDir,
+        settings.yaraCustomRulesDir,
+        settings.quarantineDir
+    ].filter(Boolean).map((folderPath: string) => path.resolve(folderPath)));
+}
+
+function defenderCompatibilityExclusionsScript(paths: string[], enabled: boolean) {
+    return `
+$ErrorActionPreference = 'Continue'
+$enabled = ${enabled ? "$true" : "$false"}
+$paths = ${powershellStringArray(paths)}
+$operations = [ordered]@{}
+function Test-ClamShieldPathListed($Existing, $Path) {
+    foreach ($item in @($Existing)) {
+        if ([string]::Equals([string]$item, [string]$Path, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+try { $prefsBefore = Get-MpPreference -ErrorAction Stop; $existing = @($prefsBefore.ExclusionPath) } catch { $existing = @(); $operations['Get-MpPreference'] = $_.Exception.Message }
+foreach ($path in $paths) {
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    try {
+        if ($enabled) {
+            if (-not (Test-ClamShieldPathListed $existing $path)) {
+                Add-MpPreference -ExclusionPath $path -ErrorAction Stop
+            }
+        } else {
+            if (Test-ClamShieldPathListed $existing $path) {
+                Remove-MpPreference -ExclusionPath $path -ErrorAction Stop
+            }
+        }
+        $operations[$path] = 'ok'
+    } catch {
+        $operations[$path] = $_.Exception.Message
+    }
+}
+try { $prefsAfter = Get-MpPreference -ErrorAction Stop; $active = @($prefsAfter.ExclusionPath) } catch { $active = @(); $operations['Verify'] = $_.Exception.Message }
+$pending = @()
+foreach ($path in $paths) {
+    $listed = Test-ClamShieldPathListed $active $path
+    if ($enabled -and -not $listed) { $pending += $path }
+    if (-not $enabled -and $listed) { $pending += $path }
+}
+$success = ($pending.Count -eq 0)
+$result = [ordered]@{
+    Supported = $true
+    Success = $success
+    Enabled = $enabled
+    Paths = $paths
+    PendingPaths = $pending
+    ActivePaths = $active
+    Operations = $operations
+    NeedsManualAction = (-not $success)
+    Message = if ($success) { if ($enabled) { 'Defender compatibility exclusions are applied.' } else { 'Defender compatibility exclusions are removed.' } } else { 'Windows blocked one or more Defender exclusion changes.' }
+}
+'CLAMSHIELD_JSON_START'
+$result | ConvertTo-Json -Depth 5 -Compress
+'CLAMSHIELD_JSON_END'
+`;
+}
+
+async function syncDefenderCompatibilityExclusions(settings: any) {
+    if (process.platform !== "win32") return { Supported: false, Success: false, Error: "Only supported on Windows." };
+    const paths = getDefenderCompatibilityExclusionPaths(settings);
+    if (paths.length === 0) return { Supported: true, Success: true, Paths: [] };
+    return runPowerShellJson(defenderCompatibilityExclusionsScript(paths, settings.defenderCompatibilityExclusionsEnabled === true));
 }
 
 async function applyDnsProtectionProfile(settings: any, profileId: any) {
@@ -4119,6 +4194,14 @@ async function readLegacyJsonState(filePath: string, fallback: any) {
     }
 }
 
+async function recoverLegacySettingsIfSettingsEmpty(db: any) {
+    if (appStateRowCount(db, "settings") > 0) return false;
+    const settings = asRecord(await readLegacyJsonState(legacySettingsPath, null));
+    if (Object.keys(settings).length === 0) return false;
+    saveSettingsRows(settings);
+    return true;
+}
+
 function isAppStateMigrationApplied(db: any, name: string) {
     return !!db.prepare("SELECT name FROM migrations WHERE name = ?").get(name);
 }
@@ -4458,11 +4541,9 @@ async function cleanupBuiltInExcludedScanResults(settings: any) {
 
 async function migrateLegacyAppState(db: any) {
     await runAppStateMigration(db, "settings.json", async () => {
-        const settings = asRecord(await readLegacyJsonState(legacySettingsPath, null));
-        if (Object.keys(settings).length > 0 && appStateRowCount(db, "settings") === 0) {
-            saveSettingsRows(settings);
-        }
+        await recoverLegacySettingsIfSettingsEmpty(db);
     });
+    await recoverLegacySettingsIfSettingsEmpty(db);
 
     await runAppStateMigration(db, "history.json", async () => {
         const history = await readLegacyJsonState(legacyHistoryPath, []);
@@ -5299,7 +5380,7 @@ async function loadConfig() {
         await ensureAppStateReady();
         const rows = getAppStateDb().prepare("SELECT key, value FROM settings").all();
         if (!rows.length) {
-            const freshSettings = installerConsent
+            const runtimeSettings = installerConsent
                 ? {
                     ...defaultSettings,
                     eulaAccepted: true,
@@ -5307,10 +5388,9 @@ async function loadConfig() {
                     eulaAcceptedAt: installerConsent.acceptedAt
                 }
                 : { ...defaultSettings };
-            saveSettingsRows(freshSettings);
-            currentLogsDir = freshSettings.logsDir || defaultLogsDir;
-            debugLoggingEnabled = freshSettings.enableDebugLog === true;
-            return freshSettings;
+            currentLogsDir = runtimeSettings.logsDir || defaultLogsDir;
+            debugLoggingEnabled = runtimeSettings.enableDebugLog === true;
+            return runtimeSettings;
         }
         const parsed = rows.reduce((settings: any, row: any) => {
             settings[row.key] = parseAppStateJson(row.value, null);
@@ -7468,6 +7548,10 @@ async function startServer() {
     let settings = await loadConfig();
     await ensureDirs(settings);
     await cleanupOldLogs(settings);
+    if (settings.defenderCompatibilityExclusionsEnabled === true) {
+        syncDefenderCompatibilityExclusions(settings)
+            .catch(e => console.warn("Defender compatibility exclusions were not fully applied:", e?.message || e));
+    }
     console.log("ClamShield service starting", {
         version: process.env.npm_package_version,
         logsDir: settings.logsDir,
@@ -8888,55 +8972,73 @@ async function startServer() {
     });
 
     app.post("/api/settings", async (req, res) => {
-        const normalizedRequest = normalizeSettingsPatch(req.body, settings);
-        const requestedSettings = normalizedRequest.patch;
-        if (normalizedRequest.unknownKeys.length > 0) {
-            console.warn("Ignored unknown settings keys:", normalizedRequest.unknownKeys.join(", "));
-        }
-        const securiteInfoDatabaseSelectionChanged =
-            ("securiteInfoPlan" in requestedSettings && requestedSettings.securiteInfoPlan !== settings.securiteInfoPlan) ||
-            ("securiteInfoIncludePua" in requestedSettings && requestedSettings.securiteInfoIncludePua !== settings.securiteInfoIncludePua);
-        const hasScheduledScanSettings = Object.keys(requestedSettings).some(key => key.startsWith("scheduledScan"));
-        if (hasScheduledScanSettings) {
-            Object.assign(requestedSettings, normalizeScheduledScanSettings({
-                ...settings,
-                ...requestedSettings
-            }));
-        }
-        settings = { ...settings, ...requestedSettings };
-        const settingsKeysToPersist = new Set(Object.keys(requestedSettings));
-        if (normalizeSecuriteInfoPlan(settings.securiteInfoPlan) !== "paid") {
-            settings.securiteInfoIncludePua = false;
-            if ("securiteInfoPlan" in requestedSettings || "securiteInfoIncludePua" in requestedSettings) {
-                settingsKeysToPersist.add("securiteInfoIncludePua");
+        try {
+            const normalizedRequest = normalizeSettingsPatch(req.body, settings);
+            const requestedSettings = normalizedRequest.patch;
+            if (normalizedRequest.unknownKeys.length > 0) {
+                console.warn("Ignored unknown settings keys:", normalizedRequest.unknownKeys.join(", "));
             }
+            const securiteInfoDatabaseSelectionChanged =
+                ("securiteInfoPlan" in requestedSettings && requestedSettings.securiteInfoPlan !== settings.securiteInfoPlan) ||
+                ("securiteInfoIncludePua" in requestedSettings && requestedSettings.securiteInfoIncludePua !== settings.securiteInfoIncludePua);
+            const hasScheduledScanSettings = Object.keys(requestedSettings).some(key => key.startsWith("scheduledScan"));
+            if (hasScheduledScanSettings) {
+                Object.assign(requestedSettings, normalizeScheduledScanSettings({
+                    ...settings,
+                    ...requestedSettings
+                }));
+            }
+            const nextSettings = { ...settings, ...requestedSettings };
+            const settingsKeysToPersist = new Set(Object.keys(requestedSettings));
+            if (normalizeSecuriteInfoPlan(nextSettings.securiteInfoPlan) !== "paid") {
+                nextSettings.securiteInfoIncludePua = false;
+                if ("securiteInfoPlan" in requestedSettings || "securiteInfoIncludePua" in requestedSettings) {
+                    settingsKeysToPersist.add("securiteInfoIncludePua");
+                }
+            }
+            let defenderCompatibilityExclusions = null;
+            if ("defenderCompatibilityExclusionsEnabled" in requestedSettings) {
+                await ensureDirs(nextSettings);
+                defenderCompatibilityExclusions = await syncDefenderCompatibilityExclusions(nextSettings);
+                if (defenderCompatibilityExclusions?.Success === false) {
+                    return res.status(409).json({
+                        success: false,
+                        error: defenderCompatibilityExclusions.Message || defenderCompatibilityExclusions.Error || "Windows blocked Defender exclusion changes.",
+                        defenderCompatibilityExclusions
+                    });
+                }
+            }
+            settings = nextSettings;
+            await saveConfig(settings, { keys: settingsKeysToPersist });
+            await ensureDirs(settings);
+            await cleanupOldLogs(settings);
+            if (securiteInfoDatabaseSelectionChanged) {
+                await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
+                await reloadClamdDatabases(settings);
+            }
+            res.json({
+                success: true,
+                settings,
+                ignoredSettings: normalizedRequest.rejectedKeys,
+                defenderCompatibilityExclusions
+            });
+            Promise.resolve()
+                .then(async () => {
+                    await checkClamAV(settings);
+                    await startShield(settings);
+                    await manageClamd(settings);
+                    await manageStartup(settings);
+                    await scheduleDefenderEnforcement(false);
+                    scheduleNextUpdate();
+                    scheduleNextYaraUpdate();
+                    scheduleNextAppUpdateCheck();
+                    scheduleVirusTotalRefinement();
+                    scheduleShieldVirusTotalCheck();
+                })
+                .catch(e => console.error("Failed to apply settings side effects:", e));
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || "Settings save failed." });
         }
-        await saveConfig(settings, { keys: settingsKeysToPersist });
-        await ensureDirs(settings);
-        await cleanupOldLogs(settings);
-        if (securiteInfoDatabaseSelectionChanged) {
-            await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
-            await reloadClamdDatabases(settings);
-        }
-        res.json({
-            success: true,
-            settings,
-            ignoredSettings: normalizedRequest.rejectedKeys
-        });
-        Promise.resolve()
-            .then(async () => {
-                await checkClamAV(settings);
-                await startShield(settings);
-                await manageClamd(settings);
-                await manageStartup(settings);
-                await scheduleDefenderEnforcement(false);
-                scheduleNextUpdate();
-                scheduleNextYaraUpdate();
-                scheduleNextAppUpdateCheck();
-                scheduleVirusTotalRefinement();
-                scheduleShieldVirusTotalCheck();
-            })
-            .catch(e => console.error("Failed to apply settings side effects:", e));
     });
 
     app.get("/api/scheduled-scan", (req, res) => {
@@ -8963,17 +9065,21 @@ async function startServer() {
             idleSeconds: Math.max(0, Math.round(Number(body.idleSeconds || 0))),
             updatedAt: Date.now()
         };
+        const runtimeSettingsKeys = new Set<string>();
         if (typeof body.lastRunKey === "string" && body.lastRunKey) {
             settings.lastScheduledScanRunKey = body.lastRunKey.slice(0, 200);
+            runtimeSettingsKeys.add("lastScheduledScanRunKey");
         }
         if (typeof body.lastRunAt === "string") {
             settings.lastScheduledScanAt = body.lastRunAt.slice(0, 100);
+            runtimeSettingsKeys.add("lastScheduledScanAt");
         }
         if (typeof body.lastResult === "string") {
             settings.lastScheduledScanResult = body.lastResult.slice(0, 500);
+            runtimeSettingsKeys.add("lastScheduledScanResult");
         }
-        if (body.persist === true) {
-            await saveConfig(settings, { keys: ["virusTotalCloudEnabled", "virusTotalAutoRefineEnabled", "virusTotalShieldBackgroundCheckEnabled"] });
+        if (body.persist === true && runtimeSettingsKeys.size > 0) {
+            await saveConfig(settings, { keys: runtimeSettingsKeys });
         }
         if (body.persist === true && scheduledScanRuntime.state === "complete" && String(settings.lastScheduledScanResult || "").toLowerCase().includes("detections")) {
             sendScanSummary({
@@ -9011,7 +9117,15 @@ async function startServer() {
             await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
             await reloadClamdDatabases(settings);
             await ensureFreshclamConfig(settings);
-            await saveConfig(settings, { keys: ["virusTotalCloudEnabled", "virusTotalAutoRefineEnabled", "virusTotalShieldBackgroundCheckEnabled"] });
+            await saveConfig(settings, {
+                keys: [
+                    "securiteInfoEnabled",
+                    "securiteInfoPlan",
+                    "securiteInfoIncludePua",
+                    "lastSecuriteInfoUpdateResult",
+                    "freshclamConf"
+                ]
+            });
             res.json({
                 success: true,
                 message: plan === "paid"
