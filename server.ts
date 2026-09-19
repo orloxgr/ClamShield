@@ -35,6 +35,7 @@ const yaraCacheDir = path.join(yaraBaseDir, "cache");
 const legalNoticeVersion = "2026-06-25";
 const installerConsentPath = path.join(programDataDir, "installer-consent.txt");
 const securiteInfoSecretPath = path.join(programDataDir, "securiteinfo-token.bin");
+const virusTotalApiKeySecretPath = path.join(programDataDir, "virustotal-api-key.bin");
 const dnsProtectionBackupPath = path.join(programDataDir, "dns-protection-backup.json");
 const appStateDbPath = path.join(programDataDir, "app_state.sqlite");
 const legacySettingsPath = path.join(programDataDir, "settings.json");
@@ -321,6 +322,13 @@ const defaultSettings = {
     saneSecurityProfile: "malware",
     lastSaneSecurityUpdate: "",
     lastSaneSecurityUpdateResult: "",
+    virusTotalCloudEnabled: false,
+    virusTotalAutoRefineEnabled: false,
+    virusTotalResultsUploadUnknownEnabled: false,
+    virusTotalResultsUploadMaxSizeMb: 20,
+    virusTotalShieldBackgroundCheckEnabled: false,
+    virusTotalShieldUploadUnknownEnabled: false,
+    virusTotalShieldUploadMaxSizeMb: 20,
     yaraEnabled: true,
     yaraRuleset: "core",
     yaraAutoUpdateEnabled: true,
@@ -429,6 +437,11 @@ const booleanSettingKeys = new Set([
     "autoQuarantine",
     "autoUpdateEnabled",
     "securiteInfoIncludePua",
+    "virusTotalCloudEnabled",
+    "virusTotalAutoRefineEnabled",
+    "virusTotalResultsUploadUnknownEnabled",
+    "virusTotalShieldBackgroundCheckEnabled",
+    "virusTotalShieldUploadUnknownEnabled",
     "yaraEnabled",
     "yaraAutoUpdateEnabled",
     "appUpdateCheckEnabled",
@@ -479,6 +492,8 @@ const numberSettingSpecs: Record<string, { fallback: number, min: number, max: n
     shieldDepth: { fallback: 1, min: 0, max: 20, integer: true },
     shieldPollInterval: { fallback: 1000, min: 100, max: 60000, integer: true },
     shieldStabilityThreshold: { fallback: 2000, min: 100, max: 120000, integer: true },
+    virusTotalResultsUploadMaxSizeMb: { fallback: 20, min: 1, max: 32, integer: true },
+    virusTotalShieldUploadMaxSizeMb: { fallback: 20, min: 1, max: 32, integer: true },
     maxFileSize: { fallback: 50, min: 1, max: 4096 },
     manualScanIntensity: { fallback: 81, min: 1, max: 100, integer: true },
     scheduledScanIntensity: { fallback: 81, min: 1, max: 100, integer: true },
@@ -571,6 +586,11 @@ function shieldActionNotifies(action: any) {
 const apiSessionToken = process.env.CLAMSHIELD_API_TOKEN || randomBytes(32).toString("hex");
 const apiCookieName = "clamshield_session";
 const apiHeaderName = "x-clamshield-session";
+const virusTotalPublicApiLimits = {
+    perLookupMs: 16000,
+    perDay: 500,
+    perMonth: 15500
+};
 let pendingThreatHandler: ((threat: any) => void) | null = null;
 let scanResultsChangedHandler: (() => void | Promise<void>) | null = null;
 let appUpdateInstallPromise: Promise<any> | null = null;
@@ -584,6 +604,16 @@ let freshclamUpdateInProgress = false;
 let freshclamUpdateJobId: string | null = null;
 let freshclamUpdateTarget: "clamav" | "securiteinfo" | null = null;
 let saneSecurityUpdateInProgress = false;
+let virusTotalRefinementRunning = false;
+let virusTotalRefinementTimer: NodeJS.Timeout | null = null;
+let virusTotalRefinementNextAllowedAt = 0;
+let virusTotalRefinementLastMessage = "";
+let virusTotalShieldRunning = false;
+let virusTotalShieldTimer: NodeJS.Timeout | null = null;
+let virusTotalShieldNextAllowedAt = 0;
+let virusTotalShieldLastMessage = "";
+let virusTotalNextLookupAllowedAt = 0;
+let scanResultsCleanupTimer: NodeJS.Timeout | null = null;
 let clamAVVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
 let yaraVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
 
@@ -689,24 +719,32 @@ function getElectronSafeStorage() {
     return null;
 }
 
-async function saveSecuriteInfoToken(token: string) {
+async function saveEncryptedSecret(secretPath: string, value: string) {
     const safeStorage = getElectronSafeStorage();
     if (!safeStorage) {
         throw new Error("Windows secure credential storage is unavailable. Open ClamShield through the installed desktop application and try again.");
     }
-    await fs.mkdir(path.dirname(securiteInfoSecretPath), { recursive: true });
-    await fs.writeFile(securiteInfoSecretPath, safeStorage.encryptString(token), { mode: 0o600 });
+    await fs.mkdir(path.dirname(secretPath), { recursive: true });
+    await fs.writeFile(secretPath, safeStorage.encryptString(value), { mode: 0o600 });
 }
 
-async function loadSecuriteInfoToken() {
+async function loadEncryptedSecret(secretPath: string) {
     const safeStorage = getElectronSafeStorage();
     if (!safeStorage) return "";
     try {
-        const encrypted = await fs.readFile(securiteInfoSecretPath);
+        const encrypted = await fs.readFile(secretPath);
         return safeStorage.decryptString(encrypted);
     } catch {
         return "";
     }
+}
+
+async function saveSecuriteInfoToken(token: string) {
+    await saveEncryptedSecret(securiteInfoSecretPath, token);
+}
+
+async function loadSecuriteInfoToken() {
+    return await loadEncryptedSecret(securiteInfoSecretPath);
 }
 
 function redactSecuriteInfoSecret(value: any, token = "") {
@@ -828,13 +866,16 @@ async function getSaneSecurityStatus(settings: any) {
     const toolsInstalled = await pathExists(saneSecurityRsyncPath) &&
         await pathExists(saneSecurityGpgPath) &&
         await pathExists(saneSecurityCygpathPath);
+    const installedCount = expectedFiles.length - missingFiles.length;
 
     return {
         connected: settings.saneSecurityEnabled === true,
         enabled: settings.saneSecurityEnabled === true,
         profile,
         expectedCount: expectedFiles.length,
-        installedCount: expectedFiles.length - missingFiles.length,
+        installedCount,
+        installed: installedCount > 0,
+        ready: settings.saneSecurityEnabled === true && installedCount > 0,
         downloadedFiles,
         missingFiles,
         toolsInstalled,
@@ -3942,10 +3983,18 @@ function getAppStateDb() {
             sha1 TEXT,
             sha256 TEXT,
             virus_total_checks TEXT,
+            virus_total_refinement_status TEXT,
+            virus_total_refinement_label TEXT,
+            virus_total_refinement_severity TEXT,
+            virus_total_refinement_message TEXT,
+            virus_total_refinement_checked_at INTEGER,
+            virus_total_refinement_stats TEXT,
+            virus_total_refinement_report TEXT,
             payload TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_scan_results_timestamp ON scan_results(timestamp);
         CREATE INDEX IF NOT EXISTS idx_scan_results_normalized_path ON scan_results(normalized_path);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_vt_refinement_status ON scan_results(virus_total_refinement_status);
         CREATE TABLE IF NOT EXISTS scan_failed_files (
             id TEXT PRIMARY KEY,
             timestamp INTEGER NOT NULL,
@@ -3969,8 +4018,48 @@ function getAppStateDb() {
             key TEXT PRIMARY KEY,
             value INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS virus_total_usage (
+            period TEXT PRIMARY KEY,
+            count INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
     `);
     return appStateDb;
+}
+
+function addAppStateColumnIfMissing(db: any, tableName: string, columnName: string, definition: string) {
+    const columns = new Set(db.prepare(`PRAGMA table_info(${tableName})`).all().map((row: any) => String(row.name)));
+    if (!columns.has(columnName)) {
+        db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+    }
+}
+
+function migrateScanResultsVirusTotalRefinementSchema(db: any) {
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_status", "TEXT");
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_label", "TEXT");
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_severity", "TEXT");
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_message", "TEXT");
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_checked_at", "INTEGER");
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_stats", "TEXT");
+    addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_report", "TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_scan_results_vt_refinement_status ON scan_results(virus_total_refinement_status)");
+}
+
+function assertScanResultsVirusTotalRefinementSchema(db: any) {
+    const columns = new Set(db.prepare("PRAGMA table_info(scan_results)").all().map((row: any) => String(row.name)));
+    const required = [
+        "virus_total_refinement_status",
+        "virus_total_refinement_label",
+        "virus_total_refinement_severity",
+        "virus_total_refinement_message",
+        "virus_total_refinement_checked_at",
+        "virus_total_refinement_stats",
+        "virus_total_refinement_report"
+    ];
+    const missing = required.filter(column => !columns.has(column));
+    if (missing.length > 0) {
+        throw new Error(`App state schema migration incomplete. Missing scan_results column(s): ${missing.join(", ")}`);
+    }
 }
 
 function appStateJson(value: any) {
@@ -4038,19 +4127,94 @@ function markAppStateMigrationApplied(db: any, name: string) {
     db.prepare("INSERT OR REPLACE INTO migrations(name, applied_at) VALUES (?, ?)").run(name, Date.now());
 }
 
-async function runLegacyAppStateMigration(db: any, name: string, work: () => Promise<void>) {
+async function runAppStateMigration(db: any, name: string, work: () => Promise<void>) {
     if (isAppStateMigrationApplied(db, name)) return;
     await work();
     markAppStateMigrationApplied(db, name);
 }
 
+async function migrateAppStateSchema(db: any) {
+    await runAppStateMigration(db, "schema.scan_results.virus_total_refinement.v1", async () => {
+        migrateScanResultsVirusTotalRefinementSchema(db);
+    });
+    assertScanResultsVirusTotalRefinementSchema(db);
+}
+
+const auditedSettingsKeys = new Set([
+    "runOnStartup",
+    "startMinimized",
+    "autoDisableDefender",
+    "yaraEnabled",
+    "yaraRuleset",
+    "yaraRulesDir",
+    "yaraAutoUpdateEnabled"
+]);
+
+function settingValuesEqual(left: any, right: any) {
+    return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function getPersistedSettingsKeys() {
+    const db = getAppStateDb();
+    return new Set<string>(db.prepare("SELECT key FROM settings").all().map((row: any) => String(row.key)));
+}
+
 function saveSettingsRows(settings: any) {
     const db = getAppStateDb();
+    const existingRows = db.prepare("SELECT key, value FROM settings").all();
+    const existingSettings = new Map(existingRows.map((row: any) => [String(row.key), row.value]));
+    const auditedChanges = [...auditedSettingsKeys]
+        .filter(key => existingSettings.has(key))
+        .map(key => ({
+            key,
+            previous: existingSettings.get(key),
+            next: appStateJson(asRecord(settings)[key])
+        }))
+        .filter(change => change.previous !== change.next);
+    if (auditedChanges.length > 0) {
+        const stack = new Error().stack
+            ?.split("\n")
+            .slice(2, 8)
+            .map(line => line.trim())
+            .join(" | ");
+        console.warn("Audited settings change:", auditedChanges, stack || "");
+    }
     const insert = db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)");
     runAppStateTransaction(db, () => {
         db.prepare("DELETE FROM settings").run();
         for (const [key, value] of Object.entries(asRecord(settings))) {
             insert.run(key, appStateJson(value));
+        }
+    });
+}
+
+function saveSettingsPatchRows(settings: any, keys: Iterable<string>) {
+    const db = getAppStateDb();
+    const safe = asRecord(settings);
+    const uniqueKeys = [...new Set([...keys].map(key => String(key)).filter(key => Object.prototype.hasOwnProperty.call(safe, key)))];
+    if (uniqueKeys.length === 0) return;
+    const existingRows = db.prepare("SELECT key, value FROM settings").all();
+    const existingSettings = new Map(existingRows.map((row: any) => [String(row.key), row.value]));
+    const auditedChanges = uniqueKeys
+        .filter(key => auditedSettingsKeys.has(key))
+        .map(key => ({
+            key,
+            previous: existingSettings.get(key),
+            next: appStateJson(safe[key])
+        }))
+        .filter(change => change.previous !== change.next);
+    if (auditedChanges.length > 0) {
+        const stack = new Error().stack
+            ?.split("\n")
+            .slice(2, 8)
+            .map(line => line.trim())
+            .join(" | ");
+        console.warn("Audited settings change:", auditedChanges, stack || "");
+    }
+    const insert = db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)");
+    runAppStateTransaction(db, () => {
+        for (const key of uniqueKeys) {
+            insert.run(key, appStateJson(safe[key]));
         }
     });
 }
@@ -4138,11 +4302,15 @@ function insertScanResultRow(db: any, result: any, fallbackIndex = 0) {
     const timestamp = optionalNumber(payload.timestamp) || Date.now();
     const id = String(payload.id || `${timestamp}-${fallbackIndex}-${randomBytes(3).toString("hex")}`);
     const originalPath = String(payload.originalPath || "");
+    const virusTotalRefinement = asRecord(payload.virusTotalRefinement);
     db.prepare(`
         INSERT OR REPLACE INTO scan_results(
             id, timestamp, original_path, normalized_path, threat_name, engine, source, scan_type,
-            target, yara_ruleset, md5, sha1, sha256, virus_total_checks, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            target, yara_ruleset, md5, sha1, sha256, virus_total_checks,
+            virus_total_refinement_status, virus_total_refinement_label, virus_total_refinement_severity,
+            virus_total_refinement_message, virus_total_refinement_checked_at, virus_total_refinement_stats,
+            virus_total_refinement_report, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         timestamp,
@@ -4158,6 +4326,13 @@ function insertScanResultRow(db: any, result: any, fallbackIndex = 0) {
         String(payload.sha1 || ""),
         String(payload.sha256 || ""),
         appStateJson(asRecord(payload.virusTotalChecks)),
+        String(virusTotalRefinement.status || ""),
+        String(virusTotalRefinement.label || ""),
+        String(virusTotalRefinement.severity || ""),
+        String(virusTotalRefinement.message || ""),
+        optionalNumber(virusTotalRefinement.checkedAt),
+        appStateJson(asRecord(virusTotalRefinement.stats)),
+        appStateJson(asRecord(virusTotalRefinement.report)),
         appStateJson({ ...payload, id, timestamp })
     );
 }
@@ -4282,14 +4457,14 @@ async function cleanupBuiltInExcludedScanResults(settings: any) {
 }
 
 async function migrateLegacyAppState(db: any) {
-    await runLegacyAppStateMigration(db, "settings.json", async () => {
+    await runAppStateMigration(db, "settings.json", async () => {
         const settings = asRecord(await readLegacyJsonState(legacySettingsPath, null));
         if (Object.keys(settings).length > 0 && appStateRowCount(db, "settings") === 0) {
             saveSettingsRows(settings);
         }
     });
 
-    await runLegacyAppStateMigration(db, "history.json", async () => {
+    await runAppStateMigration(db, "history.json", async () => {
         const history = await readLegacyJsonState(legacyHistoryPath, []);
         if (!Array.isArray(history) || history.length === 0) return;
         runAppStateTransaction(db, () => {
@@ -4297,7 +4472,7 @@ async function migrateLegacyAppState(db: any) {
         });
     });
 
-    await runLegacyAppStateMigration(db, "exceptions.json", async () => {
+    await runAppStateMigration(db, "exceptions.json", async () => {
         const exceptions = await readLegacyJsonState(legacyExceptionsPath, []);
         if (!Array.isArray(exceptions) || exceptions.length === 0) return;
         runAppStateTransaction(db, () => {
@@ -4305,7 +4480,7 @@ async function migrateLegacyAppState(db: any) {
         });
     });
 
-    await runLegacyAppStateMigration(db, "exception-reports.json", async () => {
+    await runAppStateMigration(db, "exception-reports.json", async () => {
         const reports = asRecord(await readLegacyJsonState(legacyExceptionReportsPath, {}));
         if (Object.keys(reports).length === 0) return;
         runAppStateTransaction(db, () => {
@@ -4315,7 +4490,7 @@ async function migrateLegacyAppState(db: any) {
         });
     });
 
-    await runLegacyAppStateMigration(db, "quarantine_map.json", async () => {
+    await runAppStateMigration(db, "quarantine_map.json", async () => {
         const map = asRecord(await readLegacyJsonState(legacyQuarantineMapPath, {}));
         if (Object.keys(map).length === 0) return;
         runAppStateTransaction(db, () => {
@@ -4325,7 +4500,7 @@ async function migrateLegacyAppState(db: any) {
         });
     });
 
-    await runLegacyAppStateMigration(db, "scan_results.json", async () => {
+    await runAppStateMigration(db, "scan_results.json", async () => {
         const results = await readLegacyJsonState(legacyScanResultsPath, []);
         if (!Array.isArray(results) || results.length === 0) return;
         runAppStateTransaction(db, () => {
@@ -4333,7 +4508,7 @@ async function migrateLegacyAppState(db: any) {
         });
     });
 
-    await runLegacyAppStateMigration(db, "results_reminder.json", async () => {
+    await runAppStateMigration(db, "results_reminder.json", async () => {
         const state = asRecord(await readLegacyJsonState(legacyResultsReminderPath, {}));
         if (Object.keys(state).length === 0) return;
         const upsert = db.prepare("INSERT OR REPLACE INTO results_reminder(key, value) VALUES (?, ?)");
@@ -4347,7 +4522,9 @@ async function migrateLegacyAppState(db: any) {
 async function ensureAppStateReady() {
     const db = getAppStateDb();
     if (!appStateReadyPromise) {
-        appStateReadyPromise = migrateLegacyAppState(db).then(() => {
+        appStateReadyPromise = migrateAppStateSchema(db).then(() => {
+            return migrateLegacyAppState(db);
+        }).then(() => {
             cleanupDuplicateScanResults(db);
         }).catch(e => {
             appStateReadyPromise = null;
@@ -5121,7 +5298,20 @@ async function loadConfig() {
     try {
         await ensureAppStateReady();
         const rows = getAppStateDb().prepare("SELECT key, value FROM settings").all();
-        if (!rows.length) throw new Error("No settings saved.");
+        if (!rows.length) {
+            const freshSettings = installerConsent
+                ? {
+                    ...defaultSettings,
+                    eulaAccepted: true,
+                    eulaVersion: legalNoticeVersion,
+                    eulaAcceptedAt: installerConsent.acceptedAt
+                }
+                : { ...defaultSettings };
+            saveSettingsRows(freshSettings);
+            currentLogsDir = freshSettings.logsDir || defaultLogsDir;
+            debugLoggingEnabled = freshSettings.enableDebugLog === true;
+            return freshSettings;
+        }
         const parsed = rows.reduce((settings: any, row: any) => {
             settings[row.key] = parseAppStateJson(row.value, null);
             return settings;
@@ -5144,10 +5334,12 @@ async function loadConfig() {
                 ? String(parsed.eulaAcceptedAt || "")
                 : String(installerConsent?.acceptedAt || "")
         };
-        currentLogsDir = loadedSettings.logsDir || defaultLogsDir;
-        debugLoggingEnabled = loadedSettings.enableDebugLog === true;
-        return loadedSettings;
-    } catch {
+        const recoveredSettings = await restoreInstalledSignatureProviderSettings(loadedSettings);
+        currentLogsDir = recoveredSettings.logsDir || defaultLogsDir;
+        debugLoggingEnabled = recoveredSettings.enableDebugLog === true;
+        return recoveredSettings;
+    } catch (e: any) {
+        console.warn("Failed to load settings; using runtime defaults without persisting them:", e?.message || e);
         currentLogsDir = defaultLogsDir;
         debugLoggingEnabled = defaultSettings.enableDebugLog;
         return installerConsent
@@ -5161,7 +5353,7 @@ async function loadConfig() {
     }
 }
 
-async function saveConfig(settings: any) {
+async function saveConfig(settings: any, options: { keys?: Iterable<string> } = {}) {
     currentLogsDir = settings.logsDir || defaultLogsDir;
     debugLoggingEnabled = settings.enableDebugLog === true;
     const safeSettings = { ...settings };
@@ -5169,7 +5361,84 @@ async function saveConfig(settings: any) {
     delete safeSettings.securiteInfoUrl;
     delete safeSettings.securiteInfoSetupText;
     await ensureAppStateReady();
-    saveSettingsRows(safeSettings);
+    const persistedKeys = getPersistedSettingsKeys();
+    const keysToSave = new Set<string>([
+        ...persistedKeys,
+        ...[...(options.keys || [])].map(key => String(key))
+    ]);
+    for (const [key, value] of Object.entries(safeSettings)) {
+        if (!Object.prototype.hasOwnProperty.call(defaultSettings, key)) {
+            keysToSave.add(key);
+            continue;
+        }
+        if (!settingValuesEqual(value, (defaultSettings as Record<string, any>)[key])) {
+            keysToSave.add(key);
+        }
+    }
+    saveSettingsPatchRows(safeSettings, keysToSave);
+}
+
+async function restoreInstalledSignatureProviderSettings(settings: any) {
+    const next = { ...settings };
+    let changed = false;
+    const recoveredKeys = new Set<string>();
+    const databaseDir = String(next.databaseDir || defaultSettings.databaseDir);
+    const hasDatabase = async (fileName: string) => await pathExists(path.join(databaseDir, fileName));
+    const newestDatabaseDate = async (fileNames: string[]) => {
+        const dates: string[] = [];
+        for (const fileName of fileNames) {
+            try {
+                dates.push((await fs.stat(path.join(databaseDir, fileName))).mtime.toISOString());
+            } catch {}
+        }
+        return dates.sort((a, b) => b.localeCompare(a))[0] || "";
+    };
+
+    if (next.securiteInfoEnabled !== true && await loadSecuriteInfoToken()) {
+        const paidDatabasesPresent = (await Promise.all(
+            securiteInfoPaidDatabases
+                .filter(name => !securiteInfoBasicDatabases.includes(name))
+                .map(hasDatabase)
+        )).some(Boolean);
+        const inferredPlan = paidDatabasesPresent ? "paid" : normalizeSecuriteInfoPlan(next.securiteInfoPlan);
+        const expected = getSecuriteInfoDatabaseNames(inferredPlan, await hasDatabase(securiteInfoPuaDatabase));
+        const installedCount = (await Promise.all(expected.map(hasDatabase))).filter(Boolean).length;
+        if (installedCount === expected.length && installedCount > 0) {
+            next.securiteInfoEnabled = true;
+            next.securiteInfoPlan = inferredPlan;
+            next.securiteInfoIncludePua = inferredPlan === "paid" && await hasDatabase(securiteInfoPuaDatabase);
+            if (!next.lastSecuriteInfoUpdate) next.lastSecuriteInfoUpdate = await newestDatabaseDate(expected);
+            if (!next.lastSecuriteInfoUpdateResult) next.lastSecuriteInfoUpdateResult = "Recovered existing installed databases";
+            [
+                "securiteInfoEnabled",
+                "securiteInfoPlan",
+                "securiteInfoIncludePua",
+                "lastSecuriteInfoUpdate",
+                "lastSecuriteInfoUpdateResult"
+            ].forEach(key => recoveredKeys.add(key));
+            changed = true;
+        }
+    }
+
+    if (next.saneSecurityEnabled !== true && String(next.lastSaneSecurityUpdateResult || "") !== "Disconnected") {
+        const profile = normalizeSaneSecurityProfile(next.saneSecurityProfile);
+        const expected = getSaneSecurityDatabaseNames(profile);
+        const installedCount = (await Promise.all(expected.map(hasDatabase))).filter(Boolean).length;
+        if (installedCount === expected.length && installedCount > 0) {
+            next.saneSecurityEnabled = true;
+            if (!next.lastSaneSecurityUpdate) next.lastSaneSecurityUpdate = await newestDatabaseDate(expected);
+            if (!next.lastSaneSecurityUpdateResult) next.lastSaneSecurityUpdateResult = "Recovered existing installed databases";
+            [
+                "saneSecurityEnabled",
+                "lastSaneSecurityUpdate",
+                "lastSaneSecurityUpdateResult"
+            ].forEach(key => recoveredKeys.add(key));
+            changed = true;
+        }
+    }
+
+    if (changed) saveSettingsPatchRows(next, recoveredKeys);
+    return next;
 }
 
 async function cleanupOldLogs(settings: any) {
@@ -5752,10 +6021,8 @@ async function exportFalsePositiveResults(settings: any, results: any[], options
         "This package is grouped by provider. Review all files before sharing anything externally.",
         "",
         includeSamples
-            ? "Samples are included because the user explicitly opted in. Do not send samples that contain sensitive or private data."
-            : "Samples are not included. Use the hashes and paths to decide whether you want to submit files manually.",
-        "",
-        "ClamShield does not upload false positives automatically.",
+            ? "Samples are included because the user explicitly opted in. Review them before sharing externally."
+            : "Samples are not included.",
         ""
     ].join("\n"), "utf8");
 
@@ -5938,7 +6205,11 @@ async function restoreQuarantinedFileAndAddException(settings: any, fileName: st
 
 function scanResultSelectSql() {
     return `SELECT id, timestamp, original_path, threat_name, engine, source, scan_type, target,
-                   yara_ruleset, md5, sha1, sha256, virus_total_checks, payload
+                   yara_ruleset, md5, sha1, sha256, virus_total_checks,
+                   virus_total_refinement_status, virus_total_refinement_label,
+                   virus_total_refinement_severity, virus_total_refinement_message,
+                   virus_total_refinement_checked_at, virus_total_refinement_stats,
+                   virus_total_refinement_report, payload
             FROM scan_results`;
 }
 
@@ -5970,6 +6241,20 @@ function scanResultFindingSourceSql() {
 function mapScanResultRow(row: any) {
     const payload = asRecord(parseAppStateJson(row.payload, {}));
     const virusTotalChecks = asRecord(parseAppStateJson(row.virus_total_checks, {}));
+    const refinementStatus = String(row.virus_total_refinement_status || "").trim();
+    const refinementStats = asRecord(parseAppStateJson(row.virus_total_refinement_stats, {}));
+    const refinementReport = asRecord(parseAppStateJson(row.virus_total_refinement_report, {}));
+    const virusTotalRefinement = refinementStatus ? {
+        status: refinementStatus,
+        label: row.virus_total_refinement_label || "",
+        severity: row.virus_total_refinement_severity || "",
+        message: row.virus_total_refinement_message || "",
+        checkedAt: row.virus_total_refinement_checked_at === null || row.virus_total_refinement_checked_at === undefined
+            ? null
+            : Number(row.virus_total_refinement_checked_at),
+        stats: Object.keys(refinementStats).length > 0 ? refinementStats : null,
+        report: Object.keys(refinementReport).length > 0 ? refinementReport : null
+    } : null;
     const threatName = row.threat_name || payload.threatName;
     const engine = row.engine || payload.engine;
     return {
@@ -5987,7 +6272,8 @@ function mapScanResultRow(row: any) {
         md5: row.md5 || payload.md5,
         sha1: row.sha1 || payload.sha1,
         sha256: row.sha256 || payload.sha256,
-        virusTotalChecks: Object.keys(virusTotalChecks).length > 0 ? virusTotalChecks : payload.virusTotalChecks
+        virusTotalChecks: Object.keys(virusTotalChecks).length > 0 ? virusTotalChecks : payload.virusTotalChecks,
+        virusTotalRefinement
     };
 }
 
@@ -6025,7 +6311,7 @@ async function getScanResultFindingSourceOptions(options: { date?: string }) {
         .filter(Boolean);
 }
 
-async function getScanResultsPage(options: { limit?: number | null, offset?: number, date?: string, findingSource?: string }) {
+async function getScanResultsPage(options: { limit?: number | null, offset?: number, date?: string, findingSource?: string, virusTotalRefinement?: string }) {
     await ensureAppStateReady();
     const clauses: string[] = [];
     const params: any[] = [];
@@ -6035,13 +6321,22 @@ async function getScanResultsPage(options: { limit?: number | null, offset?: num
         clauses.push(`${scanResultFindingSourceSql()} = ?`);
         params.push(findingSourceValue);
     }
+    const refinementFilter = normalizeVirusTotalRefinementFilter(options.virusTotalRefinement);
+    if (refinementFilter !== "all") {
+        if (refinementFilter === "unrefined") {
+            clauses.push("(virus_total_refinement_status IS NULL OR virus_total_refinement_status = '')");
+        } else {
+            clauses.push("virus_total_refinement_status = ?");
+            params.push(refinementFilter);
+        }
+    }
     const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
     const db = getAppStateDb();
-    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM scan_results${whereSql}`).get(...params)?.count || 0);
     const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
     const limit = options.limit === null || options.limit === undefined
         ? null
         : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
+    const total = Number(db.prepare(`SELECT COUNT(*) AS count FROM scan_results${whereSql}`).get(...params)?.count || 0);
     const sql = `${scanResultSelectSql()}${whereSql} ORDER BY timestamp DESC${limit ? " LIMIT ? OFFSET ?" : ""}`;
     const rows = limit
         ? db.prepare(sql).all(...params, limit, safeOffset)
@@ -6149,6 +6444,614 @@ async function ensureScanResultHash(results: any[], result: any, algorithm: stri
         await saveScanResults(results);
     }
     return hash.toLowerCase();
+}
+
+function normalizeVirusTotalApiKey(value: any) {
+    const key = String(value || "").trim();
+    if (!key) return "";
+    if (key.length < 32 || key.length > 256 || /[\s"'<>]/.test(key)) {
+        throw new Error("The VirusTotal API key format looks invalid.");
+    }
+    return key;
+}
+
+async function saveVirusTotalApiKey(apiKey: string) {
+    await saveEncryptedSecret(virusTotalApiKeySecretPath, normalizeVirusTotalApiKey(apiKey));
+}
+
+async function loadVirusTotalApiKey() {
+    return await loadEncryptedSecret(virusTotalApiKeySecretPath);
+}
+
+function getVirusTotalUtcDayKey(now = Date.now()) {
+    return new Date(now).toISOString().slice(0, 10);
+}
+
+function getVirusTotalUtcMonthKey(now = Date.now()) {
+    return new Date(now).toISOString().slice(0, 7);
+}
+
+function getNextUtcDayReset(now = Date.now()) {
+    const date = new Date(now);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1);
+}
+
+function getNextUtcMonthReset(now = Date.now()) {
+    const date = new Date(now);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+}
+
+function getVirusTotalUsagePeriodKeys(now = Date.now()) {
+    return {
+        day: `virustotal:${getVirusTotalUtcDayKey(now)}`,
+        month: `virustotal:${getVirusTotalUtcMonthKey(now)}`
+    };
+}
+
+async function getVirusTotalUsageStatus() {
+    await ensureAppStateReady();
+    const now = Date.now();
+    const db = getAppStateDb();
+    const keys = getVirusTotalUsagePeriodKeys(now);
+    const getCount = (key: string) => {
+        const row = db.prepare("SELECT count FROM virus_total_usage WHERE period = ?").get(key);
+        return Math.max(0, Number(row?.count || 0));
+    };
+    const dayCount = getCount(keys.day);
+    const monthCount = getCount(keys.month);
+    return {
+        rate: {
+            maxLookupsPerMinute: 4,
+            spacingMs: virusTotalPublicApiLimits.perLookupMs,
+            nextLookupAllowedAt: virusTotalNextLookupAllowedAt || null
+        },
+        day: {
+            key: getVirusTotalUtcDayKey(now),
+            count: dayCount,
+            limit: virusTotalPublicApiLimits.perDay,
+            remaining: Math.max(0, virusTotalPublicApiLimits.perDay - dayCount),
+            resetsAt: getNextUtcDayReset(now)
+        },
+        month: {
+            key: getVirusTotalUtcMonthKey(now),
+            count: monthCount,
+            limit: virusTotalPublicApiLimits.perMonth,
+            remaining: Math.max(0, virusTotalPublicApiLimits.perMonth - monthCount),
+            resetsAt: getNextUtcMonthReset(now)
+        }
+    };
+}
+
+async function assertVirusTotalQuotaAvailable() {
+    const usage = await getVirusTotalUsageStatus();
+    if (usage.day.count >= usage.day.limit) {
+        const error: any = new Error("VirusTotal daily lookup limit reached. Cloud checks will resume tomorrow.");
+        error.status = 429;
+        error.localQuotaLimit = true;
+        error.nextAllowedAt = usage.day.resetsAt;
+        throw error;
+    }
+    if (usage.month.count >= usage.month.limit) {
+        const error: any = new Error("VirusTotal monthly lookup limit reached. Cloud checks will resume next month.");
+        error.status = 429;
+        error.localQuotaLimit = true;
+        error.nextAllowedAt = usage.month.resetsAt;
+        throw error;
+    }
+}
+
+function reserveVirusTotalLookupSlot() {
+    const now = Date.now();
+    if (now < virusTotalNextLookupAllowedAt) {
+        const error: any = new Error("VirusTotal lookup rate limit queued.");
+        error.status = 429;
+        error.localRateLimit = true;
+        error.nextAllowedAt = virusTotalNextLookupAllowedAt;
+        throw error;
+    }
+    virusTotalNextLookupAllowedAt = now + virusTotalPublicApiLimits.perLookupMs;
+}
+
+async function waitForVirusTotalLookupSlot() {
+    for (;;) {
+        const delayMs = Math.max(0, virusTotalNextLookupAllowedAt - Date.now());
+        if (delayMs > 0) await sleep(Math.min(delayMs, 30000));
+        try {
+            reserveVirusTotalLookupSlot();
+            return;
+        } catch (e: any) {
+            if (!e?.localRateLimit) throw e;
+        }
+    }
+}
+
+async function recordVirusTotalLookup() {
+    await ensureAppStateReady();
+    const now = Date.now();
+    const db = getAppStateDb();
+    const keys = getVirusTotalUsagePeriodKeys(now);
+    const increment = db.prepare(`
+        INSERT INTO virus_total_usage(period, count, updated_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT(period) DO UPDATE SET
+            count = count + 1,
+            updated_at = excluded.updated_at
+    `);
+    runAppStateTransaction(db, () => {
+        increment.run(keys.day, now);
+        increment.run(keys.month, now);
+    });
+}
+
+async function recordVirusTotalLookupSafely() {
+    try {
+        await recordVirusTotalLookup();
+    } catch (e: any) {
+        console.warn("Could not record VirusTotal API usage:", e?.message || e);
+    }
+}
+
+async function getVirusTotalCloudStatus(settings: any) {
+    return {
+        enabled: settings.virusTotalCloudEnabled === true,
+        autoRefineEnabled: settings.virusTotalAutoRefineEnabled === true,
+        resultsUploadUnknownEnabled: settings.virusTotalResultsUploadUnknownEnabled === true,
+        resultsUploadMaxSizeMb: normalizeNumberSetting("virusTotalResultsUploadMaxSizeMb", settings.virusTotalResultsUploadMaxSizeMb),
+        shieldBackgroundCheckEnabled: settings.virusTotalShieldBackgroundCheckEnabled === true,
+        shieldUploadUnknownEnabled: settings.virusTotalShieldUploadUnknownEnabled === true,
+        shieldUploadMaxSizeMb: normalizeNumberSetting("virusTotalShieldUploadMaxSizeMb", settings.virusTotalShieldUploadMaxSizeMb),
+        configured: Boolean(await loadVirusTotalApiKey()),
+        usage: await getVirusTotalUsageStatus()
+    };
+}
+
+function isVirusTotalAutoRefinementCandidate(result: any, settings: any) {
+    const source = String(result?.source || "").toLowerCase();
+    if (source === "shield") return settings.virusTotalShieldBackgroundCheckEnabled === true;
+    return settings.virusTotalAutoRefineEnabled === true;
+}
+
+async function getVirusTotalDashboardStatus(settings: any) {
+    await ensureAppStateReady();
+    const cloudStatus = await getVirusTotalCloudStatus(settings);
+    const rows = getAppStateDb().prepare(`
+        SELECT source,
+               virus_total_refinement_status AS status,
+               virus_total_refinement_label AS label,
+               virus_total_refinement_message AS message,
+               virus_total_refinement_checked_at AS checked_at,
+               virus_total_refinement_stats AS stats
+        FROM scan_results
+    `).all();
+    const breakdown: Record<string, number> = {
+        likely_false_positive: 0,
+        needs_review: 0,
+        confirmed_suspicious: 0,
+        confirmed_malicious: 0,
+        unknown: 0,
+        error: 0
+    };
+    const totals = {
+        malicious: 0,
+        suspicious: 0,
+        harmless: 0,
+        undetected: 0
+    };
+    let checkedCount = 0;
+    let queuedCount = 0;
+    let lastCheckedAt = 0;
+    let lastLabel = "";
+    let lastMessage = "";
+    for (const row of rows) {
+        const statusValue = String(row.status || "").trim();
+        if (!statusValue) {
+            if (
+                cloudStatus.enabled &&
+                isVirusTotalAutoRefinementCandidate(row, settings)
+            ) {
+                queuedCount++;
+            }
+            continue;
+        }
+        checkedCount++;
+        if (Object.prototype.hasOwnProperty.call(breakdown, statusValue)) breakdown[statusValue]++;
+        const stats = asRecord(parseAppStateJson(row.stats, {}));
+        totals.malicious += Number(stats.malicious || 0);
+        totals.suspicious += Number(stats.suspicious || 0);
+        totals.harmless += Number(stats.harmless || 0);
+        totals.undetected += Number(stats.undetected || 0);
+        const checkedAt = Number(row.checked_at || 0);
+        if (checkedAt > lastCheckedAt) {
+            lastCheckedAt = checkedAt;
+            lastLabel = String(row.label || "");
+            lastMessage = String(row.message || "");
+        }
+    }
+    return {
+        ...cloudStatus,
+        totalFindings: rows.length,
+        checkedCount,
+        queuedCount,
+        lastCheckedAt: lastCheckedAt || null,
+        lastLabel,
+        lastMessage,
+        breakdown,
+        totals
+    };
+}
+
+function createVirusTotalNoReport(hash: string) {
+    return {
+        found: false,
+        hash,
+        url: `https://www.virustotal.com/gui/file/${hash}/detection`,
+        message: "VirusTotal has no report for this item."
+    };
+}
+
+function summarizeVirusTotalFileReport(hash: string, payload: any) {
+    const attributes = payload?.data?.attributes || {};
+    const stats = attributes.last_analysis_stats || {};
+    const detections = Object.values(attributes.last_analysis_results || {})
+        .filter((item: any) => ["malicious", "suspicious"].includes(String(item?.category || "").toLowerCase()))
+        .map((item: any) => ({
+            engine: String(item?.engine_name || ""),
+            category: String(item?.category || ""),
+            result: String(item?.result || "")
+        }))
+        .filter((item: any) => item.engine || item.result)
+        .slice(0, 8);
+    return {
+        found: true,
+        hash,
+        url: `https://www.virustotal.com/gui/file/${hash}/detection`,
+        stats: {
+            malicious: Number(stats.malicious || 0),
+            suspicious: Number(stats.suspicious || 0),
+            harmless: Number(stats.harmless || 0),
+            undetected: Number(stats.undetected || 0),
+            timeout: Number(stats.timeout || 0),
+            failure: Number(stats.failure || 0)
+        },
+        reputation: Number(attributes.reputation || 0),
+        typeDescription: String(attributes.type_description || attributes.type_tag || ""),
+        meaningfulName: String(attributes.meaningful_name || ""),
+        firstSubmissionDate: attributes.first_submission_date || null,
+        lastAnalysisDate: attributes.last_analysis_date || null,
+        threatVerdict: String(attributes.threat_verdict || ""),
+        threatSeverity: attributes.threat_severity || null,
+        tags: Array.isArray(attributes.tags) ? attributes.tags.slice(0, 8) : [],
+        detections
+    };
+}
+
+async function fetchVirusTotalFileReport(apiKey: string, sha256: string) {
+    try {
+        await assertVirusTotalQuotaAvailable();
+        reserveVirusTotalLookupSlot();
+        const vtRes = await axios.get(`https://www.virustotal.com/api/v3/files/${sha256}`, {
+            headers: { "x-apikey": apiKey },
+            timeout: 30000
+        });
+        await recordVirusTotalLookupSafely();
+        return summarizeVirusTotalFileReport(sha256, vtRes.data);
+    } catch (e: any) {
+        if (e?.response) {
+            await recordVirusTotalLookupSafely();
+        }
+        const status = e?.response?.status;
+        if (status === 404) return createVirusTotalNoReport(sha256);
+        if (status === 401 || status === 403) {
+            const error: any = new Error("VirusTotal rejected the API key. Check the key in Settings.");
+            error.status = status;
+            throw error;
+        }
+        if (status === 429) {
+            const error: any = new Error("VirusTotal rate limit reached. Automatic refinement will pause and try again later.");
+            error.status = status;
+            throw error;
+        }
+        if (e?.localRateLimit || e?.localQuotaLimit) throw e;
+        throw new Error(e?.message || "VirusTotal Cloud Check failed.");
+    }
+}
+
+function getVirusTotalShieldUploadMaxBytes(settings: any) {
+    const maxMb = normalizeNumberSetting("virusTotalShieldUploadMaxSizeMb", settings?.virusTotalShieldUploadMaxSizeMb);
+    return Math.max(1, Math.min(32, Math.round(Number(maxMb || 20)))) * 1024 * 1024;
+}
+
+function getVirusTotalResultsUploadMaxBytes(settings: any) {
+    const maxMb = normalizeNumberSetting("virusTotalResultsUploadMaxSizeMb", settings?.virusTotalResultsUploadMaxSizeMb);
+    return Math.max(1, Math.min(32, Math.round(Number(maxMb || 20)))) * 1024 * 1024;
+}
+
+function formatVirusTotalUploadSize(bytes: number) {
+    return `${(Math.max(0, bytes) / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
+}
+
+async function uploadVirusTotalFile(apiKey: string, filePath: string, options: { waitForSlot?: boolean } = {}) {
+    await assertVirusTotalQuotaAvailable();
+    if (options.waitForSlot) await waitForVirusTotalLookupSlot();
+    else reserveVirusTotalLookupSlot();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000);
+    try {
+        const data = await fs.readFile(filePath);
+        const form = new FormData();
+        form.append("file", new Blob([data as any]), path.basename(filePath) || "file");
+        const response = await fetch("https://www.virustotal.com/api/v3/files", {
+            method: "POST",
+            headers: { "x-apikey": apiKey },
+            body: form as any,
+            signal: controller.signal
+        });
+        if (response.status === 401 || response.status === 403) {
+            const error: any = new Error("VirusTotal rejected the API key. Check the key in Settings.");
+            error.status = response.status;
+            throw error;
+        }
+        if (response.status === 429) {
+            const error: any = new Error("VirusTotal rate limit reached. Automatic checks will pause and try again later.");
+            error.status = response.status;
+            throw error;
+        }
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => "");
+            throw new Error(errorText || `VirusTotal upload failed with status ${response.status}.`);
+        }
+        const payload = await response.json();
+        return {
+            analysisId: String((payload as any)?.data?.id || ""),
+            payload
+        };
+    } catch (e: any) {
+        if (e?.localRateLimit || e?.localQuotaLimit) throw e;
+        if (e?.name === "AbortError") throw new Error("VirusTotal upload timed out.");
+        throw e;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+function classifyVirusTotalRefinement(report: any) {
+    if (report?.found === false) {
+        return {
+            status: "unknown",
+            label: "Unknown to VirusTotal",
+            severity: "neutral",
+            message: "VirusTotal has no report for this item."
+        };
+    }
+    const stats = report?.stats || {};
+    const malicious = Number(stats.malicious || 0);
+    const suspicious = Number(stats.suspicious || 0);
+    const detections = malicious + suspicious;
+    if (detections <= 0) {
+        return {
+            status: "likely_false_positive",
+            label: "Likely false positive",
+            severity: "good",
+            message: "No VirusTotal engines currently flag this hash."
+        };
+    }
+    if (detections <= 2) {
+        return {
+            status: "needs_review",
+            label: "Needs review",
+            severity: "warning",
+            message: "Only a small number of VirusTotal engines flag this hash."
+        };
+    }
+    if (detections < 10) {
+        return {
+            status: "confirmed_suspicious",
+            label: "Confirmed suspicious",
+            severity: "danger",
+            message: "Several VirusTotal engines flag this hash."
+        };
+    }
+    return {
+        status: "confirmed_malicious",
+        label: "Confirmed malicious",
+        severity: "danger",
+        message: "Many VirusTotal engines flag this hash."
+    };
+}
+
+function buildVirusTotalRefinement(report: any) {
+    const verdict = classifyVirusTotalRefinement(report);
+    return {
+        ...verdict,
+        checkedAt: Date.now(),
+        hash: report?.hash || "",
+        stats: report?.stats || null,
+        report
+    };
+}
+
+function getVirusTotalDetectionCount(report: any) {
+    const stats = report?.stats || {};
+    return Number(stats.malicious || 0) + Number(stats.suspicious || 0);
+}
+
+function buildVirusTotalThreatName(report: any) {
+    const detections = getVirusTotalDetectionCount(report);
+    return `VirusTotal: ${detections} detection${detections === 1 ? "" : "s"}`;
+}
+
+function getVirusTotalResultChecks(result: any) {
+    return asRecord(result?.virusTotalChecks);
+}
+
+function setVirusTotalResultChecks(result: any, patch: Record<string, any>) {
+    result.virusTotalChecks = {
+        ...getVirusTotalResultChecks(result),
+        ...patch
+    };
+}
+
+function getVirusTotalRefinementStatus(result: any) {
+    return String(result?.virusTotalRefinement?.status || "").trim().toLowerCase();
+}
+
+function isVirusTotalResultUploadFollowupDue(result: any) {
+    const checks = getVirusTotalResultChecks(result);
+    const uploadedHash = String(checks.resultsUploadedUnknownHash || "");
+    const checkAfter = Number(checks.resultsUploadCheckAfter || 0);
+    const followupCount = Number(checks.resultsUploadFollowupCount || 0);
+    if (!uploadedHash || !checkAfter || followupCount >= 5) return false;
+    return getVirusTotalRefinementStatus(result) === "unknown" && Date.now() >= checkAfter;
+}
+
+function getVirusTotalResultUploadFollowupAt(result: any) {
+    const checks = getVirusTotalResultChecks(result);
+    const uploadedHash = String(checks.resultsUploadedUnknownHash || "");
+    const checkAfter = Number(checks.resultsUploadCheckAfter || 0);
+    const followupCount = Number(checks.resultsUploadFollowupCount || 0);
+    if (!uploadedHash || !checkAfter || followupCount >= 5) return 0;
+    if (getVirusTotalRefinementStatus(result) !== "unknown") return 0;
+    return checkAfter;
+}
+
+async function getVirusTotalResultUploadEligibility(result: any, settings: any) {
+    const fileStat = result.originalPath ? await fs.stat(result.originalPath).catch(() => null) : null;
+    const maxBytes = getVirusTotalResultsUploadMaxBytes(settings);
+    if (settings.virusTotalResultsUploadUnknownEnabled !== true) {
+        return { allowed: false, reason: "disabled", message: "" };
+    }
+    if (!result.originalPath || !existsSync(result.originalPath) || !fileStat || !fileStat.isFile() || fileStat.size <= 0) {
+        return { allowed: false, reason: "unavailable", message: "Original file unavailable; upload skipped." };
+    }
+    if (fileStat.size > maxBytes) {
+        return {
+            allowed: false,
+            reason: "too_large",
+            message: `File is ${formatVirusTotalUploadSize(fileStat.size)}; max upload size is ${formatVirusTotalUploadSize(maxBytes)}.`
+        };
+    }
+    return { allowed: true, reason: "", message: "" };
+}
+
+async function canUploadVirusTotalResultUnknown(result: any, settings: any) {
+    return (await getVirusTotalResultUploadEligibility(result, settings)).allowed;
+}
+
+async function uploadUnknownVirusTotalResult(result: any, apiKey: string, sha256: string) {
+    const upload = await uploadVirusTotalFile(apiKey, result.originalPath, { waitForSlot: true });
+    markVirusTotalCheckOpened(result, "upload");
+    setVirusTotalResultChecks(result, {
+        resultsUploadedUnknownHash: sha256,
+        resultsUploadAnalysisId: upload.analysisId || "",
+        resultsUploadCheckAfter: Date.now() + 2 * 60 * 1000,
+        resultsUploadFollowupCount: 0
+    });
+    return upload;
+}
+
+async function runVirusTotalResultCloudCheck(results: any[], result: any, settings: any, apiKey: string) {
+    const sha256 = await ensureScanResultHash(results, result, "sha256");
+    const existingChecks = getVirusTotalResultChecks(result);
+    const existingUploadHash = String(existingChecks.resultsUploadedUnknownHash || "");
+    if (
+        getVirusTotalRefinementStatus(result) === "unknown" &&
+        existingUploadHash !== sha256 &&
+        (await getVirusTotalResultUploadEligibility(result, settings)).allowed
+    ) {
+        const upload = await uploadUnknownVirusTotalResult(result, apiKey, sha256);
+        markVirusTotalCheckOpened(result, "cloud");
+        const report: any = {
+            ...createVirusTotalNoReport(sha256),
+            uploaded: true,
+            analysisId: upload.analysisId || "",
+            message: "VirusTotal analysis queued."
+        };
+        result.virusTotalRefinement = {
+            ...buildVirusTotalRefinement(report),
+            label: "Analysis queued",
+            message: "VirusTotal analysis queued."
+        };
+        return {
+            sha256,
+            report,
+            refinement: result.virusTotalRefinement,
+            uploaded: true,
+            uploadAnalysisId: upload.analysisId || ""
+        };
+    }
+
+    let report: any = await fetchVirusTotalFileReport(apiKey, sha256);
+    let uploaded = false;
+    let uploadAnalysisId = "";
+    markVirusTotalCheckOpened(result, "cloud");
+
+    if (report?.found === false) {
+        const checks = getVirusTotalResultChecks(result);
+        const alreadyUploaded = String(checks.resultsUploadedUnknownHash || "") === sha256;
+        const followupCount = Math.max(0, Number(checks.resultsUploadFollowupCount || 0));
+        const uploadEligibility = await getVirusTotalResultUploadEligibility(result, settings);
+        const canUpload = uploadEligibility.allowed;
+
+        if (canUpload && !alreadyUploaded) {
+            const upload = await uploadUnknownVirusTotalResult(result, apiKey, sha256);
+            uploaded = true;
+            uploadAnalysisId = upload.analysisId;
+            report = {
+                ...report,
+                uploaded: true,
+                analysisId: upload.analysisId || "",
+                message: "VirusTotal analysis queued."
+            };
+        } else if (alreadyUploaded && followupCount < 5) {
+            setVirusTotalResultChecks(result, {
+                resultsUploadCheckAfter: Date.now() + 5 * 60 * 1000,
+                resultsUploadFollowupCount: followupCount + 1
+            });
+        } else if (uploadEligibility.message) {
+            report = {
+                ...report,
+                uploadSkipped: true,
+                uploadSkipReason: uploadEligibility.reason,
+                message: uploadEligibility.message
+            };
+        }
+    } else {
+        setVirusTotalResultChecks(result, {
+            resultsUploadCheckAfter: 0,
+            resultsUploadFollowupCount: 0
+        });
+    }
+
+    result.virusTotalRefinement = buildVirusTotalRefinement(report);
+    if (uploaded) {
+        result.virusTotalRefinement = {
+            ...result.virusTotalRefinement,
+            label: "Analysis queued",
+            message: "VirusTotal analysis queued."
+        };
+    } else if (report?.uploadSkipped) {
+        result.virusTotalRefinement = {
+            ...result.virusTotalRefinement,
+            label: "Upload skipped",
+            message: String(report.message || result.virusTotalRefinement?.message || "")
+        };
+    }
+
+    return {
+        sha256,
+        report,
+        refinement: result.virusTotalRefinement,
+        uploaded,
+        uploadAnalysisId
+    };
+}
+
+function normalizeVirusTotalRefinementFilter(value: any) {
+    const status = String(value || "all").trim().toLowerCase();
+    if (["all", "unrefined", "likely_false_positive", "needs_review", "confirmed_suspicious", "confirmed_malicious", "unknown", "error"].includes(status)) {
+        return status;
+    }
+    return "all";
 }
 
 async function getResultsReminderState() {
@@ -6669,6 +7572,7 @@ async function startServer() {
         timer.unref?.();
     };
     let pendingThreats: any[] = [];
+    const virusTotalShieldQueue = new Map<string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string }>();
     const eventClients = new Set<express.Response>();
     const sendApiEventToClient = (client: express.Response, event: string, data: any) => {
         client.write(`event: ${event}\n`);
@@ -6733,11 +7637,222 @@ async function startServer() {
         const show = now >= Number(state.remindUntil || 0) && latestTimestamp > Number(state.forgottenUntil || 0);
         return { show, count: reminderResults.length, latestTimestamp };
     };
+    let scheduleVirusTotalRefinement: (delayMs?: number) => void = () => {};
     const broadcastResultsReminder = async () => {
         sendApiEvent("results-reminder", await getResultsReminderPayload());
     };
     pendingThreatHandler = threat => sendApiEvent("threat", threat);
-    scanResultsChangedHandler = broadcastResultsReminder;
+    scanResultsChangedHandler = async () => {
+        await broadcastResultsReminder();
+        scheduleVirusTotalRefinement();
+    };
+
+    let scheduleShieldVirusTotalCheck: (delayMs?: number) => void = () => {};
+
+    const handleVirusTotalShieldDetection = async (filePath: string, report: any) => {
+        const exceptions = await getExceptions();
+        if (shouldSkipBuiltInScanPath(settings, filePath) || isExcluded(filePath, exceptions)) return "Ignored";
+
+        const threatName = buildVirusTotalThreatName(report);
+        const refinement = buildVirusTotalRefinement(report);
+        const action = normalizeShieldDetectionAction(settings.actionOnDetection || (settings.autoQuarantine ? "quarantine_silent" : "ask"));
+        const actionKind = shieldActionKind(action);
+
+        if (actionKind === "quarantine") {
+            try {
+                const quarantined = await quarantineFile(filePath, threatName, settings.quarantineDir);
+                const qMap = await getQuarantineMap();
+                qMap[quarantined.fileName] = quarantined.metadata;
+                await saveQuarantineMap(qMap);
+                if (shieldActionNotifies(action)) {
+                    sendApiEvent("threat", {
+                        id: Date.now().toString() + Math.random().toString(36).substring(7),
+                        originalPath: filePath,
+                        threatName,
+                        engine: "VirusTotal",
+                        mode: "notice",
+                        title: "Threat quarantined",
+                        subtitle: "ClamShield Shield quarantined this file.",
+                        timestamp: Date.now()
+                    });
+                }
+                return "Quarantined";
+            } catch (e: any) {
+                console.warn("VirusTotal Shield quarantine failed:", e?.message || e);
+                return "Quarantine Failed";
+            }
+        }
+
+        if (actionKind === "ask") {
+            const pendingThreat = {
+                id: Date.now().toString() + Math.random().toString(36).substring(7),
+                originalPath: filePath,
+                threatName,
+                engine: "VirusTotal",
+                timestamp: Date.now()
+            };
+            pendingThreats.push(pendingThreat);
+            if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+            return "Pending";
+        }
+
+        await addScanResult({
+            source: "shield",
+            scanType: "shield",
+            target: filePath,
+            originalPath: filePath,
+            threatName,
+            engine: "VirusTotal",
+            sha256: report?.hash || "",
+            virusTotalRefinement: refinement
+        });
+        if (shieldActionNotifies(action)) {
+            sendApiEvent("threat", {
+                id: Date.now().toString() + Math.random().toString(36).substring(7),
+                originalPath: filePath,
+                threatName,
+                engine: "VirusTotal",
+                mode: "notice",
+                title: "Threat sent to Results",
+                subtitle: "ClamShield Shield saved this detection for review.",
+                timestamp: Date.now()
+            });
+        }
+        return "Sent to Results";
+    };
+
+    const processNextShieldVirusTotalCheck = async () => {
+        if (virusTotalShieldRunning) return;
+        if (settings.virusTotalCloudEnabled !== true || settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
+        const apiKey = await loadVirusTotalApiKey();
+        if (!apiKey) {
+            virusTotalShieldLastMessage = "VirusTotal API key is not configured.";
+            return;
+        }
+        const now = Date.now();
+        if (now < virusTotalShieldNextAllowedAt) {
+            scheduleShieldVirusTotalCheck(virusTotalShieldNextAllowedAt - now);
+            return;
+        }
+
+        const next = Array.from(virusTotalShieldQueue.entries())
+            .find(([, queuedItem]) => Number(queuedItem.notBefore || 0) <= now) as [string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string }] | undefined;
+        if (!next) {
+            const nextAt = Math.min(...Array.from(virusTotalShieldQueue.values()).map(item => Number(item.notBefore || now)));
+            if (Number.isFinite(nextAt)) scheduleShieldVirusTotalCheck(Math.max(1000, nextAt - now));
+            return;
+        }
+        const [normalizedPath, item] = next;
+        virusTotalShieldQueue.delete(normalizedPath);
+        virusTotalShieldRunning = true;
+        try {
+            if (!existsSync(item.filePath)) {
+                virusTotalShieldLastMessage = `Skipped unavailable file: ${item.filePath}`;
+                return;
+            }
+            const sha256 = await hashFile(item.filePath, "sha256");
+            if (item.pendingUploadHash === sha256) {
+                const upload = await uploadVirusTotalFile(apiKey, item.filePath);
+                await addHistory({
+                    type: "virustotal-shield-upload",
+                    target: item.filePath,
+                    result: 0,
+                    threatsFound: 0,
+                    scannedFiles: 1,
+                    duration: 1,
+                    actionTaken: upload.analysisId ? `Uploaded for analysis ${upload.analysisId}` : "Uploaded for analysis"
+                }).catch(() => {});
+                virusTotalShieldQueue.set(normalizedPath, {
+                    ...item,
+                    queuedAt: Date.now(),
+                    notBefore: Date.now() + 2 * 60 * 1000,
+                    uploadedHash: sha256,
+                    pendingUploadHash: ""
+                });
+                virusTotalShieldLastMessage = `VirusTotal analysis queued: ${item.filePath}`;
+                virusTotalShieldNextAllowedAt = Date.now() + virusTotalPublicApiLimits.perLookupMs;
+                return;
+            }
+            const report = await fetchVirusTotalFileReport(apiKey, sha256);
+            const detections = getVirusTotalDetectionCount(report);
+            if (detections > 0) {
+                const actionTaken = await handleVirusTotalShieldDetection(item.filePath, report);
+                await addHistory({
+                    type: "virustotal-shield-check",
+                    target: item.filePath,
+                    result: 1,
+                    threatsFound: 1,
+                    scannedFiles: 1,
+                    duration: 1,
+                    actionTaken
+                }).catch(() => {});
+                virusTotalShieldLastMessage = `${buildVirusTotalThreatName(report)}: ${item.filePath}`;
+            } else if (report?.found === false) {
+                const fileStat = await fs.stat(item.filePath).catch(() => null);
+                const maxBytes = getVirusTotalShieldUploadMaxBytes(settings);
+                const uploadEnabled = settings.virusTotalShieldUploadUnknownEnabled === true;
+                const uploadSkipMessage = uploadEnabled && fileStat && fileStat.isFile() && fileStat.size > maxBytes
+                    ? `VirusTotal upload skipped: file is ${formatVirusTotalUploadSize(fileStat.size)}; max upload size is ${formatVirusTotalUploadSize(maxBytes)}.`
+                    : "";
+                if (
+                    uploadEnabled &&
+                    fileStat &&
+                    fileStat.isFile() &&
+                    fileStat.size > 0 &&
+                    fileStat.size <= maxBytes &&
+                    item.uploadedHash !== sha256
+                ) {
+                    virusTotalShieldQueue.set(normalizedPath, {
+                        ...item,
+                        queuedAt: Date.now(),
+                        notBefore: Math.max(Date.now() + 1000, virusTotalNextLookupAllowedAt),
+                        pendingUploadHash: sha256
+                    });
+                    virusTotalShieldLastMessage = `VirusTotal upload queued: ${item.filePath}`;
+                } else {
+                    virusTotalShieldLastMessage = uploadSkipMessage || `VirusTotal unknown: ${item.filePath}`;
+                }
+            } else {
+                virusTotalShieldLastMessage = `VirusTotal clean: ${item.filePath}`;
+            }
+            virusTotalShieldNextAllowedAt = Date.now() + virusTotalPublicApiLimits.perLookupMs;
+        } catch (e: any) {
+            const status = Number(e?.status || e?.response?.status || 0);
+            const localDelayMs = Math.max(1000, Number(e?.nextAllowedAt || 0) - Date.now());
+            const backoffMs = e?.localRateLimit || e?.localQuotaLimit
+                ? localDelayMs
+                : status === 429 ? 15 * 60 * 1000 : 60 * 1000;
+            virusTotalShieldLastMessage = e?.message || String(e);
+            virusTotalShieldNextAllowedAt = Date.now() + backoffMs;
+            if (status === 429 || status === 0) {
+                virusTotalShieldQueue.set(normalizedPath, item);
+            }
+            console.warn("VirusTotal Shield check paused:", virusTotalShieldLastMessage);
+        } finally {
+            virusTotalShieldRunning = false;
+            if (virusTotalShieldQueue.size > 0) scheduleShieldVirusTotalCheck(Math.max(0, virusTotalShieldNextAllowedAt - Date.now()));
+        }
+    };
+
+    scheduleShieldVirusTotalCheck = (delayMs = 0) => {
+        if (virusTotalShieldTimer) clearTimeout(virusTotalShieldTimer);
+        if (settings.virusTotalCloudEnabled !== true || settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
+        if (virusTotalShieldQueue.size === 0) return;
+        const delay = Math.max(0, Math.min(Number(delayMs || 0), 15 * 60 * 1000));
+        virusTotalShieldTimer = setTimeout(() => {
+            virusTotalShieldTimer = null;
+            processNextShieldVirusTotalCheck().catch(e => console.warn("VirusTotal Shield check failed:", e?.message || e));
+        }, delay);
+    };
+
+    const enqueueShieldVirusTotalCheck = (filePath: string) => {
+        if (settings.virusTotalCloudEnabled !== true || settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
+        const normalizedPath = normalizedStatePath(filePath);
+        if (!normalizedPath || virusTotalShieldQueue.has(normalizedPath)) return;
+        virusTotalShieldQueue.set(normalizedPath, { filePath, queuedAt: Date.now() });
+        scheduleShieldVirusTotalCheck(Math.max(0, virusTotalShieldNextAllowedAt - Date.now()));
+    };
+
     const shieldScanCache = await loadShieldScanCacheStore();
     console.log(`Shield cache backend: ${shieldScanCache.type}`);
     const saveJobProgress = (jobId: string, patch: Partial<ScanProgress>) => {
@@ -7224,6 +8339,7 @@ async function startServer() {
                                 actionTaken = yaraResult.actionTaken;
                             }
 
+                            enqueueShieldVirusTotalCheck(filePath);
                             const isThreat = threatsFound > 0;
                             appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
                             if (isThreat) {
@@ -7280,11 +8396,19 @@ async function startServer() {
     // API Routes
 
     app.get("/api/status", async (req, res) => {
+        settings = await restoreInstalledSignatureProviderSettings(settings);
         const history = await getHistory();
         const lastScan = history.find((h: any) => h.type.startsWith("scan") || h.type.startsWith("scheduled-scan")) || null;
         const lastUpdate = history.find((h: any) => h.type === "update") || null;
         const lastAppUpdateCheck = history.find((h: any) => h.type === "app-update-check") || null;
         const lastThreat = history.find((h: any) => h.threatsFound > 0) || null;
+        const lastCloudCheck = history.find((h: any) =>
+            h.type === "virustotal-cloud-check" ||
+            h.type === "virustotal-auto-refine" ||
+            h.type === "virustotal-shield-check" ||
+            h.type === "virustotal-shield-upload" ||
+            h.type === "virustotal-results-upload"
+        ) || null;
 
         let hasEngine = false;
         let hasDb = false;
@@ -7298,9 +8422,10 @@ async function startServer() {
         } catch { }
         hasYaraEngine = Boolean(settings.yaraPath && existsSync(settings.yaraPath));
         hasYaraRules = existsSync(getYaraRulesFile(settings));
-        const [securiteInfo, saneSecurity] = await Promise.all([
+        const [securiteInfo, saneSecurity, virusTotalCloud] = await Promise.all([
             getSecuriteInfoStatus(settings),
-            getSaneSecurityStatus(settings)
+            getSaneSecurityStatus(settings),
+            getVirusTotalDashboardStatus(settings)
         ]);
         const engineVersion = await getClamAVEngineVersion(settings, hasEngine);
         const yaraEngineVersion = await getCurrentYaraEngineVersion(settings);
@@ -7327,6 +8452,7 @@ async function startServer() {
             hasYaraRules,
             securiteInfo,
             saneSecurity,
+            virusTotalCloud,
             stats: {
                 engineVersion,
                 yaraEngineVersion,
@@ -7343,6 +8469,7 @@ async function startServer() {
                 lastScan: lastScan ? lastScan.date : null,
                 lastUpdate: lastUpdate ? lastUpdate.date : null,
                 lastThreat: lastThreat ? lastThreat.date : null,
+                lastCloudCheck: lastCloudCheck ? lastCloudCheck.date : null,
                 quarantineCount: quarantineItems.length,
                 shieldCacheCount: shieldScanCache.count(),
                 shieldCacheBackend: shieldScanCache.type
@@ -7623,10 +8750,142 @@ async function startServer() {
         }, 60000);
     };
 
+    const getVirusTotalRefinementQueueItems = async () => {
+        if (settings.virusTotalCloudEnabled !== true) return [];
+        if (settings.virusTotalAutoRefineEnabled !== true && settings.virusTotalShieldBackgroundCheckEnabled !== true) return [];
+        if (!await loadVirusTotalApiKey()) return [];
+        const results = await getScanResults();
+        return results.filter((result: any) =>
+            isVirusTotalAutoRefinementCandidate(result, settings) &&
+            (!getVirusTotalRefinementStatus(result) || getVirusTotalResultUploadFollowupAt(result) > 0)
+        );
+    };
+
+    const getVirusTotalRefinementQueueStatus = async () => {
+        const queued = await getVirusTotalRefinementQueueItems().catch(() => []);
+        return {
+            enabled: settings.virusTotalCloudEnabled === true &&
+                (settings.virusTotalAutoRefineEnabled === true || settings.virusTotalShieldBackgroundCheckEnabled === true),
+            configured: Boolean(await loadVirusTotalApiKey()),
+            running: virusTotalRefinementRunning,
+            queued: queued.length,
+            nextAllowedAt: virusTotalRefinementNextAllowedAt,
+            lastMessage: virusTotalRefinementLastMessage
+        };
+    };
+
+    const processNextVirusTotalRefinement = async () => {
+        if (virusTotalRefinementRunning) return;
+        if (settings.virusTotalCloudEnabled !== true) return;
+        if (settings.virusTotalAutoRefineEnabled !== true && settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
+        const apiKey = await loadVirusTotalApiKey();
+        if (!apiKey) {
+            virusTotalRefinementLastMessage = "VirusTotal API key is not configured.";
+            return;
+        }
+        const now = Date.now();
+        if (now < virusTotalRefinementNextAllowedAt) {
+            scheduleVirusTotalRefinement(virusTotalRefinementNextAllowedAt - now);
+            return;
+        }
+
+        virusTotalRefinementRunning = true;
+        let activeResults: any[] = [];
+        let activeResult: any = null;
+        try {
+            activeResults = await getScanResults();
+            activeResult = activeResults.find((item: any) => {
+                if (!isVirusTotalAutoRefinementCandidate(item, settings)) return false;
+                return !getVirusTotalRefinementStatus(item) || isVirusTotalResultUploadFollowupDue(item);
+            });
+            if (!activeResult) {
+                const nextFollowupAt = Math.min(...activeResults
+                    .filter((item: any) => isVirusTotalAutoRefinementCandidate(item, settings))
+                    .map(getVirusTotalResultUploadFollowupAt)
+                    .filter((value: number) => value > Date.now()));
+                if (Number.isFinite(nextFollowupAt)) {
+                    virusTotalRefinementLastMessage = "Waiting for VirusTotal analysis results.";
+                    virusTotalRefinementNextAllowedAt = nextFollowupAt;
+                    scheduleVirusTotalRefinement(Math.max(1000, nextFollowupAt - Date.now()));
+                } else {
+                    virusTotalRefinementLastMessage = "No VirusTotal refinement items queued.";
+                }
+                return;
+            }
+
+            const cloudCheck = await runVirusTotalResultCloudCheck(activeResults, activeResult, settings, apiKey);
+            await saveScanResults(activeResults);
+            await addHistory({
+                type: cloudCheck.uploaded ? "virustotal-results-upload" : "virustotal-auto-refine",
+                target: activeResult.originalPath || cloudCheck.sha256,
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 1,
+                duration: 1,
+                actionTaken: cloudCheck.uploaded
+                    ? cloudCheck.uploadAnalysisId ? `Uploaded for analysis ${cloudCheck.uploadAnalysisId}` : "Uploaded for analysis"
+                    : activeResult.virusTotalRefinement.label || "Checked"
+            }).catch(() => {});
+            virusTotalRefinementLastMessage = `${activeResult.virusTotalRefinement.label}: ${activeResult.originalPath || cloudCheck.sha256}`;
+            virusTotalRefinementNextAllowedAt = Date.now() + virusTotalPublicApiLimits.perLookupMs;
+        } catch (e: any) {
+            const status = Number(e?.status || e?.response?.status || 0);
+            const localDelayMs = Math.max(1000, Number(e?.nextAllowedAt || 0) - Date.now());
+            const backoffMs = e?.localRateLimit || e?.localQuotaLimit
+                ? localDelayMs
+                : status === 429 ? 15 * 60 * 1000 : 60 * 1000;
+            virusTotalRefinementLastMessage = e?.message || String(e);
+            virusTotalRefinementNextAllowedAt = Date.now() + backoffMs;
+            if (activeResult && status !== 429 && status !== 401 && status !== 403) {
+                activeResult.virusTotalRefinement = {
+                    status: "error",
+                    label: "Refinement error",
+                    severity: "neutral",
+                    checkedAt: Date.now(),
+                    hash: String(activeResult.sha256 || ""),
+                    stats: null,
+                    message: virusTotalRefinementLastMessage
+                };
+                await saveScanResults(activeResults).catch(() => {});
+            }
+            console.warn("VirusTotal refinement paused:", virusTotalRefinementLastMessage);
+        } finally {
+            virusTotalRefinementRunning = false;
+        }
+
+        const queued = await getVirusTotalRefinementQueueItems().catch(() => []);
+        if (queued.length > 0) scheduleVirusTotalRefinement(Math.max(0, virusTotalRefinementNextAllowedAt - Date.now()));
+    };
+
+    scheduleVirusTotalRefinement = (delayMs = 0) => {
+        if (virusTotalRefinementTimer) clearTimeout(virusTotalRefinementTimer);
+        if (settings.virusTotalCloudEnabled !== true) return;
+        if (settings.virusTotalAutoRefineEnabled !== true && settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
+        const delay = Math.max(0, Math.min(Number(delayMs || 0), 15 * 60 * 1000));
+        virusTotalRefinementTimer = setTimeout(() => {
+            virusTotalRefinementTimer = null;
+            processNextVirusTotalRefinement().catch(e => console.warn("VirusTotal refinement failed:", e?.message || e));
+        }, delay);
+    };
+
     // Initial trigger
     scheduleNextUpdate();
     scheduleNextYaraUpdate();
     scheduleNextAppUpdateCheck();
+    scheduleVirusTotalRefinement(5000);
+    scheduleShieldVirusTotalCheck(5000);
+
+    app.get("/api/settings", async (_req, res) => {
+        try {
+            settings = await restoreInstalledSignatureProviderSettings(settings);
+            res.json({
+                settings,
+                virusTotalCloud: await getVirusTotalCloudStatus(settings)
+            });
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message || "Could not load settings." });
+        }
+    });
 
     app.post("/api/settings", async (req, res) => {
         const normalizedRequest = normalizeSettingsPatch(req.body, settings);
@@ -7645,10 +8904,14 @@ async function startServer() {
             }));
         }
         settings = { ...settings, ...requestedSettings };
+        const settingsKeysToPersist = new Set(Object.keys(requestedSettings));
         if (normalizeSecuriteInfoPlan(settings.securiteInfoPlan) !== "paid") {
             settings.securiteInfoIncludePua = false;
+            if ("securiteInfoPlan" in requestedSettings || "securiteInfoIncludePua" in requestedSettings) {
+                settingsKeysToPersist.add("securiteInfoIncludePua");
+            }
         }
-        await saveConfig(settings);
+        await saveConfig(settings, { keys: settingsKeysToPersist });
         await ensureDirs(settings);
         await cleanupOldLogs(settings);
         if (securiteInfoDatabaseSelectionChanged) {
@@ -7670,6 +8933,8 @@ async function startServer() {
                 scheduleNextUpdate();
                 scheduleNextYaraUpdate();
                 scheduleNextAppUpdateCheck();
+                scheduleVirusTotalRefinement();
+                scheduleShieldVirusTotalCheck();
             })
             .catch(e => console.error("Failed to apply settings side effects:", e));
     });
@@ -7708,7 +8973,7 @@ async function startServer() {
             settings.lastScheduledScanResult = body.lastResult.slice(0, 500);
         }
         if (body.persist === true) {
-            await saveConfig(settings);
+            await saveConfig(settings, { keys: ["virusTotalCloudEnabled", "virusTotalAutoRefineEnabled", "virusTotalShieldBackgroundCheckEnabled"] });
         }
         if (body.persist === true && scheduledScanRuntime.state === "complete" && String(settings.lastScheduledScanResult || "").toLowerCase().includes("detections")) {
             sendScanSummary({
@@ -7746,7 +9011,7 @@ async function startServer() {
             await removeSecuriteInfoDatabaseFiles(settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(settings));
             await reloadClamdDatabases(settings);
             await ensureFreshclamConfig(settings);
-            await saveConfig(settings);
+            await saveConfig(settings, { keys: ["virusTotalCloudEnabled", "virusTotalAutoRefineEnabled", "virusTotalShieldBackgroundCheckEnabled"] });
             res.json({
                 success: true,
                 message: plan === "paid"
@@ -7828,6 +9093,86 @@ async function startServer() {
             });
         } catch (e: any) {
             res.status(500).json({ error: e?.message || String(e) });
+        }
+    });
+
+    app.get("/api/virustotal-cloud/status", async (_req, res) => {
+        res.json(await getVirusTotalDashboardStatus(settings));
+    });
+
+    app.post("/api/virustotal-cloud/configure", async (req, res) => {
+        try {
+            const apiKey = normalizeVirusTotalApiKey(req.body?.apiKey || "");
+            if (apiKey) await saveVirusTotalApiKey(apiKey);
+            const configured = Boolean(apiKey || await loadVirusTotalApiKey());
+            settings = {
+                ...settings,
+                virusTotalCloudEnabled: req.body?.enabled !== false && configured,
+                virusTotalAutoRefineEnabled: req.body?.autoRefineEnabled === true && configured,
+                virusTotalResultsUploadUnknownEnabled: req.body?.enabled !== false && configured
+                    ? req.body?.resultsUploadUnknownEnabled === true
+                    : false,
+                virusTotalResultsUploadMaxSizeMb: normalizeNumberSetting("virusTotalResultsUploadMaxSizeMb", req.body?.resultsUploadMaxSizeMb),
+                virusTotalShieldBackgroundCheckEnabled: req.body?.enabled !== false && configured
+                    ? settings.virusTotalShieldBackgroundCheckEnabled === true
+                    : false,
+                virusTotalShieldUploadUnknownEnabled: req.body?.enabled !== false && configured
+                    ? settings.virusTotalShieldUploadUnknownEnabled === true
+                    : false
+            };
+            await saveConfig(settings);
+            scheduleVirusTotalRefinement();
+            scheduleShieldVirusTotalCheck();
+            res.json({
+                success: true,
+                virusTotalCloud: await getVirusTotalDashboardStatus(settings),
+                message: configured
+                    ? "VirusTotal Cloud Check is configured."
+                    : "VirusTotal Cloud Check needs an API key."
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/virustotal-cloud/disconnect", async (_req, res) => {
+        try {
+            await fs.unlink(virusTotalApiKeySecretPath).catch(() => {});
+            settings = {
+                ...settings,
+                virusTotalCloudEnabled: false,
+                virusTotalAutoRefineEnabled: false,
+                virusTotalResultsUploadUnknownEnabled: false,
+                virusTotalShieldBackgroundCheckEnabled: false,
+                virusTotalShieldUploadUnknownEnabled: false
+            };
+            await saveConfig(settings);
+            res.json({
+                success: true,
+                virusTotalCloud: await getVirusTotalDashboardStatus(settings),
+                message: "VirusTotal Cloud Check was disabled and the local API key was removed."
+            });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.get("/api/virustotal-refinement/status", async (_req, res) => {
+        res.json(await getVirusTotalRefinementQueueStatus());
+    });
+
+    app.post("/api/results/virustotal-refine", async (_req, res) => {
+        try {
+            if (settings.virusTotalCloudEnabled !== true || settings.virusTotalAutoRefineEnabled !== true) {
+                throw new Error("VirusTotal false-positive refinement is disabled.");
+            }
+            if (!await loadVirusTotalApiKey()) {
+                throw new Error("VirusTotal API key is not configured.");
+            }
+            scheduleVirusTotalRefinement();
+            res.json({ success: true, status: await getVirusTotalRefinementQueueStatus() });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
         }
     });
 
@@ -9752,47 +11097,62 @@ if ($dialog.ShowDialog() -eq 'OK') {
     });
 
     app.get("/api/results", async (req, res) => {
-        const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined || req.query.engine !== undefined || req.query.findingSource !== undefined;
-        await cleanupBuiltInExcludedScanResults(settings);
-        if (!hasPagedQuery) {
-            const results = await getScanResults();
-            res.json(results.map((result: any) => ({
-                ...result,
-                available: Boolean(result.originalPath && existsSync(result.originalPath))
-            })));
-            return;
-        }
+        try {
+            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined || req.query.engine !== undefined || req.query.findingSource !== undefined || req.query.virusTotalRefinement !== undefined;
+            if (!scanResultsCleanupTimer) {
+                scanResultsCleanupTimer = setTimeout(() => {
+                    scanResultsCleanupTimer = null;
+                    cleanupBuiltInExcludedScanResults(settings)
+                        .catch(e => console.warn("Deferred scan results cleanup failed:", e?.message || e));
+                }, 1000);
+            }
+            if (!hasPagedQuery) {
+                const results = await getScanResults();
+                res.json(results.map((result: any) => ({
+                    ...result,
+                    available: Boolean(result.originalPath && existsSync(result.originalPath))
+                })));
+                return;
+            }
 
-        const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
-        const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
-        const date = typeof req.query.date === "string" ? req.query.date : "";
-        const pageSize = requestedPageSize === "all"
-            ? null
-            : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
-        const offset = pageSize ? (page - 1) * pageSize : 0;
-        const findingSource = typeof req.query.findingSource === "string"
-            ? req.query.findingSource
-            : typeof req.query.engine === "string" ? req.query.engine : "";
-        const [paged, findingSourceOptions] = await Promise.all([
-            getScanResultsPage({
-                limit: pageSize,
-                offset,
-                date,
-                findingSource
-            }),
-            getScanResultFindingSourceOptions({ date })
-        ]);
-        res.json({
-            items: paged.items.map((result: any) => ({
-                ...result,
-                available: Boolean(result.originalPath && existsSync(result.originalPath))
-            })),
-            total: paged.total,
-            page,
-            pageSize: pageSize || "all",
-            findingSourceOptions,
-            engineOptions: findingSourceOptions
-        });
+            const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
+            const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
+            const date = typeof req.query.date === "string" ? req.query.date : "";
+            const pageSize = requestedPageSize === "all"
+                ? null
+                : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
+            const offset = pageSize ? (page - 1) * pageSize : 0;
+            const findingSource = typeof req.query.findingSource === "string"
+                ? req.query.findingSource
+                : typeof req.query.engine === "string" ? req.query.engine : "";
+            const virusTotalRefinement = typeof req.query.virusTotalRefinement === "string"
+                ? req.query.virusTotalRefinement
+                : "all";
+            const [paged, findingSourceOptions] = await Promise.all([
+                getScanResultsPage({
+                    limit: pageSize,
+                    offset,
+                    date,
+                    findingSource,
+                    virusTotalRefinement
+                }),
+                getScanResultFindingSourceOptions({ date })
+            ]);
+            res.json({
+                items: paged.items.map((result: any) => ({
+                    ...result,
+                    available: Boolean(result.originalPath && existsSync(result.originalPath))
+                })),
+                total: paged.total,
+                page,
+                pageSize: pageSize || "all",
+                findingSourceOptions,
+                engineOptions: findingSourceOptions
+            });
+        } catch (e: any) {
+            console.error("Failed to load scan results:", e?.message || e);
+            res.status(500).json({ error: e?.message || "Could not load scan results.", items: [], total: 0 });
+        }
     });
 
     app.post("/api/results/virustotal-md5-all", async (_req, res) => {
@@ -9827,7 +11187,43 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 skippedItems,
                 skippedCount: skippedItems.length,
                 uploaded: false,
-                message: "VirusTotal will be queried by MD5 hash only. ClamShield does not upload files."
+                message: "VirusTotal MD5 checks prepared."
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.post("/api/results/virustotal-recheck-all", async (_req, res) => {
+        try {
+            if (settings.virusTotalCloudEnabled !== true || settings.virusTotalAutoRefineEnabled !== true) {
+                throw new Error("VirusTotal Cloud Check is disabled.");
+            }
+            if (!await loadVirusTotalApiKey()) {
+                throw new Error("VirusTotal API key is not configured.");
+            }
+            const results = await getScanResults();
+            let queuedCount = 0;
+            for (const result of results) {
+                if (!isVirusTotalAutoRefinementCandidate(result, settings)) continue;
+                result.virusTotalRefinement = null;
+                const checks = getVirusTotalResultChecks(result);
+                delete checks.cloud;
+                delete checks.resultsUploadedUnknownHash;
+                delete checks.resultsUploadAnalysisId;
+                delete checks.resultsUploadCheckAfter;
+                delete checks.resultsUploadFollowupCount;
+                result.virusTotalChecks = checks;
+                queuedCount++;
+            }
+            if (queuedCount > 0) await saveScanResults(results);
+            scheduleVirusTotalRefinement();
+            res.json({
+                success: true,
+                queuedCount,
+                message: queuedCount > 0
+                    ? `${queuedCount} result item(s) queued for VirusTotal recheck.`
+                    : "No result items are eligible for VirusTotal recheck."
             });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e?.message || String(e) });
@@ -9849,7 +11245,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 hash,
                 url: `https://www.virustotal.com/gui/file/${hash}/detection`,
                 uploaded: false,
-                message: `VirusTotal will be queried by ${algorithm.toUpperCase()} only. ClamShield does not upload the file.`
+                message: `VirusTotal ${algorithm.toUpperCase()} report prepared.`
             });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e?.message || String(e) });
@@ -9893,7 +11289,48 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 sha256,
                 url: `https://www.virustotal.com/gui/file/${sha256}/detection`,
                 uploaded: false,
-                message: "VirusTotal will be queried by SHA-256 only. ClamShield does not upload the file."
+                message: "VirusTotal report prepared."
+            });
+        } catch (e: any) {
+            res.status(400).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
+    app.get("/api/results/:id/virustotal-cloud", async (req, res) => {
+        try {
+            if (settings.virusTotalCloudEnabled !== true) {
+                throw new Error("VirusTotal Cloud Check is disabled. Add your API key in Settings first.");
+            }
+            const apiKey = await loadVirusTotalApiKey();
+            if (!apiKey) {
+                throw new Error("VirusTotal API key is not configured. Add it in Settings first.");
+            }
+            const results = await getScanResults();
+            const result = results.find((item: any) => item.id === req.params.id);
+            if (!result) throw new Error("Result not found.");
+            const cloudCheck = await runVirusTotalResultCloudCheck(results, result, settings, apiKey);
+            await saveScanResults(results);
+            await addHistory({
+                type: cloudCheck.uploaded ? "virustotal-results-upload" : "virustotal-cloud-check",
+                target: result.originalPath || cloudCheck.sha256,
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 1,
+                duration: 1,
+                actionTaken: cloudCheck.uploaded
+                    ? cloudCheck.uploadAnalysisId ? `Uploaded for analysis ${cloudCheck.uploadAnalysisId}` : "Uploaded for analysis"
+                    : result.virusTotalRefinement?.label || "Checked"
+            }).catch(() => {});
+            res.json({
+                success: true,
+                uploaded: cloudCheck.uploaded,
+                report: cloudCheck.report,
+                refinement: cloudCheck.refinement,
+                message: cloudCheck.uploaded
+                    ? "VirusTotal analysis queued."
+                    : cloudCheck.report.found
+                    ? "VirusTotal Cloud Check completed."
+                    : String((cloudCheck.report as any).message || "VirusTotal has no report for this item.")
             });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e?.message || String(e) });

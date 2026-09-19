@@ -1,33 +1,55 @@
 import { useEffect, useState } from "react";
-import { Bell, Plus, RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
+import { Bell, Cloud, Plus, RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
 import PageHeader from "../components/PageHeader";
 
 export default function ShieldSettings() {
   const [settings, setSettings] = useState<any>(null);
   const [systemPaths, setSystemPaths] = useState<any>(null);
+  const [virusTotalCloudStatus, setVirusTotalCloudStatus] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    fetch("/api/status").then(r => r.json()).then(d => setSettings(d.settings));
+    fetch("/api/status").then(r => r.json()).then(d => {
+      setSettings(d.settings);
+      setVirusTotalCloudStatus(d.virusTotalCloud || null);
+    });
     fetch("/api/system-paths").then(r => r.json()).then(d => setSystemPaths(d));
   }, []);
 
   const updateSettings = async (nextSettings: any) => {
+    const patch = getSettingsPatch(settings, nextSettings);
     setSettings(nextSettings);
     setSaving(true);
-    await persistSettings(nextSettings);
+    await persistSettings(patch);
     setSaving(false);
   };
 
-  const persistSettings = async (nextSettings = settings, showMessage = false) => {
-    if (!nextSettings) return;
+  const getSettingsPatch = (previousSettings: any, nextSettings: any) => {
+    const patch: Record<string, any> = {};
+    if (!previousSettings || !nextSettings) return patch;
+    for (const key of Object.keys(nextSettings)) {
+      if (JSON.stringify(previousSettings[key]) !== JSON.stringify(nextSettings[key])) {
+        patch[key] = nextSettings[key];
+      }
+    }
+    return patch;
+  };
+
+  const persistSettings = async (patch: Record<string, any> = {}, showMessage = false) => {
+    if (!patch || Object.keys(patch).length === 0) {
+      if (showMessage) {
+        setMessage("Shield settings saved.");
+        setTimeout(() => setMessage(""), 3000);
+      }
+      return;
+    }
     setSaving(true);
     try {
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(nextSettings)
+        body: JSON.stringify(patch)
       });
       if (showMessage) {
         setMessage("Shield settings saved.");
@@ -119,6 +141,9 @@ export default function ShieldSettings() {
     results_notify: "Saves the detection to Results, then shows a Shield notification popup.",
     results_silent: "Saves the detection to Results without showing a popup."
   };
+  const virusTotalReady =
+    settings.virusTotalCloudEnabled === true &&
+    virusTotalCloudStatus?.configured === true;
 
   const defaultFolders = [
     { key: 'monitorDownloads', name: 'Downloads Folder', pathLabel: systemPaths?.Downloads },
@@ -144,7 +169,7 @@ export default function ShieldSettings() {
             <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${settings.shieldEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
           </button>
           <button
-            onClick={() => persistSettings(settings, true)}
+            onClick={() => persistSettings({}, true)}
             disabled={saving}
             className="inline-flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
           >
@@ -321,6 +346,65 @@ export default function ShieldSettings() {
                 <RotateCcw className="w-4 h-4" />
                 Forget
               </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 font-medium text-slate-200">
+            <Cloud className="w-5 h-5 text-cyan-400" />
+            Cloud Checks
+          </div>
+          <div className="p-4 space-y-4">
+            <div className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg gap-6">
+              <div>
+                <span className="text-slate-300 block">Use VirusTotal in Real-Time Shield</span>
+                <span className="text-xs text-slate-500">
+                  Adds VirusTotal as a background Shield engine.
+                </span>
+                <span className={`block text-xs mt-1 ${virusTotalReady ? "text-emerald-300" : "text-amber-300"}`}>
+                  {virusTotalReady
+                    ? "Ready"
+                    : "Set up VirusTotal Cloud Check first."}
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.virusTotalShieldBackgroundCheckEnabled === true}
+                onChange={e => updateSettings({
+                  ...settings,
+                  virusTotalShieldBackgroundCheckEnabled: e.target.checked,
+                  virusTotalShieldUploadUnknownEnabled: e.target.checked ? settings.virusTotalShieldUploadUnknownEnabled === true : false
+                })}
+                className="w-5 h-5 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </div>
+            <div className={`space-y-3 p-2 rounded-lg ${settings.virusTotalShieldBackgroundCheckEnabled === true && virusTotalReady ? "hover:bg-slate-800/50" : "opacity-60"}`}>
+              <div className="flex items-center justify-between gap-6">
+                <div>
+                  <span className="text-slate-300 block">Upload unknown files to VirusTotal</span>
+                  <span className="text-xs text-slate-500">Only after the hash is unknown.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.virusTotalShieldUploadUnknownEnabled === true}
+                  disabled={!virusTotalReady || settings.virusTotalShieldBackgroundCheckEnabled !== true}
+                  onChange={e => updateSettings({...settings, virusTotalShieldUploadUnknownEnabled: e.target.checked})}
+                  className="w-5 h-5 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900 bg-slate-800 disabled:cursor-not-allowed"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-6">
+                <label className="text-sm font-medium text-slate-400">Max upload size (MB)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={settings.virusTotalShieldUploadMaxSizeMb || 20}
+                  disabled={!virusTotalReady || settings.virusTotalShieldBackgroundCheckEnabled !== true || settings.virusTotalShieldUploadUnknownEnabled !== true}
+                  onChange={e => updateNumberSetting("virusTotalShieldUploadMaxSizeMb", e.target.value, 20, 1, 32)}
+                  className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-cyan-500 disabled:cursor-not-allowed"
+                />
+              </div>
             </div>
           </div>
         </section>

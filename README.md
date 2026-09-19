@@ -4,6 +4,8 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 
 > Public beta: ClamShield is intended for users who understand basic security hygiene and want a transparent ClamAV-based tool. It should not be presented as a commercial antivirus replacement.
 
+For development transparency, runtime AI/cloud-service behavior, CI status, binary provenance, and current security limitations, see [Security, Trust, and Build Transparency](SECURITY.md).
+
 ## Highlights
 
 - Automatic ClamAV engine download and setup on Windows.
@@ -25,7 +27,8 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 - User-controlled shield depth and concurrent scan count.
 - Quarantine management and threat action prompts.
 - Exceptions list for trusted files and folders.
-- Results page actions for per-file quarantine, exception, VirusTotal MD5 hash checks, and user-controlled VirusTotal file upload checks.
+- Optional VirusTotal Cloud integration for Results refinement, real-time Shield cloud checks, and user-controlled unknown-file uploads with configurable size limits.
+- Results page actions for per-file quarantine, exception, VirusTotal cloud checks, MD5 hash reports, and user-controlled VirusTotal upload checks.
 - One-click false-positive reporting helpers for exceptions with provider-specific routing for ClamAV, SecuriteInfo, SaneSecurity, and YARA Forge detections.
 - Tray app with background monitoring and threat popup alerts.
 - Clean NSIS installer and uninstaller.
@@ -118,6 +121,8 @@ On Windows, ClamShield writes YARA scan lists as UTF-16LE without BOM so the ups
 
 YARA engine updates are resolved from official VirusTotal/YARA GitHub releases. If the latest YARA source release does not include a Windows x64 ZIP asset, ClamShield uses the newest recent release that does include a Windows x64 binary package. For example, YARA v4.5.8 was published without Windows ZIP assets, so ClamShield can continue installing the latest available Windows binary instead of failing the first-time setup.
 
+Because YARA Forge rules contain detection patterns, Microsoft Defender or another antivirus may flag the rules file itself. If the affected file is under `C:\ProgramData\ClamShield\yara\rules\`, this is usually a false positive against the rule database rather than active malware.
+
 ## Updates
 
 The Updates page has separate actions:
@@ -158,16 +163,34 @@ SaneSecurity integration is disabled by default and does not require an account.
 
 SaneSecurity is an independent third-party provider. Its signatures can improve detection coverage but may also increase false positives. ClamShield does not guarantee provider availability or detection results.
 
+### VirusTotal Cloud integration
+
+VirusTotal integration is disabled by default. Users can add their own VirusTotal API key from the Dashboard or Settings. The key is stored locally with Electron `safeStorage`; it is not written into `settings.json`.
+
+When enabled, ClamShield can:
+
+- check Results items against VirusTotal by SHA-256
+- label findings as likely false positive, needs review, suspicious, malicious, unknown, upload skipped, or analysis queued
+- recheck all Results items through a rate-limited background queue
+- optionally upload Results files that are unknown to VirusTotal, only after the hash has no report
+- optionally use VirusTotal as a background Real-Time Shield engine
+- optionally upload unknown Shield-scanned files, subject to the Shield upload size limit
+
+ClamShield follows the public VirusTotal API pacing in the background queue and tracks local daily/monthly usage. The dashboard shows the daily API count. Unknown-file upload size limits are configurable and default to `20 MB`; the app currently caps those settings at `32 MB`, matching the normal VirusTotal file upload endpoint. Files above the configured limit are not uploaded and the Results page shows an `Upload skipped` label with the file size and configured limit.
+
+VirusTotal cloud checks are a second-opinion layer. They do not replace local ClamAV/YARA scanning, and uploads should be enabled only when the user is comfortable submitting unknown files to VirusTotal.
+
 ### Results, second opinions, and false positives
 
 The Results page is the decision queue for detections that were not automatically quarantined. Each result shows the detection name, original file path, engine, source, and date, with actions directly under the file path:
 
-- `MD5 check`: opens a VirusTotal report by hash only. The file is not uploaded by ClamShield.
+- `Cloud check`: checks the item's SHA-256 with VirusTotal Cloud and applies a verdict label. If Results unknown-file upload is enabled and the file is under the configured size limit, ClamShield uploads the file for analysis and follows up through the background queue.
+- `MD5 check`: opens a VirusTotal report by hash.
 - `File upload check`: opens VirusTotal's upload page and copies the local file path so the user can choose whether to upload the file manually.
 - `Exception`: trusts the item and records detection metadata for later false-positive reporting.
 - `Quarantine`: moves the file into ClamShield quarantine.
 
-The page also includes a bulk `Check all MD5` action. It prepares VirusTotal hash report links for all available results and copies the MD5 list to the clipboard. ClamShield does not silently upload files to VirusTotal.
+The page also includes `Recheck all with VT`, which clears existing VirusTotal labels and queues all eligible Results items for background recheck using the configured VirusTotal options and API limits.
 
 When an exception was created from a detection, the Exceptions page can prepare a false-positive report for the likely source:
 

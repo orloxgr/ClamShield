@@ -75,7 +75,7 @@ export default function Updates() {
     await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(nextSettings)
+      body: JSON.stringify(patch)
     });
     refreshStatus();
   };

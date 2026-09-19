@@ -277,6 +277,7 @@ export default function ExceptionsPage() {
             <button
                 onClick={exportSelectedFalsePositives}
                 disabled={selectedCount === 0 || bulkBusy !== null}
+                title="Builds a ZIP with provider-specific false-positive report details for the selected exceptions."
                 className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors border border-slate-700"
             >
                 <Download className="w-4 h-4 shrink-0" />

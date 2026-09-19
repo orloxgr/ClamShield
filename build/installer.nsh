@@ -16,8 +16,8 @@
 !macroend
 
 !macro customInstall
-  ExecWait `"$SYSDIR\schtasks.exe" /create /tn "ClamShield" /tr "\"$INSTDIR\ClamShield.exe\"" /sc onlogon /rl highest /f`
   ${if} $clamShieldFreshInstall == "1"
+    ExecWait `"$SYSDIR\schtasks.exe" /create /tn "ClamShield" /tr "\"$INSTDIR\ClamShield.exe\"" /sc onlogon /rl highest /f`
     ${ifNot} ${Silent}
       DetailPrint "Recording installer notice acceptance..."
       ExecWait `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$$consentDir = Join-Path $$env:ProgramData 'ClamShield'; $$consentPath = Join-Path $$consentDir 'installer-consent.txt'; New-Item -ItemType Directory -Path $$consentDir -Force | Out-Null; @('noticeVersion=2026-06-25', ('acceptedAt=' + [DateTime]::UtcNow.ToString('o')), 'installerVersion=${VERSION}') | Set-Content -LiteralPath $$consentPath -Encoding UTF8"`
@@ -25,7 +25,7 @@
   ${endif}
   ${if} ${Silent}
     DetailPrint "Launching ClamShield after silent install or update..."
-    Exec `"$INSTDIR\ClamShield.exe" --minimized`
+    Exec `"$INSTDIR\ClamShield.exe"`
   ${endif}
 !macroend
 

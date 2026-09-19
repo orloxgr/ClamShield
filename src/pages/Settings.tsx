@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown } from "lucide-react";
+import { Bug, Save, Folder, Shield, Sliders, ShieldAlert, Heart, RefreshCw, ChevronDown, Cloud, KeyRound, Trash2 } from "lucide-react";
 
 type ActionNotice = {
   kind: "success" | "warning" | "error" | "info";
   text: string;
 };
 
-type SettingsSection = "system" | "scanner" | "diagnostics" | "paths";
+type SettingsSection = "system" | "scanner" | "cloud" | "diagnostics" | "paths";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -14,12 +14,26 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<ActionNotice | null>(null);
   const [defenderActionPending, setDefenderActionPending] = useState<"pause" | "restore" | "refresh" | null>(null);
+  const [virusTotalApiKey, setVirusTotalApiKey] = useState("");
+  const [virusTotalCloudStatus, setVirusTotalCloudStatus] = useState<any>(null);
+  const [virusTotalPending, setVirusTotalPending] = useState<"save" | "disconnect" | null>(null);
   const [openSection, setOpenSection] = useState<SettingsSection | null>("system");
   const autosaveTimerRef = useRef<number | null>(null);
+  const pendingAutosavePatchRef = useRef<Record<string, any>>({});
+  const baselineSettingsRef = useRef<any>(null);
+  const sectionHeaderRefs = useRef<Record<SettingsSection, HTMLButtonElement | null>>({
+    system: null,
+    scanner: null,
+    cloud: null,
+    diagnostics: null,
+    paths: null
+  });
 
   useEffect(() => {
-    fetch("/api/status").then(r => r.json()).then(d => {
+    fetch("/api/settings").then(r => r.json()).then(d => {
       setSettings(d.settings);
+      baselineSettingsRef.current = d.settings;
+      setVirusTotalCloudStatus(d.virusTotalCloud || null);
     });
     fetch("/api/defender-status").then(r => r.json()).then(d => setDefenderStatus(d)).catch(() => {});
     return () => {
@@ -107,34 +121,119 @@ export default function SettingsPage() {
     updateSettings({ ...settings, [key]: nextValue });
   };
 
-  const scheduleAutosave = (nextSettings: any) => {
+  const getChangedSettingsPatch = (previousSettings: any, nextSettings: any) => {
+    const patch: Record<string, any> = {};
+    if (!previousSettings || !nextSettings) return patch;
+    for (const key of Object.keys(nextSettings)) {
+      if (JSON.stringify(previousSettings[key]) !== JSON.stringify(nextSettings[key])) {
+        patch[key] = nextSettings[key];
+      }
+    }
+    return patch;
+  };
+
+  const scheduleAutosave = (patch: Record<string, any>) => {
+    if (Object.keys(patch).length === 0) return;
+    pendingAutosavePatchRef.current = { ...pendingAutosavePatchRef.current, ...patch };
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = window.setTimeout(() => {
-      saveSettings({ silent: true, nextSettings });
+      const pendingPatch = pendingAutosavePatchRef.current;
+      pendingAutosavePatchRef.current = {};
+      saveSettings({ silent: true, patch: pendingPatch });
     }, 350);
   };
 
   const updateSettings = (nextSettings: any) => {
+    const patch = getChangedSettingsPatch(settings, nextSettings);
     setSettings(nextSettings);
-    scheduleAutosave(nextSettings);
+    scheduleAutosave(patch);
   };
 
-  const saveSettings = async (options: { silent?: boolean, nextSettings?: any } = {}) => {
-    const settingsToSave = options.nextSettings || settings;
+  const saveSettings = async (options: { silent?: boolean, patch?: Record<string, any> } = {}) => {
+    if (!options.patch && autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const settingsToSave = options.patch || {
+      ...pendingAutosavePatchRef.current,
+      ...getChangedSettingsPatch(baselineSettingsRef.current, settings)
+    };
+    if (!options.patch) pendingAutosavePatchRef.current = {};
+    if (Object.keys(settingsToSave).length === 0) {
+      if (!options.silent) setNotice({ kind: "success", text: "Settings saved successfully." });
+      return;
+    }
     setSaving(true);
     if (!options.silent) setNotice(null);
     try {
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settingsToSave)
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Settings save failed.");
+      if (data.settings && !options.silent) {
+        setSettings(data.settings);
+        baselineSettingsRef.current = data.settings;
+      } else {
+        baselineSettingsRef.current = { ...(baselineSettingsRef.current || {}), ...settingsToSave };
+      }
       if (!options.silent) setNotice({ kind: "success", text: "Settings saved successfully." });
     } catch (e: any) {
+      pendingAutosavePatchRef.current = { ...settingsToSave, ...pendingAutosavePatchRef.current };
       setNotice({ kind: "error", text: "Failed to save settings: " + e.message });
     }
     setSaving(false);
     if (!options.silent) setTimeout(() => setNotice(null), 3000);
+  };
+
+  const saveVirusTotalCloud = async () => {
+    setVirusTotalPending("save");
+    try {
+      const res = await fetch("/api/virustotal-cloud/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: virusTotalApiKey,
+          enabled: settings.virusTotalCloudEnabled !== false,
+          autoRefineEnabled: settings.virusTotalAutoRefineEnabled === true
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || "Could not configure VirusTotal Cloud Check.");
+      setVirusTotalApiKey("");
+      setVirusTotalCloudStatus(data.virusTotalCloud);
+      setSettings({
+        ...settings,
+        virusTotalCloudEnabled: data.virusTotalCloud?.enabled === true,
+        virusTotalAutoRefineEnabled: data.virusTotalCloud?.autoRefineEnabled === true,
+        virusTotalResultsUploadUnknownEnabled: data.virusTotalCloud?.resultsUploadUnknownEnabled === true,
+        virusTotalShieldUploadUnknownEnabled: data.virusTotalCloud?.shieldUploadUnknownEnabled === true
+      });
+      setNotice({ kind: "success", text: data.message || "VirusTotal Cloud Check configured." });
+    } catch (e: any) {
+      setNotice({ kind: "error", text: e.message || "Could not configure VirusTotal Cloud Check." });
+    } finally {
+      setVirusTotalPending(null);
+    }
+  };
+
+  const disconnectVirusTotalCloud = async () => {
+    setVirusTotalPending("disconnect");
+    try {
+      const res = await fetch("/api/virustotal-cloud/disconnect", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || "Could not remove the VirusTotal API key.");
+      setVirusTotalApiKey("");
+      setVirusTotalCloudStatus(data.virusTotalCloud);
+      setSettings({ ...settings, virusTotalCloudEnabled: false, virusTotalAutoRefineEnabled: false, virusTotalResultsUploadUnknownEnabled: false, virusTotalShieldUploadUnknownEnabled: false });
+      setNotice({ kind: "success", text: data.message || "VirusTotal Cloud Check disabled." });
+    } catch (e: any) {
+      setNotice({ kind: "error", text: e.message || "Could not remove the VirusTotal API key." });
+    } finally {
+      setVirusTotalPending(null);
+    }
   };
 
   if (!settings) return <div className="p-8">Loading...</div>;
@@ -148,7 +247,19 @@ export default function SettingsPage() {
         ? "bg-rose-500/15 border-rose-500/30 text-rose-200"
         : "bg-indigo-500/15 border-indigo-500/30 text-indigo-200";
   const toggleSection = (section: SettingsSection) => {
-    setOpenSection(current => current === section ? null : section);
+    setOpenSection(current => {
+      const next = current === section ? null : section;
+      if (next) {
+        window.setTimeout(() => {
+          const header = sectionHeaderRefs.current[section];
+          if (!header) return;
+          const stickyOffset = 116;
+          const top = header.getBoundingClientRect().top + window.scrollY - stickyOffset;
+          window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        }, 0);
+      }
+      return next;
+    });
   };
   const scanIntensityDetails = (value: number) => {
     const cores = typeof navigator !== "undefined" && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 1;
@@ -195,6 +306,7 @@ export default function SettingsPage() {
       <div className="space-y-6">
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <button
+            ref={element => { sectionHeaderRefs.current.system = element; }}
             type="button"
             onClick={() => toggleSection("system")}
             aria-expanded={openSection === "system"}
@@ -400,6 +512,132 @@ export default function SettingsPage() {
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <button
+            ref={element => { sectionHeaderRefs.current.cloud = element; }}
+            type="button"
+            onClick={() => toggleSection("cloud")}
+            aria-expanded={openSection === "cloud"}
+            className={`w-full px-6 py-4 flex items-center justify-between font-medium text-slate-200 hover:bg-slate-800/50 transition-colors ${
+              openSection === "cloud" ? "border-b border-slate-800" : ""
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Cloud className="w-5 h-5 text-sky-400" />
+              Cloud Checks
+            </div>
+            <ChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${openSection === "cloud" ? "rotate-180" : ""}`} />
+          </button>
+          {openSection === "cloud" && (
+          <div className="p-6 space-y-5">
+            <div className="flex items-start justify-between gap-6 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">VirusTotal Cloud Check</span>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                  <span className={virusTotalCloudStatus?.configured ? "text-emerald-300" : "text-amber-300"}>
+                    {virusTotalCloudStatus?.configured ? "API key saved locally in Windows secure storage." : "API key not configured."}
+                  </span>
+                  {!virusTotalCloudStatus?.configured && (
+                    <a
+                      href="https://www.virustotal.com/gui/my-apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sky-300 hover:text-sky-200"
+                    >
+                      Get API key
+                    </a>
+                  )}
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.virusTotalCloudEnabled === true}
+                onChange={e => updateSettings({
+                  ...settings,
+                  virusTotalCloudEnabled: e.target.checked,
+                  virusTotalAutoRefineEnabled: e.target.checked ? settings.virusTotalAutoRefineEnabled === true : false,
+                  virusTotalResultsUploadUnknownEnabled: e.target.checked ? settings.virusTotalResultsUploadUnknownEnabled === true : false,
+                  virusTotalShieldBackgroundCheckEnabled: e.target.checked ? settings.virusTotalShieldBackgroundCheckEnabled === true : false,
+                  virusTotalShieldUploadUnknownEnabled: e.target.checked ? settings.virusTotalShieldUploadUnknownEnabled === true : false
+                })}
+                className="mt-1 w-5 h-5 rounded border-slate-600 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </div>
+            <div className="flex items-start justify-between gap-6 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">False-positive refinement via VirusTotal</span>
+                <span className="text-slate-500 text-xs">Automatically labels new Results findings with a VirusTotal verdict.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.virusTotalAutoRefineEnabled === true}
+                disabled={settings.virusTotalCloudEnabled !== true}
+                onChange={e => updateSettings({...settings, virusTotalAutoRefineEnabled: e.target.checked})}
+                className="mt-1 w-5 h-5 rounded border-slate-600 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-900 bg-slate-800 disabled:opacity-50"
+              />
+            </div>
+            <div className={`space-y-3 border-b border-slate-800 pb-4 ${settings.virusTotalCloudEnabled === true ? "" : "opacity-60"}`}>
+              <div className="flex items-start justify-between gap-6">
+                <div>
+                  <span className="text-slate-200 font-medium block">Upload unknown Results files</span>
+                  <span className="text-slate-500 text-xs">Only after VirusTotal has no report for the hash.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.virusTotalResultsUploadUnknownEnabled === true}
+                  disabled={settings.virusTotalCloudEnabled !== true}
+                  onChange={e => updateSettings({...settings, virusTotalResultsUploadUnknownEnabled: e.target.checked})}
+                  className="mt-1 w-5 h-5 rounded border-slate-600 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-900 bg-slate-800 disabled:opacity-50"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-6">
+                <label className="text-sm font-medium text-slate-400">Max upload size (MB)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={settings.virusTotalResultsUploadMaxSizeMb || 20}
+                  disabled={settings.virusTotalCloudEnabled !== true || settings.virusTotalResultsUploadUnknownEnabled !== true}
+                  onChange={e => updateNumberSetting("virusTotalResultsUploadMaxSizeMb", e.target.value, 20, 1, 32)}
+                  className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-sky-500 disabled:cursor-not-allowed"
+                />
+              </div>
+            </div>
+            <div className="grid md:grid-cols-[1fr_auto_auto] gap-3 items-end">
+              <label className="block">
+                <span className="text-xs font-medium text-slate-400">VirusTotal API key</span>
+                <input
+                  type="password"
+                  value={virusTotalApiKey}
+                  onChange={e => setVirusTotalApiKey(e.target.value)}
+                  placeholder={virusTotalCloudStatus?.configured ? "Leave blank to keep the saved key" : "Paste your VirusTotal API key"}
+                  className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 focus:outline-none focus:border-sky-500"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={saveVirusTotalCloud}
+                disabled={virusTotalPending !== null || (!virusTotalCloudStatus?.configured && !virusTotalApiKey.trim())}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-sky-700 hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                {virusTotalPending === "save" ? <RefreshCw className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={disconnectVirusTotalCloud}
+                disabled={virusTotalPending !== null || !virusTotalCloudStatus?.configured}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-rose-950/60 disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 hover:text-rose-300 rounded-lg text-sm font-medium transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                Remove
+              </button>
+            </div>
+          </div>
+          )}
+        </section>
+
+        <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <button
+            ref={element => { sectionHeaderRefs.current.scanner = element; }}
             type="button"
             onClick={() => toggleSection("scanner")}
             aria-expanded={openSection === "scanner"}
@@ -578,6 +816,7 @@ export default function SettingsPage() {
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <button
+            ref={element => { sectionHeaderRefs.current.diagnostics = element; }}
             type="button"
             onClick={() => toggleSection("diagnostics")}
             aria-expanded={openSection === "diagnostics"}
@@ -628,6 +867,7 @@ export default function SettingsPage() {
 
         <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           <button
+            ref={element => { sectionHeaderRefs.current.paths = element; }}
             type="button"
             onClick={() => toggleSection("paths")}
             aria-expanded={openSection === "paths"}

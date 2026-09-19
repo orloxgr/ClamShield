@@ -166,44 +166,40 @@ export default function Quarantine() {
         title="Quarantine"
         description="Isolated threats that cannot harm your system"
         actions={(
-        <div className="flex flex-col items-end gap-2 max-w-full">
-          <div className="flex flex-wrap items-center justify-end gap-3">
-            <span className="text-sm text-slate-400 tabular-nums">{selectedCount} selected</span>
+        <div className="grid w-[26rem] max-w-full grid-cols-2 gap-2">
+            <span className="col-span-2 text-right text-sm text-slate-400 tabular-nums">{selectedCount} selected</span>
             <button
               onClick={restoreSelected}
               disabled={selectedCount === 0 || bulkBusy !== null}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors border border-slate-700"
+              className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors border border-slate-700"
             >
-              <RotateCcw className="w-4 h-4" />
-              <span>{bulkBusy === "restore" ? "Restoring..." : "Restore selected + exceptions"}</span>
+              <RotateCcw className="w-4 h-4 shrink-0" />
+              <span className="truncate">{bulkBusy === "restore" ? "Restoring..." : "Restore selected"}</span>
             </button>
             <button
               onClick={deleteSelected}
               disabled={selectedCount === 0 || bulkBusy !== null}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+              className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
             >
-              <Trash2 className="w-4 h-4" />
-              <span>{bulkBusy === "delete" ? "Deleting..." : "Delete selected"}</span>
+              <Trash2 className="w-4 h-4 shrink-0" />
+              <span className="truncate">{bulkBusy === "delete" ? "Deleting..." : "Delete selected"}</span>
             </button>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-3">
             {totalItems > 0 && (
               <button
                 onClick={emptyQuarantine}
-                className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors border border-red-500/20"
+                className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors border border-red-500/20"
               >
-                <Trash2 className="w-4 h-4" />
-                <span>Empty Quarantine</span>
+                <Trash2 className="w-4 h-4 shrink-0" />
+                <span className="truncate">Empty Quarantine</span>
               </button>
             )}
             <button
               onClick={openQuarantine}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
+              className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
             >
-              <FolderOpen className="w-4 h-4" />
-              <span>Open Folder</span>
+              <FolderOpen className="w-4 h-4 shrink-0" />
+              <span className="truncate">Open Folder</span>
             </button>
-          </div>
         </div>
         )}
       />

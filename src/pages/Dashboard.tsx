@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw } from "lucide-react";
+import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw, Cloud, KeyRound, SearchCheck, Trash2, UploadCloud } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import PageHeader from "../components/PageHeader";
 import { formatSystemDateTime } from "../lib/dateFormat";
@@ -16,6 +16,14 @@ export default function Dashboard() {
   const [saneSecurityProfile, setSaneSecurityProfile] = useState<"malware" | "complete">("malware");
   const [saneSecurityBusy, setSaneSecurityBusy] = useState(false);
   const [saneSecurityMessage, setSaneSecurityMessage] = useState("");
+  const [virusTotalDialogOpen, setVirusTotalDialogOpen] = useState(false);
+  const [virusTotalApiKey, setVirusTotalApiKey] = useState("");
+  const [virusTotalCloudEnabled, setVirusTotalCloudEnabled] = useState(false);
+  const [virusTotalAutoRefineEnabled, setVirusTotalAutoRefineEnabled] = useState(false);
+  const [virusTotalResultsUploadUnknownEnabled, setVirusTotalResultsUploadUnknownEnabled] = useState(false);
+  const [virusTotalResultsUploadMaxSizeMb, setVirusTotalResultsUploadMaxSizeMb] = useState(20);
+  const [virusTotalBusy, setVirusTotalBusy] = useState<"save" | "disconnect" | "refine" | null>(null);
+  const [virusTotalMessage, setVirusTotalMessage] = useState("");
 
   const fetchStatus = () => {
     fetch("/api/status").then(r => r.json()).then(setStatus);
@@ -188,13 +196,92 @@ export default function Dashboard() {
     }
   };
 
+  const saveVirusTotalCloud = async () => {
+    setVirusTotalBusy("save");
+    setVirusTotalMessage("");
+    try {
+      const res = await fetch("/api/virustotal-cloud/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: virusTotalApiKey,
+          enabled: virusTotalCloudEnabled,
+          autoRefineEnabled: virusTotalAutoRefineEnabled,
+          resultsUploadUnknownEnabled: virusTotalResultsUploadUnknownEnabled,
+          resultsUploadMaxSizeMb: virusTotalResultsUploadMaxSizeMb
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not save VirusTotal Cloud Check.");
+      setVirusTotalApiKey("");
+      setVirusTotalMessage(data.message || "VirusTotal Cloud Check saved.");
+      fetchStatus();
+    } catch (e: any) {
+      setVirusTotalMessage(e.message || "Could not save VirusTotal Cloud Check.");
+    } finally {
+      setVirusTotalBusy(null);
+    }
+  };
+
+  const disconnectVirusTotalCloud = async () => {
+    if (!window.confirm("Disable VirusTotal Cloud Check and remove the saved API key?")) return;
+    setVirusTotalBusy("disconnect");
+    setVirusTotalMessage("");
+    try {
+      const res = await fetch("/api/virustotal-cloud/disconnect", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not disconnect VirusTotal Cloud Check.");
+      setVirusTotalApiKey("");
+      setVirusTotalCloudEnabled(false);
+      setVirusTotalAutoRefineEnabled(false);
+      setVirusTotalResultsUploadUnknownEnabled(false);
+      setVirusTotalMessage(data.message || "VirusTotal Cloud Check disabled.");
+      fetchStatus();
+    } catch (e: any) {
+      setVirusTotalMessage(e.message || "Could not disconnect VirusTotal Cloud Check.");
+    } finally {
+      setVirusTotalBusy(null);
+    }
+  };
+
+  const runVirusTotalRefinement = async () => {
+    setVirusTotalBusy("refine");
+    setVirusTotalMessage("");
+    try {
+      const res = await fetch("/api/results/virustotal-refine", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not start VirusTotal refinement.");
+      setVirusTotalMessage("VirusTotal refinement queue started.");
+      fetchStatus();
+    } catch (e: any) {
+      setVirusTotalMessage(e.message || "Could not start VirusTotal refinement.");
+    } finally {
+      setVirusTotalBusy(null);
+    }
+  };
+
   if (!status) return <div className="p-8">Loading...</div>;
 
   const isProtected = status.settings?.shieldEnabled && !status.isSimulated;
   const securiteInfo = status.securiteInfo || {};
   const securiteInfoInstalled = securiteInfo.connected && Number(securiteInfo.installedCount || 0) > 0;
   const saneSecurity = status.saneSecurity || {};
-  const saneSecurityInstalled = saneSecurity.connected && Number(saneSecurity.installedCount || 0) > 0;
+  const saneSecurityInstalledCount = Number(saneSecurity.installedCount || 0);
+  const saneSecurityFilesPresent = saneSecurityInstalledCount > 0;
+  const saneSecurityInstalled = saneSecurity.connected && saneSecurityFilesPresent;
+  const virusTotalCloud = status.virusTotalCloud || {};
+  const virusTotalConfigured = virusTotalCloud.configured === true;
+  const virusTotalEnabled = virusTotalCloud.enabled === true;
+  const virusTotalAutoRefine = virusTotalCloud.autoRefineEnabled === true;
+  const virusTotalCheckedCount = Number(virusTotalCloud.checkedCount || 0);
+  const virusTotalQueuedCount = Math.max(0, Number(virusTotalCloud.queuedCount || 0));
+  const virusTotalTotalFindings = Number(virusTotalCloud.totalFindings || 0);
+  const virusTotalTotals = virusTotalCloud.totals || {};
+  const virusTotalDetectionVotes = Number(virusTotalTotals.malicious || 0) + Number(virusTotalTotals.suspicious || 0);
+  const virusTotalLastLabel = String(virusTotalCloud.lastLabel || "");
+  const virusTotalUsageDay = virusTotalCloud.usage?.day || {};
+  const virusTotalUsageDayCount = Number(virusTotalUsageDay.count || 0);
+  const virusTotalUsageDayLimit = Number(virusTotalUsageDay.limit || 0);
   const formatUpdateDate = (value: any) => formatSystemDateTime(value);
   const metadataValueClass = "font-medium text-slate-200";
   const attentionValueClass = "font-medium text-amber-400";
@@ -204,29 +291,34 @@ export default function Dashboard() {
     setSecuriteInfoMessage("");
     setSecuriteInfoDialogOpen(true);
   };
+  const openVirusTotalDialog = () => {
+    setVirusTotalCloudEnabled(virusTotalEnabled || !virusTotalConfigured);
+    setVirusTotalAutoRefineEnabled(virusTotalAutoRefine);
+    setVirusTotalResultsUploadUnknownEnabled(virusTotalCloud.resultsUploadUnknownEnabled === true);
+    setVirusTotalResultsUploadMaxSizeMb(Number(virusTotalCloud.resultsUploadMaxSizeMb || 20));
+    setVirusTotalApiKey("");
+    setVirusTotalMessage("");
+    setVirusTotalDialogOpen(true);
+  };
 
   return (
     <div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
-      <PageHeader title="Dashboard" description="System protection overview" />
-
-      {/* Main Status card */}
-      <div className={`p-8 rounded-2xl border flex items-center gap-6 ${isProtected ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
-        <div className={`p-4 rounded-full ${isProtected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-          {isProtected ? <Shield className="w-12 h-12" /> : <ShieldAlert className="w-12 h-12" />}
-        </div>
-        <div className="flex-1">
-          <h2 className="text-2xl font-semibold text-white mb-1">
-            {isProtected ? "You're Protected" : status.isSimulated ? "Engine Missing" : "Shield is OFF"}
-          </h2>
-          <p className={isProtected ? "text-emerald-400/80" : "text-red-400/80"}>
-            {isProtected 
-              ? "Your system is being monitored in real-time." 
-              : status.isSimulated 
-                ? "ClamAV engine is not installed. Background scanning is disabled." 
-                : "Real-time protection is disabled. Enable it in Shield settings."}
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="System protection overview"
+        actions={(
+          <div className={`mt-1 shrink-0 inline-flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-base ${
+            isProtected
+              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+              : "bg-rose-500/10 border-rose-500/20 text-rose-300"
+          }`}>
+            {isProtected ? <Shield className="w-5 h-5" /> : <ShieldAlert className="w-5 h-5" />}
+            <span className="font-semibold">
+              {isProtected ? "You're Protected" : status.isSimulated ? "Engine missing" : "Shield off"}
+            </span>
+          </div>
+        )}
+      />
 
       {status.isSimulated && status.platform === "win32" && (
         <div className="p-6 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between">
@@ -259,7 +351,7 @@ export default function Dashboard() {
       )}
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
           <h3 className="font-medium text-slate-300 flex items-center gap-2">
             <Cpu className="w-5 h-5 text-indigo-400" />
@@ -336,7 +428,7 @@ export default function Dashboard() {
                   }}
                   className="px-3 py-1.5 bg-violet-700 hover:bg-violet-600 text-white rounded-lg text-xs font-medium transition-colors"
                 >
-                  {saneSecurity.connected ? "Finish setup" : "Install"}
+                  {saneSecurity.connected ? "Finish setup" : saneSecurityFilesPresent ? "Reconnect" : "Install"}
                 </button>
               )}
             </div>
@@ -355,6 +447,63 @@ export default function Dashboard() {
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <h3 className="font-medium text-slate-300 flex items-center gap-2">
+              <Cloud className="w-5 h-5 text-cyan-400" />
+              VirusTotal Cloud
+            </h3>
+            <button
+              onClick={openVirusTotalDialog}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium"
+            >
+              {virusTotalConfigured ? "Manage" : "Setup"}
+            </button>
+          </div>
+          <div className="space-y-3 text-sm">
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
+              <span className="text-slate-500">Status</span>
+              <span className={virusTotalEnabled && virusTotalConfigured ? metadataValueClass : attentionValueClass}>
+                {virusTotalEnabled && virusTotalConfigured ? "Enabled" : virusTotalConfigured ? "Disabled" : "Not configured"}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
+              <span className="text-slate-500">Auto refinement</span>
+              <span className={virusTotalAutoRefine ? metadataValueClass : "font-medium text-slate-500"}>
+                {virusTotalAutoRefine ? "On" : "Off"}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
+              <span className="text-slate-500">Checked findings</span>
+              <span className="font-medium text-slate-200 text-right">
+                {virusTotalCheckedCount}/{virusTotalTotalFindings}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
+              <span className="text-slate-500">Queued</span>
+              <span className="font-medium text-slate-200">{virusTotalQueuedCount}</span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
+              <span className="text-slate-500">API today</span>
+              <span className="font-medium text-slate-200 text-right">
+                {virusTotalUsageDayLimit > 0 ? `${virusTotalUsageDayCount}/${virusTotalUsageDayLimit}` : "0/500"}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
+              <span className="text-slate-500">VT detections</span>
+              <span className={virusTotalDetectionVotes > 0 ? "font-medium text-amber-300 text-right" : metadataValueClass}>
+                {virusTotalDetectionVotes}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 gap-4">
+              <span className="text-slate-500">Last result</span>
+              <span className="font-medium text-slate-200 text-right">
+                {virusTotalLastLabel || "Never checked"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 lg:col-span-2">
           <h3 className="font-medium text-slate-300 flex items-center gap-2">
             <Activity className="w-5 h-5 text-indigo-400" />
             Recent Activity
@@ -370,6 +519,12 @@ export default function Dashboard() {
               <span className="text-slate-500 flex items-center gap-2"><Database className="w-4 h-4"/> Signatures Updated</span>
               <span className="font-medium text-slate-200">
                 {status.stats.lastUpdate ? formatDistanceToNow(new Date(status.stats.lastUpdate), {addSuffix: true}) : "Never"}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
+              <span className="text-slate-500 flex items-center gap-2"><Cloud className="w-4 h-4"/> VirusTotal Cloud</span>
+              <span className="font-medium text-slate-200 text-right">
+                {status.stats.lastCloudCheck ? formatDistanceToNow(new Date(status.stats.lastCloudCheck), {addSuffix: true}) : "Never"}
               </span>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
@@ -544,9 +699,14 @@ export default function Dashboard() {
             <div className="sticky top-0 bg-slate-900 flex items-center justify-between px-6 py-4 border-b border-slate-800">
               <div>
                 <h2 className="text-xl font-semibold text-white">
-                  {saneSecurity.connected ? "Manage SaneSecurity" : "Install SaneSecurity Signatures"}
+                  {saneSecurity.connected ? "Manage SaneSecurity" : saneSecurityFilesPresent ? "Reconnect SaneSecurity" : "Install SaneSecurity Signatures"}
                 </h2>
                 <p className="text-xs text-slate-500 mt-1">Public third-party signatures for ClamAV. No account is required.</p>
+                {saneSecurityFilesPresent && (
+                  <p className={`text-xs mt-1 ${saneSecurity.connected ? "text-emerald-400" : "text-amber-300"}`}>
+                    {saneSecurity.profile === "complete" ? "Complete" : "Malware Protection"} - {saneSecurity.installedCount || 0}/{saneSecurity.expectedCount || 0} databases installed{saneSecurity.connected ? "" : " - reconnect required"}
+                  </p>
+                )}
               </div>
               <button
                 onClick={() => setSaneSecurityDialogOpen(false)}
@@ -566,7 +726,7 @@ export default function Dashboard() {
                 <p className="text-xs text-amber-300/80">
                   Third-party signatures can improve detection but may also increase false positives. ClamShield does not guarantee SaneSecurity's availability or detection results.
                 </p>
-                {saneSecurity.connected && (
+                {false && saneSecurity.connected && (
                   <p className="text-xs text-emerald-400">
                     {saneSecurity.profile === "complete" ? "Complete" : "Malware Protection"} · {saneSecurity.installedCount || 0}/{saneSecurity.expectedCount || 0} databases installed
                   </p>
@@ -658,7 +818,186 @@ export default function Dashboard() {
                     className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-700 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
                   >
                     {(saneSecurityBusy || status.isSaneSecurityUpdateRunning) && <Loader2 className="w-4 h-4 animate-spin" />}
-                    {saneSecurity.connected ? "Save & Update" : "Install & Update"}
+                    {saneSecurity.connected ? "Save & Update" : saneSecurityFilesPresent ? "Reconnect & Update" : "Install & Update"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {virusTotalDialogOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl">
+            <div className="sticky top-0 z-10 bg-slate-900 flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-800">
+              <div className="min-w-0">
+                <h2 className="text-xl font-semibold text-white">
+                  {virusTotalConfigured ? "Manage VirusTotal Cloud" : "Set up VirusTotal Cloud"}
+                </h2>
+              </div>
+              <button
+                onClick={() => setVirusTotalDialogOpen(false)}
+                className="shrink-0 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4 space-y-2">
+                <p className="text-sm text-slate-300">
+                  VirusTotal Cloud Check adds cloud verdicts to Results and Real-Time Shield when enabled.
+                </p>
+                {virusTotalConfigured && (
+                  <p className="text-xs text-emerald-400">
+                    Configured - {virusTotalCheckedCount}/{virusTotalTotalFindings} findings checked{virusTotalQueuedCount > 0 ? ` - ${virusTotalQueuedCount} queued` : ""}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <label className="flex items-start justify-between gap-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+                  <span className="space-y-1">
+                    <span className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                      <Cloud className="w-4 h-4 text-cyan-300" />
+                      Enable VirusTotal Cloud Check
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={virusTotalCloudEnabled}
+                    onChange={event => {
+                      setVirusTotalCloudEnabled(event.target.checked);
+                      if (!event.target.checked) {
+                        setVirusTotalAutoRefineEnabled(false);
+                        setVirusTotalResultsUploadUnknownEnabled(false);
+                      }
+                    }}
+                    className="mt-1 w-5 h-5 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900 bg-slate-800"
+                  />
+                </label>
+
+                <label className={`flex items-start justify-between gap-4 rounded-xl border p-4 ${
+                  virusTotalCloudEnabled
+                    ? "border-slate-800 bg-slate-950/40"
+                    : "border-slate-800 bg-slate-950/40 opacity-60"
+                }`}>
+                  <span className="space-y-1">
+                    <span className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                      <SearchCheck className="w-4 h-4 text-cyan-300" />
+                      False-positive refinement
+                    </span>
+                    <span className="block text-xs text-slate-500">Adds VirusTotal verdicts to Results findings.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={virusTotalCloudEnabled && virusTotalAutoRefineEnabled}
+                    disabled={!virusTotalCloudEnabled}
+                    onChange={event => setVirusTotalAutoRefineEnabled(event.target.checked)}
+                    className="mt-1 w-5 h-5 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900 bg-slate-800"
+                  />
+                </label>
+
+                <div className={`rounded-xl border p-4 space-y-3 ${
+                  virusTotalCloudEnabled
+                    ? "border-slate-800 bg-slate-950/40"
+                    : "border-slate-800 bg-slate-950/40 opacity-60"
+                }`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <span className="space-y-1">
+                      <span className="text-sm font-medium text-slate-200 flex items-center gap-2">
+                        <UploadCloud className="w-4 h-4 text-cyan-300" />
+                        Upload unknown Results files
+                      </span>
+                      <span className="block text-xs text-slate-500">Only after VirusTotal has no report for the hash.</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={virusTotalCloudEnabled && virusTotalResultsUploadUnknownEnabled}
+                      disabled={!virusTotalCloudEnabled}
+                      onChange={event => setVirusTotalResultsUploadUnknownEnabled(event.target.checked)}
+                      className="mt-1 w-5 h-5 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900 bg-slate-800"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <label className="text-sm font-medium text-slate-400">Max upload size (MB)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={32}
+                      value={virusTotalResultsUploadMaxSizeMb}
+                      disabled={!virusTotalCloudEnabled || !virusTotalResultsUploadUnknownEnabled}
+                      onChange={event => {
+                        const value = Number(event.target.value);
+                        setVirusTotalResultsUploadMaxSizeMb(Number.isFinite(value) ? Math.min(32, Math.max(1, Math.round(value))) : 20);
+                      }}
+                      className="w-28 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-500 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  VirusTotal API key
+                </label>
+                <div className="relative">
+                  <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                  <input
+                    type="password"
+                    value={virusTotalApiKey}
+                    onChange={event => setVirusTotalApiKey(event.target.value)}
+                    placeholder={virusTotalConfigured ? "Leave blank to keep the saved key" : "Paste your VirusTotal API key"}
+                    autoComplete="off"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-10 pr-4 py-3 text-sm text-slate-200 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
+
+              {virusTotalMessage && (
+                <div className="p-3 rounded-lg border border-cyan-500/20 bg-cyan-500/10 text-cyan-200 text-sm">
+                  {virusTotalMessage}
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <a
+                  href="https://www.virustotal.com/gui/my-apikey"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-sm text-cyan-400 hover:text-cyan-300"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Get API key
+                </a>
+                <div className="flex flex-wrap gap-2 justify-end">
+                  {virusTotalConfigured && (
+                    <>
+                      <button
+                        onClick={runVirusTotalRefinement}
+                        disabled={virusTotalBusy !== null || !virusTotalEnabled || !virusTotalAutoRefine}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+                      >
+                        {virusTotalBusy === "refine" ? <Loader2 className="w-4 h-4 animate-spin" /> : <SearchCheck className="w-4 h-4" />}
+                        Run queue
+                      </button>
+                      <button
+                        onClick={disconnectVirusTotalCloud}
+                        disabled={virusTotalBusy !== null}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-rose-950/60 disabled:opacity-50 text-slate-300 hover:text-rose-300 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Disconnect
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={saveVirusTotalCloud}
+                    disabled={virusTotalBusy !== null || (!virusTotalConfigured && !virusTotalApiKey.trim())}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                  >
+                    {virusTotalBusy === "save" && <Loader2 className="w-4 h-4 animate-spin" />}
+                    Save
                   </button>
                 </div>
               </div>
