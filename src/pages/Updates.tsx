@@ -428,21 +428,23 @@ export default function Updates() {
     : appUpdateState !== "idle" ? 100 : 0;
   const signatureOutputTitle = signatureTarget === "securiteinfo" ? "SecuriteInfo Output" : "FreshClam Output";
   const signatureProgressLabel = output.at(-1) || (signatureTarget === "securiteinfo" ? "SecuriteInfo is checking signature sources..." : "FreshClam is checking signature sources...");
+  const cardHeaderClass = "p-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_34rem] lg:items-center";
+  const cardActionsClass = "flex flex-wrap items-center gap-2 lg:w-full lg:justify-start [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap";
 
   return (
-    <div className="px-8 max-w-4xl mx-auto pb-20 flex flex-col gap-8">
+    <div className="px-8 max-w-6xl mx-auto pb-20 flex flex-col gap-8">
       <PageHeader title="Updates" description="Update signatures, engines, YARA Forge rules, and ClamShield." />
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          <div className="flex items-start gap-4">
-            <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-full"><Database className="w-8 h-8" /></div>
-            <div>
+        <div className={cardHeaderClass}>
+          <div className="flex items-start gap-4 min-w-0">
+            <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-full shrink-0"><Database className="w-8 h-8" /></div>
+            <div className="min-w-0">
               <h3 className="font-semibold text-white text-lg">ClamAV Official Signatures</h3>
               <p className="text-slate-400 text-sm mt-1">{statusLine(status?.stats?.lastClamAVUpdate, status?.stats?.lastClamAVUpdateResult)}</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className={cardActionsClass}>
             <button onClick={() => setOpenPanel(openPanel === "clamav" ? null : "clamav")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">
               Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "clamav" ? "rotate-180" : ""}`} />
             </button>
@@ -482,7 +484,7 @@ export default function Updates() {
       </section>
 
       <section className="bg-slate-900 border border-cyan-500/20 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className={cardHeaderClass}>
           <div className="flex items-start gap-4 min-w-0">
             <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full shrink-0"><Database className="w-8 h-8" /></div>
             <div className="min-w-0">
@@ -493,7 +495,7 @@ export default function Updates() {
               <p className="text-slate-400 text-sm mt-1">{status?.securiteInfo?.connected ? `${status.securiteInfo.plan === "paid" ? "Paid" : "Basic"} - ${status.securiteInfo.installedCount || 0}/${status.securiteInfo.expectedCount || 0} databases - ${statusLine(status.securiteInfo.lastUpdated, status.securiteInfo.lastResult)}` : "Not installed"}</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className={cardActionsClass}>
             <button onClick={() => setOpenPanel(openPanel === "securiteinfo" ? null : "securiteinfo")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">
               Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "securiteinfo" ? "rotate-180" : ""}`} />
             </button>
@@ -542,7 +544,7 @@ export default function Updates() {
       </section>
 
       <section className="bg-slate-900 border border-violet-500/20 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className={cardHeaderClass}>
           <div className="flex items-start gap-4 min-w-0">
             <div className="p-3 bg-violet-500/10 text-violet-400 rounded-full shrink-0"><Database className="w-8 h-8" /></div>
             <div className="min-w-0">
@@ -553,7 +555,7 @@ export default function Updates() {
               <p className="text-slate-400 text-sm mt-1">{status?.saneSecurity?.connected ? `${status.saneSecurity.profile === "complete" ? "Complete" : "Malware Protection"} - ${status.saneSecurity.installedCount || 0}/${status.saneSecurity.expectedCount || 0} databases - ${statusLine(status.saneSecurity.lastUpdated, status.saneSecurity.lastResult)}` : "Not installed"}</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className={cardActionsClass}>
             <button onClick={() => setOpenPanel(openPanel === "sanesecurity" ? null : "sanesecurity")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">
               Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "sanesecurity" ? "rotate-180" : ""}`} />
             </button>
@@ -594,7 +596,7 @@ export default function Updates() {
       </section>
 
       <section className="order-last bg-slate-900 border border-emerald-500/20 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className={cardHeaderClass}>
           <div className="flex items-center gap-4 min-w-0">
             <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
             <div className="min-w-0">
@@ -604,7 +606,7 @@ export default function Updates() {
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className={cardActionsClass}>
             {clamavEngineState === "available" && <>
               <button onClick={() => skipEngineVersion("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
               <button onClick={() => remindEngineTomorrow("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
@@ -643,7 +645,7 @@ export default function Updates() {
       </section>
 
       <section className="order-last bg-slate-900 border border-amber-500/20 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className={cardHeaderClass}>
           <div className="flex items-center gap-4 min-w-0">
             <div className="p-3 bg-amber-500/10 text-amber-300 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
             <div className="min-w-0">
@@ -653,7 +655,7 @@ export default function Updates() {
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className={cardActionsClass}>
             {yaraEngineState === "available" && <>
               <button onClick={() => skipEngineVersion("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
               <button onClick={() => remindEngineTomorrow("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
@@ -692,15 +694,15 @@ export default function Updates() {
       </section>
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full"><ShieldCheck className="w-8 h-8" /></div>
-            <div>
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full shrink-0"><ShieldCheck className="w-8 h-8" /></div>
+            <div className="min-w-0">
               <h3 className="font-semibold text-white text-lg">YARA Forge Rules</h3>
               <p className="text-slate-400 text-sm">{status?.stats?.lastYaraUpdate ? `${statusLine(status.stats.lastYaraUpdate)} - ${status.stats.yaraRuleset} - ${status.stats.yaraRuleCount || 0} rules` : "Update required"}</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className={cardActionsClass}>
             <button onClick={() => setOpenPanel(openPanel === "yara" ? null : "yara")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yara" ? "rotate-180" : ""}`} /></button>
             <button onClick={runYaraUpdate} disabled={yaraUpdateState === "running"} className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <RefreshCw className={`w-5 h-5 ${yaraUpdateState === "running" ? "animate-spin" : ""}`} />
@@ -735,7 +737,7 @@ export default function Updates() {
       </section>
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className={cardHeaderClass}>
           <div className="flex items-center gap-4 min-w-0">
             <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
             <div className="min-w-0">
@@ -745,7 +747,7 @@ export default function Updates() {
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className={cardActionsClass}>
             {appUpdateState === "available" && <>
               <button onClick={skipAppVersion} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
               <button onClick={remindAppTomorrow} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
