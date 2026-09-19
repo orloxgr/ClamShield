@@ -7007,7 +7007,7 @@ async function getVirusTotalResultUploadEligibility(result: any, settings: any) 
         return {
             allowed: false,
             reason: "too_large",
-            message: `File is ${formatVirusTotalUploadSize(fileStat.size)}; max upload size is ${formatVirusTotalUploadSize(maxBytes)}.`
+            message: `File exceeds VirusTotal upload size: ${formatVirusTotalUploadSize(fileStat.size)}; limit is ${formatVirusTotalUploadSize(maxBytes)}.`
         };
     }
     return { allowed: true, reason: "", message: "" };

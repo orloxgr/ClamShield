@@ -24,6 +24,7 @@ export default function ResultsPage() {
   const [virusTotalBusy, setVirusTotalBusy] = useState<{ id: string, action: VirusTotalAction } | null>(null);
   const [checkedVirusTotal, setCheckedVirusTotal] = useState<Record<string, Partial<Record<VirusTotalAction, boolean>>>>({});
   const [virusTotalCloudReports, setVirusTotalCloudReports] = useState<Record<string, any>>({});
+  const [virusTotalPolling, setVirusTotalPolling] = useState(false);
   const selectedItems = items.filter(item => selectedIds[item.id]);
   const selectedCount = selectedItems.length;
   const selectedMissingCount = selectedItems.filter(item => item.available === false).length;
@@ -39,8 +40,8 @@ export default function ResultsPage() {
     }));
   };
 
-  const fetchItems = async () => {
-    setLoading(true);
+  const fetchItems = async (options: { silent?: boolean } = {}) => {
+    if (!options.silent) setLoading(true);
     try {
       const params = new URLSearchParams({
         page: String(page),
@@ -85,10 +86,12 @@ export default function ResultsPage() {
         return Object.fromEntries(Object.entries(prev).filter(([id]) => visibleIds.has(id)));
       });
     } catch {
-      setItems([]);
-      setTotalItems(0);
+      if (!options.silent) {
+        setItems([]);
+        setTotalItems(0);
+      }
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   };
 
@@ -99,6 +102,30 @@ export default function ResultsPage() {
   useEffect(() => {
     setPage(1);
   }, [pageSize, dateFilter, findingSourceFilter, virusTotalRefinementFilter]);
+
+  useEffect(() => {
+    if (!virusTotalPolling) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/virustotal-refinement/status");
+        const status = await res.json();
+        if (cancelled) return;
+        await fetchItems({ silent: true });
+        if (!status?.running && Number(status?.queued || 0) === 0) {
+          setVirusTotalPolling(false);
+        }
+      } catch {
+        if (!cancelled) setVirusTotalPolling(false);
+      }
+    };
+    poll();
+    const interval = window.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [virusTotalPolling, page, pageSize, dateFilter, findingSourceFilter, virusTotalRefinementFilter]);
 
   const handleAction = async (id: string, action: "quarantine" | "exception") => {
     setBusyId(id);
@@ -200,6 +227,7 @@ export default function ResultsPage() {
       setVirusTotalCloudReports({});
       setItems(current => current.map(item => ({ ...item, virusTotalRefinement: null })));
       setMessage(data.message || "VirusTotal recheck queued.");
+      setVirusTotalPolling(data.queuedCount > 0);
       fetchItems();
     } catch (e: any) {
       setMessage(e.message || "Could not queue VirusTotal recheck.");
@@ -286,6 +314,13 @@ export default function ResultsPage() {
     return "border-slate-700 bg-slate-950/70 text-slate-300";
   };
   const getVirusTotalReport = (item: any): any => virusTotalCloudReports[item.id] || item.virusTotalRefinement?.report || null;
+  const getVirusTotalNotice = (item: any) => {
+    const refinement = item.virusTotalRefinement || {};
+    const label = String(refinement.label || "");
+    const message = String(refinement.message || "");
+    if (!label && !message) return "";
+    return label && message ? `${label}: ${message}` : (message || label);
+  };
   const currentPage = Math.min(page, pageCount);
   const rangeStart = totalItems === 0 ? 0 : pageSize === "all" ? 1 : (currentPage - 1) * pageSize + 1;
   const rangeEnd = pageSize === "all" ? totalItems : Math.min(totalItems, (currentPage - 1) * pageSize + pageSize);
@@ -605,6 +640,11 @@ export default function ResultsPage() {
                         Quarantine
                       </button>
                     </div>
+                    {getVirusTotalNotice(item) && (
+                      <div className={`mt-3 max-w-3xl rounded-lg border px-3 py-2 text-xs ${virusTotalRefinementClass(item.virusTotalRefinement)}`}>
+                        {getVirusTotalNotice(item)}
+                      </div>
+                    )}
                     {getVirusTotalReport(item) && (
                       <div className={`mt-3 max-w-3xl rounded-lg border p-3 text-xs ${virusTotalVerdictClass(getVirusTotalReport(item))}`}>
                         {getVirusTotalReport(item).found === false ? (

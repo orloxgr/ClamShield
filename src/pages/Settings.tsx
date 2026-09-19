@@ -21,6 +21,8 @@ export default function SettingsPage() {
   const autosaveTimerRef = useRef<number | null>(null);
   const pendingAutosavePatchRef = useRef<Record<string, any>>({});
   const baselineSettingsRef = useRef<any>(null);
+  const stickyHeaderRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollSectionRef = useRef<SettingsSection | null>(null);
   const sectionHeaderRefs = useRef<Record<SettingsSection, HTMLButtonElement | null>>({
     system: null,
     scanner: null,
@@ -40,6 +42,26 @@ export default function SettingsPage() {
       if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!openSection || pendingScrollSectionRef.current !== openSection) return;
+    let frame = 0;
+    let secondFrame = 0;
+    frame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const header = sectionHeaderRefs.current[openSection];
+        if (!header) return;
+        const stickyHeight = stickyHeaderRef.current?.getBoundingClientRect().height || 0;
+        const top = header.getBoundingClientRect().top + window.scrollY - stickyHeight - 12;
+        window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        pendingScrollSectionRef.current = null;
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [openSection]);
 
   const refreshDefenderStatus = async () => {
     try {
@@ -249,15 +271,7 @@ export default function SettingsPage() {
   const toggleSection = (section: SettingsSection) => {
     setOpenSection(current => {
       const next = current === section ? null : section;
-      if (next) {
-        window.setTimeout(() => {
-          const header = sectionHeaderRefs.current[section];
-          if (!header) return;
-          const stickyOffset = 116;
-          const top = header.getBoundingClientRect().top + window.scrollY - stickyOffset;
-          window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-        }, 0);
-      }
+      pendingScrollSectionRef.current = next;
       return next;
     });
   };
@@ -285,7 +299,7 @@ export default function SettingsPage() {
 
   return (
     <div className="px-8 max-w-4xl mx-auto space-y-6 pb-20">
-      <div className="sticky top-0 z-30 -mx-8 px-8 py-5 bg-slate-950/95 backdrop-blur border-b border-slate-800/80 space-y-3">
+      <div ref={stickyHeaderRef} className="sticky top-0 z-30 -mx-8 px-8 py-5 bg-slate-950/95 backdrop-blur border-b border-slate-800/80 space-y-3">
         <header className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold text-white mb-1">Settings</h1>
