@@ -8,6 +8,18 @@ type ActionNotice = {
 
 type SettingsSection = "system" | "scanner" | "cloud" | "diagnostics" | "paths";
 
+function getScrollableParent(element: HTMLElement) {
+  let parent = element.parentElement;
+  while (parent) {
+    const style = window.getComputedStyle(parent);
+    if (/(auto|scroll|overlay)/.test(style.overflowY) && parent.scrollHeight > parent.clientHeight) {
+      return parent;
+    }
+    parent = parent.parentElement;
+  }
+  return null;
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   const [defenderStatus, setDefenderStatus] = useState<any>(null);
@@ -52,8 +64,16 @@ export default function SettingsPage() {
         const header = sectionHeaderRefs.current[openSection];
         if (!header) return;
         const stickyHeight = stickyHeaderRef.current?.getBoundingClientRect().height || 0;
-        const top = header.getBoundingClientRect().top + window.scrollY - stickyHeight - 12;
-        window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        const scrollParent = getScrollableParent(header);
+        if (scrollParent) {
+          const headerRect = header.getBoundingClientRect();
+          const parentRect = scrollParent.getBoundingClientRect();
+          const top = headerRect.top - parentRect.top + scrollParent.scrollTop - stickyHeight - 12;
+          scrollParent.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        } else {
+          const top = header.getBoundingClientRect().top + window.scrollY - stickyHeight - 12;
+          window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        }
         pendingScrollSectionRef.current = null;
       });
     });

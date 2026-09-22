@@ -355,8 +355,8 @@ function createAlertWindow(threat, port, playSound) {
    const workArea = primaryDisplay.workArea;
 
    const alertWidth = 460;
-   const alertHeight = 190;
-   const offset = (activeAlerts.size - 1) * 210; 
+   const alertHeight = 205;
+   const offset = (activeAlerts.size - 1) * 225; 
 
    const alertWin = new BrowserWindow({
       width: alertWidth,
@@ -1264,7 +1264,7 @@ app.on('ready', async () => {
   const port = await getFreePort();
   currentApiPort = port;
   const settings = readAppSettings();
-  const startHidden = process.argv.includes('--minimized') || settings.startMinimized === true;
+  const startHidden = process.argv.includes('--minimized');
   writeMainLog('info', ['ClamShield Electron ready', { port, startHidden, argv: process.argv, version: app.getVersion() }]);
   console.log('ClamShield Electron starting', { port, startHidden, debugLoggingEnabled });
   await setApiSessionCookie(port);

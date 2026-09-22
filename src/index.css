@@ -37,3 +37,25 @@ body {
   opacity: 1;
   filter: invert(64%) sepia(10%) saturate(396%) hue-rotate(176deg) brightness(90%) contrast(88%);
 }
+
+.update-card-actions {
+  align-items: center;
+}
+
+.update-primary-action {
+  justify-content: center;
+}
+
+@media (min-width: 1024px) {
+  .update-card-header {
+    grid-template-columns: minmax(0, 1fr) 24rem;
+  }
+
+  .update-card-actions {
+    justify-content: flex-end;
+  }
+
+  .update-primary-action {
+    width: 15rem;
+  }
+}

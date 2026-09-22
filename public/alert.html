@@ -26,10 +26,10 @@
 
     .wrap {
       height: 100%;
-      padding: 18px;
+      padding: 14px 16px;
       display: grid;
-      grid-template-rows: auto 1fr auto;
-      gap: 12px;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 8px;
     }
 
     .header {
@@ -71,8 +71,9 @@
     .details {
       min-width: 0;
       display: grid;
-      gap: 6px;
-      align-content: center;
+      gap: 5px;
+      align-content: start;
+      overflow: hidden;
     }
 
     .name {
@@ -100,17 +101,19 @@
       display: flex;
       justify-content: flex-end;
       gap: 8px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      min-width: 0;
     }
 
     button {
       border: 1px solid transparent;
       border-radius: 7px;
-      padding: 8px 11px;
+      padding: 7px 10px;
       font-size: 12px;
       font-weight: 700;
       color: white;
       cursor: pointer;
+      white-space: nowrap;
     }
 
     button:disabled {

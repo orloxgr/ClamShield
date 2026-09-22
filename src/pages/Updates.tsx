@@ -428,8 +428,8 @@ export default function Updates() {
     : appUpdateState !== "idle" ? 100 : 0;
   const signatureOutputTitle = signatureTarget === "securiteinfo" ? "SecuriteInfo Output" : "FreshClam Output";
   const signatureProgressLabel = output.at(-1) || (signatureTarget === "securiteinfo" ? "SecuriteInfo is checking signature sources..." : "FreshClam is checking signature sources...");
-  const cardHeaderClass = "p-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_34rem] lg:items-center";
-  const cardActionsClass = "flex flex-wrap items-center gap-2 lg:w-full lg:justify-start [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap";
+  const cardHeaderClass = "update-card-header p-8 grid grid-cols-1 gap-6 lg:items-center";
+  const cardActionsClass = "update-card-actions flex flex-wrap items-center gap-2 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap";
 
   return (
     <div className="px-8 max-w-6xl mx-auto pb-20 flex flex-col gap-8">
@@ -448,7 +448,7 @@ export default function Updates() {
             <button onClick={() => setOpenPanel(openPanel === "clamav" ? null : "clamav")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">
               Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "clamav" ? "rotate-180" : ""}`} />
             </button>
-            <button onClick={() => runUpdate("clamav")} disabled={signatureUpdateActive} className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={() => runUpdate("clamav")} disabled={signatureUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <RefreshCw className={`w-5 h-5 ${signatureUpdateActive ? "animate-spin" : ""}`} />
               {signatureUpdateActive ? "Updating..." : "Update ClamAV"}
             </button>
@@ -500,12 +500,12 @@ export default function Updates() {
               Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "securiteinfo" ? "rotate-180" : ""}`} />
             </button>
             {status?.securiteInfo?.connected ? (
-              <button onClick={() => runUpdate("securiteinfo")} disabled={signatureUpdateActive} className="flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <button onClick={() => runUpdate("securiteinfo")} disabled={signatureUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <RefreshCw className={`w-5 h-5 ${signatureUpdateActive ? "animate-spin" : ""}`} />
                 {signatureUpdateActive ? "Updating..." : "Update SecuriteInfo"}
               </button>
             ) : (
-              <Link to="/" className="inline-flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"><KeyRound className="w-4 h-4" />Configure on Dashboard</Link>
+              <Link to="/" className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"><KeyRound className="w-4 h-4" />Configure on Dashboard</Link>
             )}
           </div>
         </div>
@@ -560,12 +560,12 @@ export default function Updates() {
               Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "sanesecurity" ? "rotate-180" : ""}`} />
             </button>
             {status?.saneSecurity?.connected ? (
-              <button onClick={runSaneUpdate} disabled={saneUpdateActive} className="flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <button onClick={runSaneUpdate} disabled={saneUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <RefreshCw className={`w-5 h-5 ${saneUpdateActive ? "animate-spin" : ""}`} />
                 {saneUpdateActive ? "Updating..." : "Update SaneSecurity"}
               </button>
             ) : (
-              <Link to="/" className="inline-flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors"><ShieldCheck className="w-4 h-4" />Configure on Dashboard</Link>
+              <Link to="/" className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors"><ShieldCheck className="w-4 h-4" />Configure on Dashboard</Link>
             )}
           </div>
         </div>
@@ -612,7 +612,7 @@ export default function Updates() {
               <button onClick={() => remindEngineTomorrow("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
             </>}
             <button onClick={() => setOpenPanel(openPanel === "clamavEngine" ? null : "clamavEngine")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "clamavEngine" ? "rotate-180" : ""}`} /></button>
-            <button onClick={clamavEngineState === "available" ? () => installEngineUpdate("clamavEngine") : () => checkEngineUpdate("clamavEngine")} disabled={clamavEngineActive} className="flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={clamavEngineState === "available" ? () => installEngineUpdate("clamavEngine") : () => checkEngineUpdate("clamavEngine")} disabled={clamavEngineActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <RefreshCw className={`w-5 h-5 ${clamavEngineActive ? "animate-spin" : ""}`} />
               {clamavEngineState === "checking" ? "Checking..." : clamavEngineState === "running" ? "Installing..." : clamavEngineState === "available" ? "Install Update" : "Check ClamAV"}
             </button>
@@ -661,7 +661,7 @@ export default function Updates() {
               <button onClick={() => remindEngineTomorrow("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
             </>}
             <button onClick={() => setOpenPanel(openPanel === "yaraEngine" ? null : "yaraEngine")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yaraEngine" ? "rotate-180" : ""}`} /></button>
-            <button onClick={yaraEngineState === "available" ? () => installEngineUpdate("yaraEngine") : () => checkEngineUpdate("yaraEngine")} disabled={yaraEngineActive} className="flex items-center gap-2 px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={yaraEngineState === "available" ? () => installEngineUpdate("yaraEngine") : () => checkEngineUpdate("yaraEngine")} disabled={yaraEngineActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <RefreshCw className={`w-5 h-5 ${yaraEngineActive ? "animate-spin" : ""}`} />
               {yaraEngineState === "checking" ? "Checking..." : yaraEngineState === "running" ? "Installing..." : yaraEngineState === "available" ? "Install Update" : "Check YARA"}
             </button>
@@ -704,7 +704,7 @@ export default function Updates() {
           </div>
           <div className={cardActionsClass}>
             <button onClick={() => setOpenPanel(openPanel === "yara" ? null : "yara")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yara" ? "rotate-180" : ""}`} /></button>
-            <button onClick={runYaraUpdate} disabled={yaraUpdateState === "running"} className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={runYaraUpdate} disabled={yaraUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <RefreshCw className={`w-5 h-5 ${yaraUpdateState === "running" ? "animate-spin" : ""}`} />
               {yaraUpdateState === "running" ? "Updating..." : "Update YARA Rules"}
             </button>
@@ -753,7 +753,7 @@ export default function Updates() {
               <button onClick={remindAppTomorrow} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
             </>}
             <button onClick={() => setOpenPanel(openPanel === "app" ? null : "app")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "app" ? "rotate-180" : ""}`} /></button>
-            <button onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate} disabled={appUpdateState === "checking" || appUpdateState === "running"} className="flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate} disabled={appUpdateState === "checking" || appUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <RefreshCw className={`w-5 h-5 ${appUpdateState === "checking" || appUpdateState === "running" ? "animate-spin" : ""}`} />
               {appUpdateState === "checking" ? "Checking..." : appUpdateState === "running" ? "Installing..." : appUpdateState === "available" ? "Install Update" : "Check ClamShield"}
             </button>
