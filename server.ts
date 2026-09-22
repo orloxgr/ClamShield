@@ -143,6 +143,16 @@ const dnsProtectionProfiles = [
         category: "family"
     },
     {
+        id: "quad9-threat-blocking",
+        provider: "Quad9",
+        name: "Threat Blocking",
+        description: "Blocks malicious domains with Quad9's public security-filtering resolver.",
+        ipv4: ["9.9.9.9", "149.112.112.112"],
+        ipv6: ["2620:fe::fe", "2620:fe::9"],
+        websiteUrl: "https://docs.quad9.net/services/",
+        category: "security"
+    },
+    {
         id: "adguard-default",
         provider: "AdGuard",
         name: "Default Protection",
