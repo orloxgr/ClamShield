@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw, Cloud, KeyRound, SearchCheck, Trash2, UploadCloud } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import PageHeader from "../components/PageHeader";
@@ -26,7 +27,7 @@ export default function Dashboard() {
   const [virusTotalMessage, setVirusTotalMessage] = useState("");
 
   const fetchStatus = () => {
-    fetch("/api/status").then(r => r.json()).then(setStatus);
+    fetch("/api/status", { cache: "no-store" }).then(r => r.json()).then(setStatus);
   };
 
   useEffect(() => {
@@ -364,23 +365,36 @@ export default function Dashboard() {
                 {status.stats.engineVersion}
               </span>
             </div>
+            <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
+              <span className="text-slate-500">ClamAV signatures</span>
+              <span className="font-medium text-slate-200 text-right">{formatUpdateDate(status.stats.lastUpdate)}</span>
+            </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
               <span className="text-slate-500">YARA Engine</span>
               <span className={status.hasYaraEngine ? metadataValueClass : attentionValueClass}>
                 {status.hasYaraEngine ? "Installed" : "Not installed"}
               </span>
             </div>
-            <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
-              <span className="text-slate-500">YARA Rules</span>
-              <span className={`${status.hasYaraRules ? metadataValueClass : attentionValueClass} text-right`}>
-                {status.hasYaraRules
-                  ? `${status.stats.yaraRuleset || "core"} · ${status.stats.yaraRuleCount || 0} rules`
-                  : "Missing"}
-              </span>
-            </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
-              <span className="text-slate-500">ClamAV signatures</span>
-              <span className="font-medium text-slate-200 text-right">{formatUpdateDate(status.stats.lastUpdate)}</span>
+              <span className="text-slate-500">YARA Rules</span>
+              <div className="flex items-center gap-3 min-w-0">
+                <span className={`${status.hasYaraRules ? metadataValueClass : attentionValueClass} text-right min-w-0`}>
+                  <span className="block">
+                    {status.hasYaraRules
+                      ? `${status.stats.yaraRuleset || "core"} · ${status.stats.yaraRuleCount || 0} rules`
+                      : "Missing"}
+                  </span>
+                  <span className={`block text-xs ${status.stats.lastYaraUpdate ? "text-slate-500" : "text-amber-400"}`}>
+                    {status.stats.lastYaraUpdate ? formatUpdateDate(status.stats.lastYaraUpdate) : "Update required"}
+                  </span>
+                </span>
+                <Link
+                  to="/updates"
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium"
+                >
+                  Manage
+                </Link>
+              </div>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
               <span className="text-slate-500">SecuriteInfo</span>
