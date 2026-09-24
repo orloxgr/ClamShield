@@ -248,17 +248,24 @@
       buttons.forEach(button => button.disabled = true);
       try {
         if (bridge && typeof bridge.sendAction === "function") {
-          await bridge.sendAction({ id: threatId, action });
+          const result = await bridge.sendAction({ id: threatId, action });
+          if (result && result.success === false) throw new Error(result.error || "Action failed");
         } else {
           const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action })
           });
-          if (!response.ok) throw new Error("Action failed");
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || result.success === false) throw new Error(result.error || "Action failed");
         }
         window.close();
-      } catch {
+      } catch (error) {
+        logPopupError("Threat popup action failed", {
+          action,
+          threatId,
+          message: error && error.message ? error.message : String(error)
+        });
         buttons.forEach(button => button.disabled = false);
       }
     }

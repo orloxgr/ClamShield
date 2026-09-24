@@ -126,6 +126,7 @@
     const params = new URLSearchParams(window.location.search);
     const port = params.get("port") || window.location.port;
     const count = params.get("count") || "0";
+    const bridge = window.clamshieldResultsReminder;
 
     function logPopupError(message, details) {
       fetch(`http://127.0.0.1:${port}/api/client-log`, {
@@ -160,14 +161,24 @@
       const buttons = document.querySelectorAll("button");
       buttons.forEach(button => button.disabled = true);
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/results-reminder/action`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action })
-        });
-        if (!response.ok) throw new Error("Action failed");
+        if (bridge && typeof bridge.sendAction === "function") {
+          const result = await bridge.sendAction({ action });
+          if (result && result.success === false) throw new Error(result.error || "Action failed");
+        } else {
+          const response = await fetch(`http://127.0.0.1:${port}/api/results-reminder/action`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || result.success === false) throw new Error(result.error || "Action failed");
+        }
         if (closeAfter) window.close();
-      } catch {
+      } catch (error) {
+        logPopupError("Results reminder action failed", {
+          action,
+          message: error && error.message ? error.message : String(error)
+        });
         buttons.forEach(button => button.disabled = false);
       }
     }

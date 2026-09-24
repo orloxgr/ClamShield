@@ -423,7 +423,8 @@ function createResultsReminderWindow(reminder, port) {
       icon: path.join(__dirname, 'public/icon.png'),
       webPreferences: {
          nodeIntegration: false,
-         contextIsolation: true
+         contextIsolation: true,
+         preload: getPublicAssetPath('results-reminder-preload.cjs')
       }
    });
 
@@ -641,6 +642,19 @@ ipcMain.handle('clamshield-alert-log', async (_event, payload = {}) => {
   } catch {
     return { success: false };
   }
+});
+
+ipcMain.handle('clamshield-results-reminder-action', async (_event, payload = {}) => {
+  const action = String(payload.action || '');
+  if (!currentApiPort || !action) {
+    throw new Error('The results reminder action is missing required data.');
+  }
+  return requestJson(
+    currentApiPort,
+    '/api/results-reminder/action',
+    'POST',
+    { action }
+  );
 });
 
 function openUpdatesTab(port) {
