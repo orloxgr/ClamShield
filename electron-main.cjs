@@ -25,6 +25,9 @@ let scheduledScanChecking = false;
 let scheduledScanRun = null;
 let currentApiPort = null;
 const apiSessionToken = randomBytes(32).toString('hex');
+const contextMenuBridgeToken = randomBytes(32).toString('hex');
+let contextMenuBridgeServer = null;
+let contextMenuBridgePort = null;
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 const scheduledScanTransientErrorLimit = 6;
 const transientApiErrorCodes = new Set(['ECONNRESET', 'ECONNABORTED', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE']);
@@ -61,6 +64,10 @@ function getProgramDataDir() {
   return process.platform === 'win32'
     ? path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'ClamShield')
     : path.join(__dirname, 'data', 'ClamShield');
+}
+
+function getContextMenuBridgePath() {
+  return path.join(getProgramDataDir(), 'context-menu-bridge.json');
 }
 
 function getLogsDir() {
@@ -611,6 +618,200 @@ function requestJson(port, pathName, method = 'GET', body = null) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+function writeContextMenuBridgeFile() {
+  if (process.platform !== 'win32' || !contextMenuBridgePort) return;
+  const bridgePath = getContextMenuBridgePath();
+  fs.mkdirSync(path.dirname(bridgePath), { recursive: true });
+  fs.writeFileSync(bridgePath, JSON.stringify({
+    port: contextMenuBridgePort,
+    token: contextMenuBridgeToken,
+    pid: process.pid,
+    updatedAt: new Date().toISOString()
+  }, null, 2));
+}
+
+function removeContextMenuBridgeFile() {
+  try {
+    fs.rmSync(getContextMenuBridgePath(), { force: true });
+  } catch {}
+}
+
+function readJsonBody(req, limitBytes = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', chunk => {
+      data += chunk;
+      if (Buffer.byteLength(data) > limitBytes) {
+        reject(new Error('Request body is too large.'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function startContextMenuBridge() {
+  if (process.platform !== 'win32' || contextMenuBridgeServer) return;
+  contextMenuBridgeServer = http.createServer(async (req, res) => {
+    try {
+      if (req.method !== 'POST' || req.url !== '/context-menu') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
+      if (req.headers['x-clamshield-bridge'] !== contextMenuBridgeToken) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid bridge token' }));
+        return;
+      }
+      const body = await readJsonBody(req);
+      const action = normalizeContextMenuAction(body.action);
+      const targets = Array.isArray(body.targets) ? body.targets : [];
+      if (!action || targets.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid context menu request' }));
+        return;
+      }
+      queueLegacyContextMenuRequest(action, targets);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message || String(error) }));
+    }
+  });
+  contextMenuBridgeServer.on('error', error => {
+    console.warn('Context menu bridge failed', error.message);
+    removeContextMenuBridgeFile();
+  });
+  contextMenuBridgeServer.listen(0, '127.0.0.1', () => {
+    contextMenuBridgePort = contextMenuBridgeServer.address().port;
+    writeContextMenuBridgeFile();
+  });
+}
+
+function getContextMenuRequestFile(argv = []) {
+  const index = argv.findIndex(arg => arg === '--context-menu-request');
+  if (index >= 0 && argv[index + 1]) return argv[index + 1];
+  const prefixed = argv.find(arg => String(arg || '').startsWith('--context-menu-request='));
+  return prefixed ? prefixed.slice('--context-menu-request='.length) : '';
+}
+
+function getContextMenuLegacyRequest(argv = []) {
+  const index = argv.findIndex(arg => arg === '--context-menu-legacy');
+  let action = '';
+  let targets = [];
+  if (index >= 0) {
+    action = String(argv[index + 1] || '');
+    targets = argv.slice(index + 2).filter(Boolean);
+  } else {
+    const prefixed = argv.find(arg => String(arg || '').startsWith('--context-menu-legacy='));
+    if (prefixed) {
+      action = prefixed.slice('--context-menu-legacy='.length);
+      const actionIndex = argv.indexOf(prefixed);
+      targets = actionIndex >= 0 ? argv.slice(actionIndex + 1).filter(Boolean) : [];
+    }
+  }
+  action = normalizeContextMenuAction(action);
+  targets = targets.map(target => String(target || '').trim()).filter(Boolean);
+  return action && targets.length > 0 ? { action, targets } : null;
+}
+
+function normalizeContextMenuAction(action) {
+  const value = String(action || '').toLowerCase();
+  return ['clamav', 'clamav-yara', 'clamav-yara-vt', 'add-exception'].includes(value) ? value : '';
+}
+
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+async function executeContextMenuAction(action, targets) {
+  action = normalizeContextMenuAction(action) || 'clamav';
+  targets = Array.from(new Set((Array.isArray(targets) ? targets : []).map(target => String(target || '').trim()).filter(Boolean)));
+  if (targets.length === 0) return true;
+
+  try {
+    if (action === 'add-exception') {
+      await requestJson(currentApiPort, '/api/context-menu/exceptions', 'POST', { targets });
+      focusMainWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(`http://127.0.0.1:${currentApiPort}/exceptions`).catch(error => console.warn('Failed to open Exceptions page', error.message));
+      }
+      return true;
+    }
+
+    const result = await requestJson(currentApiPort, '/api/scan', 'POST', {
+      source: 'context-menu',
+      contextAction: action,
+      targets
+    });
+    focusMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const jobId = encodeURIComponent(result.jobId || '');
+      mainWindow.loadURL(`http://127.0.0.1:${currentApiPort}/scan${jobId ? `?jobId=${jobId}` : ''}`).catch(error => console.warn('Failed to open Scan page', error.message));
+    }
+  } catch (error) {
+    console.warn('Failed to process context menu request', error.message);
+    focusMainWindow();
+  }
+  return true;
+}
+
+const pendingLegacyContextMenu = new Map();
+
+function queueLegacyContextMenuRequest(action, targets) {
+  action = normalizeContextMenuAction(action);
+  if (!action || !Array.isArray(targets) || targets.length === 0) return true;
+  const existing = pendingLegacyContextMenu.get(action) || { targets: new Set(), timer: null };
+  for (const target of targets) {
+    if (target) existing.targets.add(String(target));
+  }
+  if (existing.timer) clearTimeout(existing.timer);
+  existing.timer = setTimeout(() => {
+    pendingLegacyContextMenu.delete(action);
+    executeContextMenuAction(action, Array.from(existing.targets)).catch(error => {
+      console.warn('Legacy context menu request failed', error.message);
+    });
+  }, 650);
+  pendingLegacyContextMenu.set(action, existing);
+  focusMainWindow();
+  return true;
+}
+
+async function handleContextMenuRequest(argv = process.argv) {
+  const legacyRequest = getContextMenuLegacyRequest(argv);
+  if (legacyRequest) {
+    return queueLegacyContextMenuRequest(legacyRequest.action, legacyRequest.targets);
+  }
+
+  const requestFile = getContextMenuRequestFile(argv);
+  if (!requestFile || !currentApiPort) return false;
+  let request = null;
+  try {
+    request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
+  } catch (error) {
+    console.warn('Failed to read context menu request', error.message);
+    return true;
+  } finally {
+    fs.rm(requestFile, { force: true }, () => {});
+  }
+
+  const action = String(request.action || 'clamav');
+  const targets = Array.isArray(request.paths) ? request.paths.filter(Boolean) : [];
+  return executeContextMenuAction(action, targets);
 }
 
 function getPublicAssetPath(fileName) {
@@ -1286,16 +1487,16 @@ app.on('ready', async () => {
   writeMainLog('info', ['ClamShield backend process requested', { port }]);
   createTray();
   createWindow(port, startHidden);
+  startContextMenuBridge();
   connectApiEvents(port);
   pollAppUpdates(port);
   pollScheduledScans(port);
+  handleContextMenuRequest(process.argv).catch(error => console.warn('Initial context menu request failed', error.message));
 });
 
-app.on('second-instance', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (!mainWindow.isVisible()) mainWindow.show();
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.focus();
+app.on('second-instance', (_event, argv) => {
+  focusMainWindow();
+  handleContextMenuRequest(argv).catch(error => console.warn('Second-instance context menu request failed', error.message));
 });
 
 app.on('window-all-closed', function () {
@@ -1313,5 +1514,7 @@ app.on('activate', function () {
 });
 
 app.on('before-quit', () => {
+    removeContextMenuBridgeFile();
+    if (contextMenuBridgeServer) contextMenuBridgeServer.close();
     if (serverProcess) serverProcess.kill();
 });

@@ -26,6 +26,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<ActionNotice | null>(null);
   const [defenderActionPending, setDefenderActionPending] = useState<"pause" | "restore" | "refresh" | null>(null);
+  const [contextMenuPending, setContextMenuPending] = useState(false);
   const [virusTotalApiKey, setVirusTotalApiKey] = useState("");
   const [virusTotalCloudStatus, setVirusTotalCloudStatus] = useState<any>(null);
   const [virusTotalPending, setVirusTotalPending] = useState<"save" | "disconnect" | null>(null);
@@ -141,6 +142,34 @@ export default function SettingsPage() {
       setNotice({ kind: "error", text: `Could not ${action} Microsoft Defender: ${e.message}` });
     } finally {
       setDefenderActionPending(null);
+    }
+  };
+
+  const configureWindowsContextMenu = async (enabled: boolean) => {
+    setContextMenuPending(true);
+    try {
+      const response = await fetch("/api/windows-context-menu/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Could not configure the Windows Context Menu.");
+      }
+      if (data.settings) {
+        setSettings(data.settings);
+        baselineSettingsRef.current = data.settings;
+      } else {
+        const nextSettings = { ...settings, windowsContextMenuEnabled: enabled };
+        setSettings(nextSettings);
+        baselineSettingsRef.current = nextSettings;
+      }
+      setNotice({ kind: "success", text: data.message || (enabled ? "Windows Context Menu enabled." : "Windows Context Menu disabled.") });
+    } catch (e: any) {
+      setNotice({ kind: "error", text: e.message || "Could not configure the Windows Context Menu." });
+    } finally {
+      setContextMenuPending(false);
     }
   };
 
@@ -378,6 +407,19 @@ export default function SettingsPage() {
                 checked={settings.startMinimized || false}
                 onChange={e => updateSettings({...settings, startMinimized: e.target.checked})}
                 className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"
+              />
+            </div>
+            <div className="flex items-center justify-between py-2 border-b border-slate-800 pb-4">
+              <div>
+                <span className="text-slate-200 font-medium block">Windows Context Menu</span>
+                <span className="text-slate-500 text-xs">Adds ClamShield scan and exception actions to File Explorer right-click menus.</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.windowsContextMenuEnabled === true}
+                disabled={contextMenuPending}
+                onChange={e => configureWindowsContextMenu(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
 

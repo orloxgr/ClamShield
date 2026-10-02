@@ -18,6 +18,7 @@ const runtimeDir = typeof __dirname === "string" ? __dirname : path.dirname(runt
 const nodeRequire = createRequire(runtimeFileName);
 
 const execAsync = promisify(exec);
+let pendingInstallerOptionsApplied = false;
 
 // Path logic to handle default paths or user configurations
 // Note: process.platform === "win32" is Node.js's identifier for ALL Windows systems, including 64-bit.
@@ -34,8 +35,10 @@ const yaraCustomRulesDir = path.join(yaraBaseDir, "rules", "custom");
 const yaraCacheDir = path.join(yaraBaseDir, "cache");
 const legalNoticeVersion = "2026-06-25";
 const installerConsentPath = path.join(programDataDir, "installer-consent.txt");
+const installerOptionsPath = path.join(programDataDir, "installer-options.txt");
 const securiteInfoSecretPath = path.join(programDataDir, "securiteinfo-token.bin");
 const virusTotalApiKeySecretPath = path.join(programDataDir, "virustotal-api-key.bin");
+const windowsContextMenuStatePath = path.join(programDataDir, "windows-context-menu.json");
 const dnsProtectionBackupPath = path.join(programDataDir, "dns-protection-backup.json");
 const appStateDbPath = path.join(programDataDir, "app_state.sqlite");
 const legacySettingsPath = path.join(programDataDir, "settings.json");
@@ -401,6 +404,7 @@ const defaultSettings = {
     autoDisableDefender: false,
     defenderCompatibilityExclusionsEnabled: false,
     defenderEnforceIntervalMinutes: 5,
+    windowsContextMenuEnabled: false,
     dnsProtectionEnabled: false,
     dnsProtectionProfile: "",
     dnsProtectionAppliedAt: "",
@@ -481,6 +485,7 @@ const booleanSettingKeys = new Set([
     "enableDebugLog",
     "autoDisableDefender",
     "defenderCompatibilityExclusionsEnabled",
+    "windowsContextMenuEnabled",
     "scheduledScanEnabled",
     "scheduledScanIdleOnly",
     "scheduledScanFullDisk",
@@ -2791,12 +2796,14 @@ function getClamShieldScanExclusionPatterns(settings: any) {
 
 function buildClamdConfContent(settings: any) {
     const maxFileSize = normalizePositiveNumber(settings.maxFileSize, 50, 1, 4096);
+    const maxScanTimeMs = getClamScanMaxTimeMs(settings);
     const lines = [
         `DatabaseDirectory ${settings.databaseDir}`,
         "TCPAddr 127.0.0.1",
         "TCPSocket 3310",
         `MaxFileSize ${maxFileSize}M`,
         `MaxScanSize ${Math.max(maxFileSize, maxFileSize * 2)}M`,
+        `MaxScanTime ${maxScanTimeMs}`,
         `ScanArchive ${settings.scanArchives === false ? "no" : "yes"}`,
         `FollowDirectorySymlinks ${settings.followSymlinks ? "yes" : "no"}`,
         `FollowFileSymlinks ${settings.followSymlinks ? "yes" : "no"}`
@@ -2837,6 +2844,18 @@ async function ensureClamdConfContent(settings: any) {
     }
 }
 
+function getClamScanMaxTimeMs(_settings: any) {
+    return 120000;
+}
+
+function getClamScanChildTimeoutMs(settings: any, fileCount: number) {
+    const maxScanTimeMs = getClamScanMaxTimeMs(settings);
+    const baseMs = maxScanTimeMs + 60000;
+    const perFileMs = 30000;
+    const capMs = 30 * 60 * 1000;
+    return Math.min(capMs, Math.max(baseMs, Math.max(1, fileCount) * perFileMs));
+}
+
 function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, target?: string) {
     const args = isClamd
         ? ["--config-file=" + scanSettings.clamdConf]
@@ -2848,8 +2867,10 @@ function buildClamScanArgs(scanSettings: any, isClamd: boolean, type: string, ta
 
     if (!isClamd) {
         const maxFileSize = normalizePositiveNumber(scanSettings.maxFileSize, 50, 1, 4096);
+        const maxScanTimeMs = getClamScanMaxTimeMs(scanSettings);
         args.push(`--max-filesize=${maxFileSize}M`);
         args.push(`--max-scansize=${Math.max(maxFileSize, maxFileSize * 2)}M`);
+        args.push(`--max-scantime=${maxScanTimeMs}`);
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
@@ -2881,8 +2902,10 @@ function buildClamFileListArgs(scanSettings: any, isClamd: boolean, listPath: st
         args.push("--multiscan");
     } else {
         const maxFileSize = normalizePositiveNumber(scanSettings.maxFileSize, 50, 1, 4096);
+        const maxScanTimeMs = getClamScanMaxTimeMs(scanSettings);
         args.push(`--max-filesize=${maxFileSize}M`);
         args.push(`--max-scansize=${Math.max(maxFileSize, maxFileSize * 2)}M`);
+        args.push(`--max-scantime=${maxScanTimeMs}`);
         args.push(`--scan-archive=${scanSettings.scanArchives === false ? "no" : "yes"}`);
         args.push(`--follow-dir-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
         args.push(`--follow-file-symlinks=${scanSettings.followSymlinks ? "1" : "0"}`);
@@ -4824,6 +4847,40 @@ function resolveScanTarget(type: string, target?: string) {
     return target;
 }
 
+function normalizeContextMenuAction(value: any) {
+    const action = String(value || "").toLowerCase();
+    if (action === "clamav-yara" || action === "clamav-yara-vt" || action === "add-exception") return action;
+    return "clamav";
+}
+
+function normalizeContextMenuTargets(value: any) {
+    const rawTargets = Array.isArray(value) ? value : [];
+    const seen = new Set<string>();
+    return rawTargets
+        .map(item => String(item || "").trim())
+        .filter(item => item && path.isAbsolute(item))
+        .filter(item => {
+            const normalized = normalizeCachePath(item);
+            if (!normalized || seen.has(normalized)) return false;
+            seen.add(normalized);
+            return true;
+        })
+        .slice(0, 500);
+}
+
+async function* enumerateContextScanTargetFiles(settings: any, targets: string[]): AsyncGenerator<string> {
+    const shouldSkipFile = createManualScanPathSkipper(settings, "context");
+    const seen = new Set<string>();
+    for (const target of targets) {
+        for await (const filePath of walkFiles(target, shouldSkipFile)) {
+            const normalized = normalizeCachePath(filePath);
+            if (!normalized || seen.has(normalized)) continue;
+            seen.add(normalized);
+            yield filePath;
+        }
+    }
+}
+
 async function* walkFiles(rootPath: string, shouldSkipPath?: (filePath: string) => boolean): AsyncGenerator<string> {
     const stack = [rootPath];
     while (stack.length) {
@@ -5076,6 +5133,16 @@ let clamdDatabaseReloadPending = false;
 let clamdDatabaseReloadInProgress = false;
 let shouldDeferClamdDatabaseReload: (() => boolean) | null = null;
 const clamdOutputSuppression = new Map<string, { count: number, lastLoggedAt: number }>();
+
+function stopClamdAfterScannerTimeout(log?: (message: string) => void) {
+    if (!clamdProcess) return;
+    log?.("Stopping clamd because a clamdscan worker timed out.");
+    try {
+        clamdProcess.kill();
+    } catch {}
+    clamdProcess = null;
+    clamdConfSignature = "";
+}
 
 function getNoisyClamdOutputKey(line: string) {
     if (/^LibClamAV Warning: cl_scanfile_callback: scanned_out exceeds UINT32_MAX/i.test(line)) {
@@ -5384,8 +5451,38 @@ async function loadInstallerConsent() {
     }
 }
 
+function parseInstallerBoolean(value: any) {
+    return /^(1|true|yes|on|checked)$/i.test(String(value || "").trim());
+}
+
+async function loadInstallerOptions() {
+    try {
+        const content = await fs.readFile(installerOptionsPath, "utf8");
+        const values = Object.fromEntries(
+            content
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(Boolean)
+                .map(line => {
+                    const separator = line.indexOf("=");
+                    return separator > 0
+                        ? [line.slice(0, separator), line.slice(separator + 1)]
+                        : [line, ""];
+                })
+        );
+        return {
+            startMinimized: parseInstallerBoolean(values.startMinimized),
+            windowsContextMenuEnabled: parseInstallerBoolean(values.windowsContextMenuEnabled)
+        };
+    } catch {
+        return null;
+    }
+}
+
 async function loadConfig() {
     const installerConsent = await loadInstallerConsent();
+    const installerOptions = await loadInstallerOptions();
+    pendingInstallerOptionsApplied = Boolean(installerOptions);
     try {
         await ensureAppStateReady();
         const rows = getAppStateDb().prepare("SELECT key, value FROM settings").all();
@@ -5393,11 +5490,12 @@ async function loadConfig() {
             const runtimeSettings = installerConsent
                 ? {
                     ...defaultSettings,
+                    ...(installerOptions || {}),
                     eulaAccepted: true,
                     eulaVersion: legalNoticeVersion,
                     eulaAcceptedAt: installerConsent.acceptedAt
                 }
-                : { ...defaultSettings };
+                : { ...defaultSettings, ...(installerOptions || {}) };
             currentLogsDir = runtimeSettings.logsDir || defaultLogsDir;
             debugLoggingEnabled = runtimeSettings.enableDebugLog === true;
             return runtimeSettings;
@@ -5406,22 +5504,26 @@ async function loadConfig() {
             settings[row.key] = parseAppStateJson(row.value, null);
             return settings;
         }, {});
-        const actionOnDetection = normalizeShieldDetectionAction(parsed.actionOnDetection || defaultSettings.actionOnDetection);
-        const scanDetectionAction = parsed.scanDetectionAction || defaultSettings.scanDetectionAction;
+        const parsedWithInstallerOptions = {
+            ...parsed,
+            ...(installerOptions || {})
+        };
+        const actionOnDetection = normalizeShieldDetectionAction(parsedWithInstallerOptions.actionOnDetection || defaultSettings.actionOnDetection);
+        const scanDetectionAction = parsedWithInstallerOptions.scanDetectionAction || defaultSettings.scanDetectionAction;
         const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
         const eulaAccepted = settingsConsentAccepted || Boolean(installerConsent);
         const loadedSettings = {
             ...defaultSettings,
-            ...parsed,
-            ...normalizeScheduledScanSettings(parsed),
+            ...parsedWithInstallerOptions,
+            ...normalizeScheduledScanSettings(parsedWithInstallerOptions),
             actionOnDetection,
             scanDetectionAction,
-            securiteInfoPlan: normalizeSecuriteInfoPlan(parsed.securiteInfoPlan),
-            securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsed.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsed.securiteInfoIncludePua),
+            securiteInfoPlan: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan),
+            securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsedWithInstallerOptions.securiteInfoIncludePua),
             eulaAccepted,
             eulaVersion: eulaAccepted ? legalNoticeVersion : "",
             eulaAcceptedAt: settingsConsentAccepted
-                ? String(parsed.eulaAcceptedAt || "")
+                ? String(parsedWithInstallerOptions.eulaAcceptedAt || "")
                 : String(installerConsent?.acceptedAt || "")
         };
         const recoveredSettings = await restoreInstalledSignatureProviderSettings(loadedSettings);
@@ -5435,11 +5537,12 @@ async function loadConfig() {
         return installerConsent
             ? {
                 ...defaultSettings,
+                ...(installerOptions || {}),
                 eulaAccepted: true,
                 eulaVersion: legalNoticeVersion,
                 eulaAcceptedAt: installerConsent.acceptedAt
             }
-            : defaultSettings;
+            : { ...defaultSettings, ...(installerOptions || {}) };
     }
 }
 
@@ -6695,6 +6798,138 @@ async function getVirusTotalCloudStatus(settings: any) {
     };
 }
 
+function isYaraAvailableForContextMenu(settings: any) {
+    return settings.yaraEnabled !== false &&
+        Boolean(settings.yaraPath && existsSync(settings.yaraPath)) &&
+        existsSync(getYaraRulesFile(settings));
+}
+
+async function writeWindowsContextMenuState(settings: any) {
+    try {
+        await fs.mkdir(path.dirname(windowsContextMenuStatePath), { recursive: true });
+        const yaraAvailable = isYaraAvailableForContextMenu(settings);
+        const virusTotalAvailable = yaraAvailable &&
+            settings.virusTotalCloudEnabled === true &&
+            Boolean(await loadVirusTotalApiKey());
+        await fs.writeFile(windowsContextMenuStatePath, JSON.stringify({
+            enabled: settings.windowsContextMenuEnabled === true,
+            yaraAvailable,
+            virusTotalAvailable,
+            updatedAt: new Date().toISOString()
+        }, null, 2));
+    } catch (e: any) {
+        console.warn("Failed to update Windows context menu state:", e?.message || e);
+    }
+}
+
+function getInstalledAppDir() {
+    if (process.platform === "win32" && process.execPath && /clamshield\.exe$/i.test(process.execPath)) {
+        return path.dirname(process.execPath);
+    }
+    return runtimeDir;
+}
+
+async function getLegacyContextMenuActions(settings: any) {
+    const yaraAvailable = isYaraAvailableForContextMenu(settings);
+    const virusTotalAvailable = yaraAvailable &&
+        settings.virusTotalCloudEnabled === true &&
+        Boolean(await loadVirusTotalApiKey());
+    const actions = [
+        { id: "clamav", label: "Scan with ClamAV only", action: "clamav" }
+    ];
+    if (yaraAvailable) {
+        actions.push({ id: "clamav-yara", label: "Scan with ClamAV + YARA", action: "clamav-yara" });
+    }
+    if (virusTotalAvailable) {
+        actions.push({ id: "clamav-yara-vt", label: "Scan with ClamAV + YARA + VirusTotal", action: "clamav-yara-vt" });
+    }
+    actions.push({ id: "add-exception", label: "Add to ClamShield exceptions", action: "add-exception" });
+    return actions;
+}
+
+async function runRegistryCommand(args: string[], options: { allowFailure?: boolean } = {}) {
+    const result = await runHiddenProcess("reg.exe", args, { timeoutMs: 30000 });
+    if (result.code !== 0 && !options.allowFailure) {
+        throw new Error((result.stderr || result.stdout || `reg.exe exited with code ${result.code}`).trim());
+    }
+}
+
+async function addRegistryValue(key: string, name: string | null, value: string) {
+    const args = ["add", key, "/f"];
+    if (name === null) args.push("/ve");
+    else args.push("/v", name);
+    args.push("/t", "REG_SZ", "/d", value);
+    await runRegistryCommand(args);
+}
+
+async function configureLegacyContextMenuRegistry(enabled: boolean, settings: any) {
+    if (process.platform !== "win32") return;
+    const roots = [
+        "HKCU\\Software\\Classes\\*\\shell\\ClamShield",
+        "HKCU\\Software\\Classes\\Directory\\shell\\ClamShield"
+    ];
+    for (const rootKey of roots) {
+        await runRegistryCommand(["delete", rootKey, "/f"], { allowFailure: true });
+    }
+    if (!enabled) return;
+
+    const installDir = getInstalledAppDir();
+    const exePath = path.join(installDir, "ClamShield.exe");
+    const helperScriptPath = path.join(installDir, "shell", "ClamShieldContextMenu.vbs");
+    const wscriptPath = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe");
+    const iconPath = `${exePath},0`;
+    const actions = await getLegacyContextMenuActions(settings);
+
+    for (const rootKey of roots) {
+        await addRegistryValue(rootKey, "MUIVerb", "ClamShield");
+        await addRegistryValue(rootKey, "Icon", iconPath);
+        await addRegistryValue(rootKey, "SubCommands", "");
+        for (const item of actions) {
+            const itemKey = `${rootKey}\\shell\\${item.id}`;
+            const commandKey = `${itemKey}\\command`;
+            await addRegistryValue(itemKey, "MUIVerb", item.label);
+            await addRegistryValue(itemKey, "MultiSelectModel", "Player");
+            await addRegistryValue(itemKey, "NoWorkingDirectory", "");
+            await addRegistryValue(
+                commandKey,
+                null,
+                `"${wscriptPath}" "${helperScriptPath}" "${item.action}" "%1" "${exePath}"`
+            );
+        }
+    }
+}
+
+async function configureWindowsContextMenuPackage(enabled: boolean, settings: any) {
+    if (process.platform !== "win32") {
+        throw new Error("Windows Context Menu integration is only available on Windows.");
+    }
+    const installDir = getInstalledAppDir();
+    const manifestPath = path.join(installDir, "sparse-package", "AppxManifest.xml");
+    const shellDllPath = path.join(installDir, "shell", "ClamShieldShellExt.dll");
+    if (enabled) {
+        if (!existsSync(manifestPath)) throw new Error(`Sparse package manifest was not found: ${manifestPath}`);
+        if (!existsSync(shellDllPath)) throw new Error(`Shell extension DLL was not found: ${shellDllPath}`);
+    }
+    const command = enabled
+        ? `Add-AppxPackage -Register '${manifestPath.replace(/'/g, "''")}' -ExternalLocation '${installDir.replace(/'/g, "''")}' -ForceApplicationShutdown`
+        : `Get-AppxPackage -Name 'Orlox.ClamShield' | Remove-AppxPackage -ErrorAction SilentlyContinue`;
+    const result = await runHiddenProcess("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command
+    ], { timeoutMs: 120000 });
+    if (result.code !== 0) {
+        throw new Error((result.stderr || result.stdout || `PowerShell exited with code ${result.code}`).trim());
+    }
+    await configureLegacyContextMenuRegistry(enabled, settings);
+}
+
 function isVirusTotalAutoRefinementCandidate(result: any, settings: any) {
     const source = String(result?.source || "").toLowerCase();
     if (source === "shield") return settings.virusTotalShieldBackgroundCheckEnabled === true;
@@ -7472,6 +7707,25 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     job.process = child;
     let openErrorCount = 0;
     const exitCode = await new Promise<number>((resolve) => {
+        let settled = false;
+        let timedOut = false;
+        const finish = (code: number) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve(code);
+        };
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            options.appendJobLogs(options.jobId, [
+                `YARA timed out after ${timeoutSeconds + 30}s. ClamAV scan results are still valid.`
+            ]);
+            try {
+                child.kill();
+            } catch {}
+            setTimeout(() => finish(-2), 5000).unref?.();
+        }, (timeoutSeconds + 30) * 1000);
+        timeout.unref?.();
         child.stdout.on("data", data => {
             const lines = data.toString().split("\n").map((line: string) => line.trim()).filter(Boolean);
             stdoutLines.push(...lines);
@@ -7491,9 +7745,9 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
         });
         child.on("error", error => {
             options.appendJobLogs(options.jobId, [`YARA process error: ${error.message}`]);
-            resolve(-1);
+            finish(-1);
         });
-        child.on("close", code => resolve(code ?? 0));
+        child.on("close", code => finish(timedOut ? -2 : (code ?? 0)));
     });
     await fs.unlink(listPath).catch(() => {});
     if (job.process === child) job.process = null;
@@ -7557,6 +7811,10 @@ async function startServer() {
     
     let settings = await loadConfig();
     await ensureDirs(settings);
+    if (pendingInstallerOptionsApplied) {
+        await saveConfig(settings, { keys: ["startMinimized", "windowsContextMenuEnabled"] });
+        await fs.rm(installerOptionsPath, { force: true }).catch(() => {});
+    }
     await cleanupOldLogs(settings);
     if (settings.defenderCompatibilityExclusionsEnabled === true) {
         syncDefenderCompatibilityExclusions(settings)
@@ -7586,6 +7844,18 @@ async function startServer() {
     await checkClamAV(settings);
     await manageStartup(settings);
     cachedIsAdmin = await checkIsAdmin();
+    if (pendingInstallerOptionsApplied) {
+        try {
+            await configureWindowsContextMenuPackage(settings.windowsContextMenuEnabled === true, settings);
+        } catch (e: any) {
+            console.warn("Installer-selected Windows Context Menu integration could not be applied:", e?.message || e);
+            if (settings.windowsContextMenuEnabled === true) {
+                settings = { ...settings, windowsContextMenuEnabled: false };
+                await saveConfig(settings, { keys: ["windowsContextMenuEnabled"] });
+            }
+        }
+    }
+    await writeWindowsContextMenuState(settings);
 
     const scanSessions = new ScanSessionStore(getScanSessionsDbPath());
     const resetSessions = scanSessions.resetInterruptedRunningSessions();
@@ -7666,7 +7936,7 @@ async function startServer() {
         timer.unref?.();
     };
     let pendingThreats: any[] = [];
-    const virusTotalShieldQueue = new Map<string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string }>();
+    const virusTotalShieldQueue = new Map<string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string, forceCloudCheck?: boolean }>();
     const eventClients = new Set<express.Response>();
     const sendApiEventToClient = (client: express.Response, event: string, data: any) => {
         client.write(`event: ${event}\n`);
@@ -7817,7 +8087,8 @@ async function startServer() {
 
     const processNextShieldVirusTotalCheck = async () => {
         if (virusTotalShieldRunning) return;
-        if (settings.virusTotalCloudEnabled !== true || settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
+        if (settings.virusTotalCloudEnabled !== true) return;
+        if (settings.virusTotalShieldBackgroundCheckEnabled !== true && !Array.from(virusTotalShieldQueue.values()).some(item => item.forceCloudCheck)) return;
         const apiKey = await loadVirusTotalApiKey();
         if (!apiKey) {
             virusTotalShieldLastMessage = "VirusTotal API key is not configured.";
@@ -7930,8 +8201,9 @@ async function startServer() {
 
     scheduleShieldVirusTotalCheck = (delayMs = 0) => {
         if (virusTotalShieldTimer) clearTimeout(virusTotalShieldTimer);
-        if (settings.virusTotalCloudEnabled !== true || settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
         if (virusTotalShieldQueue.size === 0) return;
+        if (settings.virusTotalCloudEnabled !== true) return;
+        if (settings.virusTotalShieldBackgroundCheckEnabled !== true && !Array.from(virusTotalShieldQueue.values()).some(item => item.forceCloudCheck)) return;
         const delay = Math.max(0, Math.min(Number(delayMs || 0), 15 * 60 * 1000));
         virusTotalShieldTimer = setTimeout(() => {
             virusTotalShieldTimer = null;
@@ -7944,6 +8216,14 @@ async function startServer() {
         const normalizedPath = normalizedStatePath(filePath);
         if (!normalizedPath || virusTotalShieldQueue.has(normalizedPath)) return;
         virusTotalShieldQueue.set(normalizedPath, { filePath, queuedAt: Date.now() });
+        scheduleShieldVirusTotalCheck(Math.max(0, virusTotalShieldNextAllowedAt - Date.now()));
+    };
+
+    const enqueueContextMenuVirusTotalCheck = (filePath: string) => {
+        if (settings.virusTotalCloudEnabled !== true) return;
+        const normalizedPath = normalizedStatePath(filePath);
+        if (!normalizedPath || virusTotalShieldQueue.has(normalizedPath)) return;
+        virusTotalShieldQueue.set(normalizedPath, { filePath, queuedAt: Date.now(), forceCloudCheck: true });
         scheduleShieldVirusTotalCheck(Math.max(0, virusTotalShieldNextAllowedAt - Date.now()));
     };
 
@@ -8285,9 +8565,36 @@ async function startServer() {
 
                 await new Promise<void>((resolve) => {
                     let settled = false;
+                    let timedOut = false;
+                    const timeoutMs = getClamScanChildTimeoutMs(currentSettings, 1);
+                    const timeout = setTimeout(() => {
+                        timedOut = true;
+                        appendJobLogs(jobId, [
+                            `Shield scanner timed out after ${Math.round(timeoutMs / 1000)}s.`,
+                            "Stopping this Shield scanner worker. This file was not treated as clean."
+                        ]);
+                        try {
+                            child.kill();
+                        } catch {}
+                        if (isClamd) {
+                            stopClamdAfterScannerTimeout(message => appendJobLogs(jobId, [message]));
+                        }
+                        setTimeout(() => {
+                            if (activeJobs[jobId]) {
+                                activeJobs[jobId].status = "done";
+                                activeJobs[jobId].result = -1;
+                                activeJobs[jobId].process = null;
+                                filesBeingScanned.delete(normalizedPath);
+                            }
+                            settle();
+                        }, 5000).unref?.();
+                    }, timeoutMs);
+                    timeout.unref?.();
                     const settle = () => {
                         if (settled) return;
                         settled = true;
+                        clearTimeout(timeout);
+                        clearInterval(heartbeat);
                         resolve();
                     };
 
@@ -8304,11 +8611,11 @@ async function startServer() {
 
                     child.on("close", async (code) => {
                         try {
-                            clearInterval(heartbeat);
                             if (!activeJobs[jobId]) return;
-                            if (code !== 0 && code !== 1) {
+                            const effectiveCode = timedOut ? -2 : code;
+                            if (effectiveCode !== 0 && effectiveCode !== 1) {
                                 appendJobLogs(jobId, [
-                                    `Shield scanner process failed with exit code ${code ?? "unknown"}.`,
+                                    `Shield scanner process failed with exit code ${effectiveCode ?? "unknown"}.`,
                                     "This file was not treated as clean."
                                 ]);
                                 activeJobs[jobId].status = "done";
@@ -8435,7 +8742,7 @@ async function startServer() {
 
                             enqueueShieldVirusTotalCheck(filePath);
                             const isThreat = threatsFound > 0;
-                            appendJobLogs(jobId, [`Shield scan finished with exit code ${code ?? "unknown"}.`]);
+                            appendJobLogs(jobId, [`Shield scan finished with exit code ${effectiveCode ?? "unknown"}.`]);
                             if (isThreat) {
                                 console.log(`Shield: Threat found in ${filePath}`);
                             }
@@ -8526,7 +8833,7 @@ async function startServer() {
 
         const pkgVersion = await getCurrentAppVersion();
         const activeScanJobIds = Object.entries(activeJobs)
-            .filter(([, job]) => job.status === "running" && ["disk", "folder", "file", "memory"].includes(job.progress?.type || ""))
+            .filter(([, job]) => job.status === "running" && ["disk", "folder", "file", "memory", "context"].includes(job.progress?.type || ""))
             .map(([jobId]) => jobId);
         res.json({
             appVersion: pkgVersion,
@@ -8981,6 +9288,28 @@ async function startServer() {
         }
     });
 
+    app.post("/api/windows-context-menu/configure", async (req, res) => {
+        try {
+            const enabled = req.body?.enabled === true;
+            await configureWindowsContextMenuPackage(enabled, settings);
+            settings = {
+                ...settings,
+                windowsContextMenuEnabled: enabled
+            };
+            await saveConfig(settings, { keys: ["windowsContextMenuEnabled"] });
+            await writeWindowsContextMenuState(settings);
+            res.json({
+                success: true,
+                settings,
+                message: enabled
+                    ? "Windows Context Menu integration is enabled. Restart File Explorer or sign out and back in if the menu does not appear immediately."
+                    : "Windows Context Menu integration is disabled."
+            });
+        } catch (e: any) {
+            res.status(409).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
     app.post("/api/settings", async (req, res) => {
         try {
             const normalizedRequest = normalizeSettingsPatch(req.body, settings);
@@ -9020,6 +9349,10 @@ async function startServer() {
             }
             settings = nextSettings;
             await saveConfig(settings, { keys: settingsKeysToPersist });
+            await writeWindowsContextMenuState(settings);
+            if (settings.windowsContextMenuEnabled === true) {
+                await configureLegacyContextMenuRegistry(true, settings);
+            }
             await ensureDirs(settings);
             await cleanupOldLogs(settings);
             if (securiteInfoDatabaseSelectionChanged) {
@@ -9245,6 +9578,10 @@ async function startServer() {
                     : false
             };
             await saveConfig(settings);
+            await writeWindowsContextMenuState(settings);
+            if (settings.windowsContextMenuEnabled === true) {
+                await configureLegacyContextMenuRegistry(true, settings);
+            }
             scheduleVirusTotalRefinement();
             scheduleShieldVirusTotalCheck();
             res.json({
@@ -9271,6 +9608,10 @@ async function startServer() {
                 virusTotalShieldUploadUnknownEnabled: false
             };
             await saveConfig(settings);
+            await writeWindowsContextMenuState(settings);
+            if (settings.windowsContextMenuEnabled === true) {
+                await configureLegacyContextMenuRegistry(true, settings);
+            }
             res.json({
                 success: true,
                 virusTotalCloud: await getVirusTotalDashboardStatus(settings),
@@ -9567,17 +9908,60 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
+    app.post("/api/context-menu/exceptions", async (req, res) => {
+        try {
+            const targets = normalizeContextMenuTargets(req.body?.targets);
+            if (targets.length === 0) {
+                return res.status(400).json({ success: false, error: "No valid context menu targets were provided." });
+            }
+            const exceptions = await getExceptions();
+            const existing = new Set(exceptions.map(item => normalizeCachePath(item)).filter(Boolean));
+            let addedCount = 0;
+            for (const targetPath of targets) {
+                const normalized = normalizeCachePath(targetPath);
+                if (!normalized || existing.has(normalized)) continue;
+                exceptions.push(targetPath);
+                existing.add(normalized);
+                addedCount++;
+            }
+            if (addedCount > 0) await saveExceptions(exceptions);
+            await addHistory({
+                type: "context-menu-exceptions",
+                target: targets.length === 1 ? targets[0] : `${targets.length} selected items`,
+                result: 0,
+                threatsFound: 0,
+                scannedFiles: 0,
+                duration: 1,
+                actionTaken: addedCount > 0
+                    ? `Added ${addedCount} item${addedCount === 1 ? "" : "s"} to exceptions`
+                    : "Already in exceptions"
+            }).catch(() => {});
+            res.json({ success: true, addedCount, totalTargets: targets.length });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: e?.message || String(e) });
+        }
+    });
+
     app.post("/api/scan", async (req, res) => {
         const { target, type, resumeJobId } = req.body;
-        const scanSource = req.body?.source === "scheduled" ? "scheduled" : "manual";
+        const contextMenuTargets = normalizeContextMenuTargets(req.body?.targets);
+        const hasContextMenuTargets = !resumeJobId && contextMenuTargets.length > 0;
+        const contextMenuAction = normalizeContextMenuAction(req.body?.contextAction);
+        const contextMenuYaraEnabled = contextMenuAction !== "clamav";
+        const contextMenuVirusTotalEnabled = contextMenuAction === "clamav-yara-vt";
+        const scanSource = req.body?.source === "scheduled"
+            ? "scheduled"
+            : req.body?.source === "context-menu" || hasContextMenuTargets ? "context-menu" : "manual";
         const resumeSession = resumeJobId ? scanSessions.getSession(String(resumeJobId)) : null;
         if (resumeJobId && (!resumeSession || !canResumeScanType(resumeSession.type))) {
             return res.status(404).json({ error: "No resumable scan was found." });
         }
         const isResume = !!resumeSession;
-        const scanType = resumeSession?.type || type;
-        const scanTarget = resumeSession?.target || (scanType === "memory" ? "Running process images" : (resolveScanTarget(scanType, target) || "C:\\"));
-        const effectiveTarget = scanType === "memory" ? undefined : resolveScanTarget(scanType, scanTarget);
+        const scanType = resumeSession?.type || (hasContextMenuTargets ? "context" : type);
+        const scanTarget = resumeSession?.target || (hasContextMenuTargets
+            ? (contextMenuTargets.length === 1 ? contextMenuTargets[0] : `${contextMenuTargets.length} selected items`)
+            : (scanType === "memory" ? "Running process images" : (resolveScanTarget(scanType, target) || "C:\\")));
+        const effectiveTarget = scanType === "memory" || hasContextMenuTargets ? undefined : resolveScanTarget(scanType, scanTarget);
         const jobId = resumeSession?.job_id || Date.now().toString();
 
         if (activeJobs[jobId]?.status === "running") {
@@ -9586,7 +9970,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
         const conflictingScan = Object.entries(activeJobs).find(([activeJobId, job]) =>
             activeJobId !== jobId &&
             job.status === "running" &&
-            ["disk", "folder", "file", "memory"].includes(job.progress?.type || "")
+            ["disk", "folder", "file", "memory", "context"].includes(job.progress?.type || "")
         );
         if (conflictingScan) {
             return res.status(409).json({ error: "Another on-demand or scheduled scan is already running." });
@@ -9683,6 +10067,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 : 0;
             let scannedFiles = isResume ? scanSessions.countDoneFiles(jobId) : 0;
             const memoryYaraTargets: string[] = [];
+            const contextVirusTotalTargets: string[] = [];
 
             if (scanType === "disk" && process.platform === "win32") {
                 appendJobLogs(jobId, [
@@ -9836,12 +10221,41 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 });
                 let childProcess: any = null;
                 const code = await new Promise<number>((resolve) => {
+                    let settled = false;
+                    let timedOut = false;
+                    let timeout: NodeJS.Timeout | null = null;
+                    const finish = (resultCode: number) => {
+                        if (settled) return;
+                        settled = true;
+                        if (timeout) clearTimeout(timeout);
+                        resolve(resultCode);
+                    };
                     const child = spawn(exePath, args, { windowsHide: true });
                     childProcess = child;
                     activeJobs[jobId].process = child;
                     if (!activeJobs[jobId].processes) activeJobs[jobId].processes = new Set();
                     activeJobs[jobId].processes.add(child);
                     applyScanProcessPriority(child, settings, scanSource, isClamd ? "clamdscan" : "clamscan");
+                    const timeoutMs = getClamScanChildTimeoutMs(settings, chunk.length);
+                    timeout = setTimeout(() => {
+                        timedOut = true;
+                        appendJobLogs(jobId, [
+                            `Scanner timed out after ${Math.round(timeoutMs / 1000)}s for batch ${batchNumber}.`,
+                            "Stopping this scanner worker and queueing the file batch for rescan."
+                        ]);
+                        saveJobProgress(jobId, {
+                            errorsFound: errorsFound + 1,
+                            actionTaken: "Scanner timeout"
+                        });
+                        try {
+                            child.kill();
+                        } catch {}
+                        if (isClamd) {
+                            stopClamdAfterScannerTimeout(message => appendJobLogs(jobId, [message]));
+                        }
+                        setTimeout(() => finish(-2), 5000).unref?.();
+                    }, timeoutMs);
+                    timeout.unref?.();
                     let lastCurrentFileUpdateAt = 0;
                     const handleEngineLines = (lines: string[]) => {
                         chunkLines.push(...lines);
@@ -9866,9 +10280,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     });
                     child.on("error", error => {
                         appendJobLogs(jobId, [`Process error: ${error.message}`]);
-                        resolve(-1);
+                        finish(-1);
                     });
-                    child.on("close", closeCode => resolve(closeCode ?? 0));
+                    child.on("close", closeCode => finish(timedOut ? -2 : (closeCode ?? 0)));
                 });
                 await fs.unlink(listPath).catch(() => {});
                 activeJobs[jobId]?.processes?.delete(childProcess);
@@ -9966,7 +10380,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 const enumerationBatchSize = Math.max(chunkSize, 1000);
                 let pendingRecords: Array<{ filePath: string, size: number, mtimeMs: number }> = [];
                 let firstFile = "";
-                for await (const filePath of enumerateScanTargetFiles(settings, scanType, scanTarget)) {
+                const fileSource = hasContextMenuTargets
+                    ? enumerateContextScanTargetFiles(settings, contextMenuTargets)
+                    : enumerateScanTargetFiles(settings, scanType, scanTarget);
+                for await (const filePath of fileSource) {
                     const fingerprint = await getFileFingerprint(filePath);
                     const record = {
                         filePath,
@@ -9975,7 +10392,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     };
                     pendingRecords.push(record);
                     if (!firstFile) firstFile = filePath;
-                    if (scanType === "memory") memoryYaraTargets.push(filePath);
+                    if (scanType === "memory" || scanType === "context") memoryYaraTargets.push(filePath);
+                    if (hasContextMenuTargets && contextMenuVirusTotalEnabled && fingerprint?.size) contextVirusTotalTargets.push(filePath);
                     if (pendingRecords.length >= enumerationBatchSize) {
                         if (resumableScan) scanSessions.appendFiles(jobId, pendingRecords, totalFiles);
                         totalFiles += pendingRecords.length;
@@ -9997,7 +10415,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                         currentFile: pendingRecords[pendingRecords.length - 1].filePath
                     });
                 }
-                if (!resumableScan && scanType === "memory") {
+                if (!resumableScan && (scanType === "memory" || scanType === "context")) {
                     totalFiles = memoryYaraTargets.length;
                 }
                 if (scanType === "memory" && process.platform === "win32") {
@@ -10093,9 +10511,11 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 return;
             }
 
-            if (activeJobs[jobId]?.status === "running") {
+            if (activeJobs[jobId]?.status === "running" && (!hasContextMenuTargets || contextMenuYaraEnabled)) {
                 saveJobProgress(jobId, { phase: "YARA scan", currentFile: "" });
-                const yaraTargets = scanType === "memory" ? memoryYaraTargets : (effectiveTarget ? [effectiveTarget] : []);
+                const yaraTargets = scanType === "memory"
+                    ? memoryYaraTargets
+                    : hasContextMenuTargets ? contextMenuTargets : (effectiveTarget ? [effectiveTarget] : []);
                 const yaraResult = await runYaraScanForTargets(settings, yaraTargets, {
                     activeJobs,
                     appendJobLogs,
@@ -10115,6 +10535,20 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     saveJobProgress(jobId, {
                         actionTaken: threatsFound > 0 ? actionTaken : "Ignored by exclusions"
                     });
+                }
+            }
+            if (activeJobs[jobId]?.status === "running" && hasContextMenuTargets && !contextMenuYaraEnabled) {
+                appendJobLogs(jobId, ["YARA skipped: ClamAV-only context menu scan."]);
+            }
+            if (activeJobs[jobId]?.status === "running" && hasContextMenuTargets && contextMenuVirusTotalEnabled) {
+                if (settings.virusTotalCloudEnabled === true && await loadVirusTotalApiKey()) {
+                    const vtTargets = contextVirusTotalTargets.slice(0, 100);
+                    vtTargets.forEach(enqueueContextMenuVirusTotalCheck);
+                    appendJobLogs(jobId, [
+                        `VirusTotal cloud checks queued: ${vtTargets.length}${contextVirusTotalTargets.length > vtTargets.length ? ` of ${contextVirusTotalTargets.length} eligible files` : ""}.`
+                    ]);
+                } else {
+                    appendJobLogs(jobId, ["VirusTotal skipped: Cloud Check is disabled or the API key is not configured."]);
                 }
             }
 
@@ -10585,8 +11019,10 @@ if ($dialog.ShowDialog() -eq 'OK') {
             result: job.result,
             progress: job.progress || null
         });
-        // Clear logs after sending them so we don't accumulate too much
-        job.logs = [];
+        if (req.query.peek !== "1") {
+            // Clear logs after sending them so we don't accumulate too much
+            job.logs = [];
+        }
     });
 
     app.post("/api/scan/:jobId/cancel", async (req, res) => {

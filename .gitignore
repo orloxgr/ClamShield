@@ -5,6 +5,10 @@ build/*
 !build/eula.txt
 release/
 coverage/
+shell/*.pdb
+shell/*.lib
+shell/*.exp
+shell/*.dll
 .DS_Store
 *.log
 .env*

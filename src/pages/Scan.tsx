@@ -1,10 +1,13 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { FolderSearch, HardDrive, FileSearch, Loader2, Cpu, Play, Trash2 } from "lucide-react";
 import { useScan } from "../context/ScanContext";
 import PageHeader from "../components/PageHeader";
 
 export default function Scan() {
-  const { scanState, output, progressOutput, progress, resumableScan, startScan, resumeScan, discardResumableScan, cancelScan } = useScan();
+  const { scanState, output, progressOutput, progress, resumableScan, startScan, attachScan, resumeScan, discardResumableScan, cancelScan } = useScan();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const attachedJobIdRef = useRef<string | null>(null);
   const scannedFiles = Number(progress?.scannedFiles || 0);
   const totalFiles = Number(progress?.totalFiles || 0);
   const elapsedSeconds = Number(progress?.elapsedSeconds || 0);
@@ -31,6 +34,15 @@ export default function Scan() {
     }
     return line;
   };
+
+  useEffect(() => {
+    const requestedJobId = searchParams.get("jobId");
+    if (!requestedJobId) return;
+    if (attachedJobIdRef.current === requestedJobId) return;
+    attachedJobIdRef.current = requestedJobId;
+    attachScan(requestedJobId);
+    setSearchParams({}, { replace: true });
+  }, [attachScan, searchParams, setSearchParams]);
 
   const handleScanClick = async (type: string, target?: string) => {
     if (type === "folder" && !target) {

@@ -10,6 +10,7 @@ interface ScanContextType {
   progress: any | null;
   resumableScan: any | null;
   startScan: (type: string, target?: string) => Promise<void>;
+  attachScan: (jobId: string) => Promise<void>;
   resumeScan: () => Promise<void>;
   discardResumableScan: () => Promise<void>;
   cancelScan: () => void;
@@ -106,6 +107,25 @@ function appendScanOutput(previous: string[], previousProgress: string[], next: 
   return { output, progressOutput };
 }
 
+function fallbackScanOutput(progress: any | null, status?: string) {
+  const scannedFiles = Number(progress?.scannedFiles || 0);
+  const totalFiles = Number(progress?.totalFiles || 0);
+  const threatsFound = Number(progress?.threatsFound || 0);
+  if (status === "done" || progress?.status === "done") {
+    return [
+      "Context menu scan complete.",
+      totalFiles > 0
+        ? `Scanned files: ${scannedFiles.toLocaleString()} / ${totalFiles.toLocaleString()}`
+        : `Scanned files: ${scannedFiles.toLocaleString()}`,
+      `Detections: ${threatsFound.toLocaleString()}`
+    ];
+  }
+  if (progress?.phase || progress?.currentFile) {
+    return [`Context menu scan is running: ${progress.phase || progress.currentFile}`];
+  }
+  return ["Context menu scan is running..."];
+}
+
 function scanLabel(type: string) {
   if (type === "memory") return "process";
   if (type === "disk") return "full";
@@ -125,13 +145,47 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
   const [progress, setProgress] = useState<any | null>(null);
   const [resumableScan, setResumableScan] = useState<any | null>(null);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
+  const [scanEventStreamFailed, setScanEventStreamFailed] = useState<boolean>(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const seenOutputLinesRef = useRef<Set<string>>(new Set());
 
   const closeJobStream = () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
+  };
+
+  const resetSeenOutputLines = () => {
+    seenOutputLinesRef.current = new Set();
+  };
+
+  const appendVisibleLogs = (logs: string[], replace = false) => {
+    const safeLogs = Array.isArray(logs) ? logs.map(line => String(line)) : [];
+    const nextLogs = replace ? safeLogs : safeLogs.filter(line => {
+      if (seenOutputLinesRef.current.has(line)) return false;
+      seenOutputLinesRef.current.add(line);
+      return true;
+    });
+    if (replace) {
+      resetSeenOutputLines();
+      for (const line of safeLogs) seenOutputLinesRef.current.add(line);
+    }
+    if (nextLogs.length === 0 && !replace) return;
+    setOutput(prev => {
+      const next = appendScanOutput(replace ? [] : prev, progressOutputRef.current, nextLogs);
+      progressOutputRef.current = next.progressOutput;
+      setProgressOutput(next.progressOutput);
+      return next.output;
+    });
+  };
+
+  const ensureContextMenuOutput = (nextProgress: any | null, status?: string) => {
+    setOutput(prev => {
+      const hasOnlyContextPlaceholder = prev.length === 0 ||
+        (prev.length === 1 && /^Opening scan started from Windows context menu/i.test(prev[0]));
+      return hasOnlyContextPlaceholder ? fallbackScanOutput(nextProgress, status) : prev;
+    });
   };
 
   const refreshResumableScan = useCallback(async () => {
@@ -151,6 +205,8 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     setOutput([`Starting ${scanLabel(type)} scan...`, target ? `Target: ${target}` : ''].filter(Boolean));
     setProgressOutput([]);
     progressOutputRef.current = [];
+    resetSeenOutputLines();
+    setScanEventStreamFailed(false);
     setProgress(null);
     setJobId(null);
     if (canResumeScanType(type)) setResumableScan(null);
@@ -190,6 +246,39 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const attachScan = async (nextJobId: string) => {
+    const normalizedJobId = String(nextJobId || "").trim();
+    if (!normalizedJobId || normalizedJobId === jobId) return;
+    closeJobStream();
+    setScanState("running");
+    setOutput(["Opening scan started from Windows context menu..."]);
+    setProgressOutput([]);
+    progressOutputRef.current = [];
+    resetSeenOutputLines();
+    setScanEventStreamFailed(false);
+    setProgress(null);
+    setJobId(null);
+    setIsSimulated(false);
+
+    try {
+      const res = await fetch(`/api/scan/${encodeURIComponent(normalizedJobId)}?peek=1`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not attach to scan job");
+      if (Array.isArray(data.logs) && data.logs.length > 0) {
+        appendVisibleLogs(data.logs, true);
+      } else {
+        setOutput(fallbackScanOutput(data.progress || null, data.status));
+      }
+      if (data.progress) setProgress(data.progress);
+      setJobId(normalizedJobId);
+      setScanState(data.status === "done" || data.status === "missing" ? "done" : "running");
+    } catch (e: any) {
+      setOutput(prev => [...prev, `Error: ${e.message}`].slice(-MAX_TERMINAL_LINES));
+      setScanState("done");
+      setJobId(null);
+    }
+  };
+
   const resumeScan = async () => {
     if (!resumableScan?.jobId) return;
     closeJobStream();
@@ -197,6 +286,8 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     setOutput([`Resuming ${scanLabel(resumableScan.type)} scan...`, resumableScan.target ? `Target: ${resumableScan.target}` : ''].filter(Boolean));
     setProgressOutput([]);
     progressOutputRef.current = [];
+    resetSeenOutputLines();
+    setScanEventStreamFailed(false);
     setProgress(resumableScan);
     setJobId(null);
 
@@ -255,8 +346,10 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     setOutput([]);
     setProgressOutput([]);
     progressOutputRef.current = [];
+    resetSeenOutputLines();
     setJobId(null);
     setProgress(null);
+    setScanEventStreamFailed(false);
   };
 
   // Server-Sent Events keep scan output/progress live without polling.
@@ -264,6 +357,9 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     if (scanState === "running" && jobId && !isSimulated) {
       const source = new EventSource(`/api/scan/${encodeURIComponent(jobId)}/events`);
       eventSourceRef.current = source;
+      source.onopen = () => {
+        setScanEventStreamFailed(false);
+      };
 
       const handleJobEvent = (event: MessageEvent) => {
         try {
@@ -272,14 +368,10 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
             setProgress(data.progress);
           }
           if (Array.isArray(data.logs) && data.logs.length > 0) {
-            setOutput(prev => {
-              const next = appendScanOutput(prev, progressOutputRef.current, data.logs);
-              progressOutputRef.current = next.progressOutput;
-              setProgressOutput(next.progressOutput);
-              return next.output;
-            });
+            appendVisibleLogs(data.logs);
           }
           if (data.status === "done" || data.status === "missing") {
+            if (data.status === "done") ensureContextMenuOutput(data.progress || null, data.status);
             setScanState("done");
             setJobId(null);
             closeJobStream();
@@ -293,6 +385,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
       source.addEventListener("job", handleJobEvent);
       source.onerror = () => {
         console.error("Scan event stream disconnected; waiting for reconnect.");
+        setScanEventStreamFailed(true);
       };
     }
 
@@ -302,11 +395,44 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
   }, [scanState, jobId, isSimulated, refreshResumableScan]);
 
   useEffect(() => {
+    if (scanState !== "running" || !jobId || isSimulated || !scanEventStreamFailed) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/scan/${encodeURIComponent(jobId)}?peek=1`);
+        const data = await res.json();
+        if (!res.ok || stopped) return;
+        if (Array.isArray(data.logs) && data.logs.length > 0) {
+          appendVisibleLogs(data.logs);
+        }
+        if (data.progress) {
+          setProgress(data.progress);
+        }
+        if (data.status === "done" || data.status === "missing") {
+          if (data.status === "done") ensureContextMenuOutput(data.progress || null, data.status);
+          setScanState("done");
+          setJobId(null);
+          closeJobStream();
+          setTimeout(() => refreshResumableScan(), 250);
+        }
+      } catch (e) {
+        console.warn("Scan status polling failed:", e);
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 1000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [scanState, jobId, isSimulated, scanEventStreamFailed, refreshResumableScan]);
+
+  useEffect(() => {
     refreshResumableScan();
   }, [refreshResumableScan]);
 
   return (
-    <ScanContext.Provider value={{ scanState, output, progressOutput, jobId, progress, resumableScan, startScan, resumeScan, discardResumableScan, cancelScan, resetScan }}>
+    <ScanContext.Provider value={{ scanState, output, progressOutput, jobId, progress, resumableScan, startScan, attachScan, resumeScan, discardResumableScan, cancelScan, resetScan }}>
       {children}
     </ScanContext.Provider>
   );
