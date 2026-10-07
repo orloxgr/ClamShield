@@ -32,7 +32,7 @@ async function main() {
     .filter(name => !/^sha256sums\.txt$/i.test(name))
     .filter(name => {
       const lower = name.toLowerCase();
-      return lower === "latest.yml" || lower.endsWith(".exe") || lower.endsWith(".exe.blockmap");
+      return lower === "latest.yml" || lower.endsWith(".exe") || lower.endsWith(".exe.blockmap") || lower.endsWith(".zip");
     })
     .sort((a, b) => a.localeCompare(b));
 

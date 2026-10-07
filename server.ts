@@ -376,6 +376,7 @@ const defaultSettings = {
     yaraEngineRemindAfter: 0,
     yaraEngineLastCheck: "",
     yaraEngineLastCheckResult: "",
+    yaraEngineInstalledVersion: "",
     offloadToMemory: false,
     maxFileSize: 50, // MB
     scanArchives: true,
@@ -3195,6 +3196,16 @@ function parseBareVersion(value: any) {
     return match ? normalizeVersion(match[1]) : "0.0.0";
 }
 
+function extractBareVersion(value: any) {
+    const match = String(value || "").match(/(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)/);
+    return match ? normalizeVersion(match[1]) : "";
+}
+
+function getRememberedYaraEngineVersion(settings: any) {
+    const version = extractBareVersion(settings?.yaraEngineInstalledVersion);
+    return version && version !== "0.0.0" ? version : "";
+}
+
 async function getCurrentAppVersion() {
     let pkgVersion = process.env.npm_package_version || "1.0.96";
     const candidatePaths = Array.from(new Set([
@@ -3229,7 +3240,8 @@ async function getCurrentYaraEngineVersion(settings: any) {
         }
         const result = await runHiddenProcess(settings.yaraPath, ["--version"], { timeoutMs: 10000 });
         const output = `${result.stdout}\n${result.stderr}`.trim();
-        const value = parseBareVersion(output) || output.split(/\r?\n/).find(Boolean) || "Version unavailable";
+        const firstLine = output.split(/\r?\n/).map(line => line.trim()).find(Boolean) || "";
+        const value = extractBareVersion(output) || getRememberedYaraEngineVersion(settings) || firstLine || "Version unavailable";
         yaraVersionCache = {
             path: settings.yaraPath,
             mtimeMs: stat.mtimeMs,
@@ -3239,7 +3251,7 @@ async function getCurrentYaraEngineVersion(settings: any) {
         return value;
     } catch (e: any) {
         console.warn("Could not read YARA engine version:", e?.message || e);
-        return "Version unavailable";
+        return getRememberedYaraEngineVersion(settings) || "Version unavailable";
     }
 }
 
@@ -3626,16 +3638,19 @@ async function installYaraEngine(settings: any, log?: (message: string) => void)
         throw new Error("Downloaded YARA package did not contain yara64.exe.");
     }
 
-    const finalYaraPath = path.join(settings.yaraDir || path.dirname(settings.yaraPath), "yara64.exe");
-    await fs.copyFile(yaraExe, finalYaraPath);
-    if (yaracExe) {
-        await fs.copyFile(yaracExe, path.join(settings.yaraDir || path.dirname(settings.yaraPath), "yarac64.exe"));
-    }
+    const finalYaraDir = settings.yaraDir || path.dirname(settings.yaraPath) || defaultSettings.yaraDir;
+    const extractedYaraDir = path.dirname(yaraExe);
+    await adoptYaraEngineFolder(extractedYaraDir, finalYaraDir);
+    const finalYaraPath = path.join(finalYaraDir, path.basename(yaraExe));
+    const finalYaracPath = yaracExe ? path.join(finalYaraDir, path.basename(yaracExe)) : "";
     await fs.rm(tempDir, { recursive: true, force: true });
     await fs.unlink(zipPath).catch(() => {});
+    settings.yaraDir = finalYaraDir;
     settings.yaraPath = finalYaraPath;
+    settings.yaraEngineInstalledVersion = update.latestVersion;
     yaraVersionCache = null;
-    log?.(`YARA engine ready: ${finalYaraPath}`);
+    await saveConfig(settings, { keys: ["yaraDir", "yaraPath", "yaraEngineInstalledVersion"] });
+    log?.(`YARA engine ready: ${finalYaraPath}${finalYaracPath ? ` (compiler: ${finalYaracPath})` : ""}`);
     return { ...update, installedPath: finalYaraPath, installedVersion: await getCurrentYaraEngineVersion(settings) };
 }
 
@@ -4836,6 +4851,32 @@ async function adoptClamavEngineFolder(sourceDir: string) {
         await retryRemovePath(stagingDir).catch(() => {});
         if (e?.code === "EPERM" || e?.code === "EBUSY" || e?.code === "EACCES") {
             throw new Error(`Windows blocked replacing the ClamAV engine folder (${e.code}). Close ClamShield and any antivirus scan touching C:\\ProgramData\\ClamShield, then try again.`);
+        }
+        throw e;
+    }
+}
+
+async function adoptYaraEngineFolder(sourceDir: string, finalYaraDir: string) {
+    const normalizedFinalDir = path.resolve(finalYaraDir).toLowerCase();
+    const normalizedManagedDir = path.resolve(defaultSettings.yaraDir).toLowerCase();
+
+    if (normalizedFinalDir !== normalizedManagedDir) {
+        await fs.mkdir(finalYaraDir, { recursive: true });
+        await retryCopyDirectory(sourceDir, finalYaraDir);
+        return finalYaraDir;
+    }
+
+    const stagingDir = path.join(engineBaseDir, `yara-staging-${Date.now()}`);
+    try {
+        await retryRemovePath(stagingDir);
+        await retryCopyDirectory(sourceDir, stagingDir);
+        await retryRemovePath(finalYaraDir);
+        await fs.rename(stagingDir, finalYaraDir);
+        return finalYaraDir;
+    } catch (e: any) {
+        await retryRemovePath(stagingDir).catch(() => {});
+        if (e?.code === "EPERM" || e?.code === "EBUSY" || e?.code === "EACCES") {
+            throw new Error(`Windows blocked replacing the YARA engine folder (${e.code}). Close ClamShield and any antivirus scan touching C:\\ProgramData\\ClamShield, then try again.`);
         }
         throw e;
     }
