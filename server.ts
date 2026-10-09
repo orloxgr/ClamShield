@@ -156,6 +156,16 @@ const dnsProtectionProfiles = [
         category: "security"
     },
     {
+        id: "quad9-threat-blocking-ecs",
+        provider: "Quad9",
+        name: "Threat Blocking + ECS",
+        description: "Blocks malicious domains with Quad9 and uses EDNS Client Subnet for networks that need more accurate CDN routing.",
+        ipv4: ["9.9.9.11", "149.112.112.11"],
+        ipv6: ["2620:fe::11", "2620:fe::fe:11"],
+        websiteUrl: "https://docs.quad9.net/services/#99911-secure--ecs",
+        category: "security"
+    },
+    {
         id: "adguard-default",
         provider: "AdGuard",
         name: "Default Protection",
@@ -6517,6 +6527,16 @@ async function getScanResults() {
     return rows.map(mapScanResultRow);
 }
 
+async function getScanResultByOriginalPath(originalPath: string) {
+    await ensureAppStateReady();
+    const normalizedPath = normalizedStatePath(originalPath);
+    if (!normalizedPath) return null;
+    const row = getAppStateDb()
+        .prepare(`${scanResultSelectSql()} WHERE normalized_path = ? ORDER BY timestamp DESC, id DESC LIMIT 1`)
+        .get(normalizedPath);
+    return row ? mapScanResultRow(row) : null;
+}
+
 function addScanResultDateClause(clauses: string[], params: any[], date: any) {
     const dateValue = String(date || "").trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
@@ -7446,30 +7466,38 @@ async function saveResultsReminderState(state: any) {
 }
 
 async function addScanResult(result: any) {
-    const results = await getScanResults();
-    const originalPath = path.resolve(result.originalPath);
+    const rawOriginalPath = String(result?.originalPath || "").trim();
+    if (!rawOriginalPath) throw new Error("Scan result is missing the original path.");
+    const originalPath = path.resolve(rawOriginalPath);
     const source = String(result.source || "").toLowerCase();
-    const existing = results.find((item: any) =>
-        item.originalPath && path.resolve(item.originalPath).toLowerCase() === originalPath.toLowerCase()
-    );
-    if (existing) {
-        Object.assign(existing, {
+    const existing = await getScanResultByOriginalPath(originalPath);
+    const timestamp = Date.now();
+    const nextResult = existing
+        ? {
+            ...existing,
             ...result,
+            id: existing.id,
             originalPath,
-            timestamp: Date.now(),
-            resultsReminderAt: existing.resultsReminderAt || 0
-        });
-    } else {
-        const timestamp = Date.now();
-        results.unshift({
+            timestamp,
+            resultsReminderAt: source === "shield" ? timestamp : existing.resultsReminderAt || 0
+        }
+        : {
             id: timestamp.toString() + randomBytes(4).toString("hex"),
             timestamp,
-            originalPath,
             resultsReminderAt: source === "shield" ? timestamp : 0,
-            ...result
-        });
+            ...result,
+            originalPath
+        };
+
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    runAppStateTransaction(db, () => {
+        insertScanResultRow(db, nextResult, 0);
+        cleanupDuplicateScanResults(db);
+    });
+    if (scanResultsChangedHandler) {
+        Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify scan results change:", e));
     }
-    await saveScanResults(results.sort((a: any, b: any) => Number(b.timestamp) - Number(a.timestamp)));
 }
 
 async function removeScanResult(resultId: string) {
@@ -8392,7 +8420,7 @@ async function startServer() {
     app.post("/api/client-log", (req, res) => {
         const level = typeof req.body?.level === "string" ? req.body.level : "error";
         const message = req.body?.message || "Renderer log";
-        if (debugLoggingEnabled || level === "fatal") {
+        if (debugLoggingEnabled || level === "fatal" || level === "error") {
             writeAppLog("renderer.log", level, [message, req.body?.details || {}]);
         }
         res.json({ success: true });
@@ -12202,7 +12230,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.post("/api/pending-threats/:id/action", async (req, res) => {
         const threatId = req.params.id;
-        const action = req.body.action; // "quarantine" | "ignore"
+        const action = req.body.action; // "quarantine" | "exception" | "results"
         const index = pendingThreats.findIndex(t => t.id === threatId);
         
         if (index === -1) {
@@ -12210,36 +12238,39 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
         
         const threat = pendingThreats[index];
-        pendingThreats.splice(index, 1);
-        
-        if (action === "quarantine") {
-            try {
+
+        try {
+            if (action === "quarantine") {
                 const quarantined = await quarantineFile(threat.originalPath, threat.threatName, settings.quarantineDir);
                 const qMap = await getQuarantineMap();
                 qMap[quarantined.fileName] = quarantined.metadata;
                 await saveQuarantineMap(qMap);
-            } catch (e: any) {
-                console.error("Failed to quarantine from pending:", e.message);
+            } else if (action === "exception") {
+                const exceptions = await getExceptions();
+                if (!exceptions.includes(threat.originalPath)) {
+                    exceptions.push(threat.originalPath);
+                    await saveExceptions(exceptions);
+                }
+                await rememberExceptionDetection(threat);
+            } else if (action === "results") {
+                await addScanResult({
+                    source: "shield",
+                    scanType: "shield",
+                    target: threat.originalPath,
+                    originalPath: threat.originalPath,
+                    threatName: threat.threatName,
+                    engine: threat.engine || (String(threat.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV"),
+                    yaraRuleset: threat.engine === "YARA" ? normalizeYaraRuleset(settings.yaraRuleset) : undefined
+                });
+            } else {
+                return res.status(400).json({ success: false, error: "Invalid threat action." });
             }
-        } else if (action === "exception") {
-            const exceptions = await getExceptions();
-            if (!exceptions.includes(threat.originalPath)) {
-                exceptions.push(threat.originalPath);
-                await saveExceptions(exceptions);
-            }
-            await rememberExceptionDetection(threat);
-        } else if (action === "results") {
-            await addScanResult({
-                source: "shield",
-                scanType: "shield",
-                target: threat.originalPath,
-                originalPath: threat.originalPath,
-                threatName: threat.threatName,
-                engine: threat.engine || (String(threat.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV"),
-                yaraRuleset: threat.engine === "YARA" ? normalizeYaraRuleset(settings.yaraRuleset) : undefined
-            });
+            pendingThreats.splice(index, 1);
+            res.json({ success: true });
+        } catch (e: any) {
+            console.error("Failed to apply pending threat action:", e?.message || e);
+            res.status(400).json({ success: false, error: e?.message || "Threat action failed." });
         }
-        res.json({ success: true });
     });
 
     app.post("/api/empty-quarantine", async (req, res) => {
