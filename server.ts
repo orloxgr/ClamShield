@@ -2381,7 +2381,6 @@ class ScanSessionStore {
             SET status = 'scanning'
             WHERE job_id = ? AND normalized_path = ? AND status = 'pending'
         `);
-        this.compactCompletedFileLists();
     }
 
     save(progress: ScanProgress) {
@@ -2603,7 +2602,6 @@ class ScanSessionStore {
                   AND type NOT IN ('disk', 'folder', 'file')
             `).run(now, now);
             this.db.exec("COMMIT");
-            this.compactCompletedFileLists();
             return {
                 paused: Number(paused?.changes || 0),
                 completed: Number(completed?.changes || 0),
@@ -4071,6 +4069,8 @@ function getAppStateDb() {
             payload TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_history_date ON history(date);
+        CREATE INDEX IF NOT EXISTS idx_history_type_date ON history(type, date);
+        CREATE INDEX IF NOT EXISTS idx_history_threats_date ON history(threats_found, date);
         CREATE TABLE IF NOT EXISTS exceptions (
             normalized_path TEXT PRIMARY KEY,
             path TEXT NOT NULL,
@@ -4123,11 +4123,13 @@ function getAppStateDb() {
             virus_total_refinement_checked_at INTEGER,
             virus_total_refinement_stats TEXT,
             virus_total_refinement_report TEXT,
+            results_reminder_at INTEGER,
             payload TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_scan_results_timestamp ON scan_results(timestamp);
         CREATE INDEX IF NOT EXISTS idx_scan_results_normalized_path ON scan_results(normalized_path);
         CREATE INDEX IF NOT EXISTS idx_scan_results_vt_refinement_status ON scan_results(virus_total_refinement_status);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_source_reminder ON scan_results(source, results_reminder_at);
         CREATE TABLE IF NOT EXISTS scan_failed_files (
             id TEXT PRIMARY KEY,
             timestamp INTEGER NOT NULL,
@@ -4176,6 +4178,26 @@ function migrateScanResultsVirusTotalRefinementSchema(db: any) {
     addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_stats", "TEXT");
     addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_report", "TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_scan_results_vt_refinement_status ON scan_results(virus_total_refinement_status)");
+}
+
+function migrateScanResultsReminderSchema(db: any) {
+    addAppStateColumnIfMissing(db, "scan_results", "results_reminder_at", "INTEGER");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_scan_results_source_reminder ON scan_results(source, results_reminder_at)");
+    const rows = db.prepare("SELECT id, payload FROM scan_results WHERE results_reminder_at IS NULL").all();
+    const update = db.prepare("UPDATE scan_results SET results_reminder_at = ? WHERE id = ?");
+    runAppStateTransaction(db, () => {
+        for (const row of rows) {
+            const payload = asRecord(parseAppStateJson(row.payload, {}));
+            update.run(optionalNumber(payload.resultsReminderAt) || 0, row.id);
+        }
+    });
+}
+
+function migrateHistorySummarySchema(db: any) {
+    db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_history_type_date ON history(type, date);
+        CREATE INDEX IF NOT EXISTS idx_history_threats_date ON history(threats_found, date);
+    `);
 }
 
 function assertScanResultsVirusTotalRefinementSchema(db: any) {
@@ -4277,6 +4299,12 @@ async function runAppStateMigration(db: any, name: string, work: () => Promise<v
 async function migrateAppStateSchema(db: any) {
     await runAppStateMigration(db, "schema.scan_results.virus_total_refinement.v1", async () => {
         migrateScanResultsVirusTotalRefinementSchema(db);
+    });
+    await runAppStateMigration(db, "schema.scan_results.results_reminder_at.v1", async () => {
+        migrateScanResultsReminderSchema(db);
+    });
+    await runAppStateMigration(db, "schema.history.summary_indexes.v1", async () => {
+        migrateHistorySummarySchema(db);
     });
     assertScanResultsVirusTotalRefinementSchema(db);
 }
@@ -4444,14 +4472,15 @@ function insertScanResultRow(db: any, result: any, fallbackIndex = 0) {
     const id = String(payload.id || `${timestamp}-${fallbackIndex}-${randomBytes(3).toString("hex")}`);
     const originalPath = String(payload.originalPath || "");
     const virusTotalRefinement = asRecord(payload.virusTotalRefinement);
+    const resultsReminderAt = optionalNumber(payload.resultsReminderAt) || 0;
     db.prepare(`
         INSERT OR REPLACE INTO scan_results(
             id, timestamp, original_path, normalized_path, threat_name, engine, source, scan_type,
             target, yara_ruleset, md5, sha1, sha256, virus_total_checks,
             virus_total_refinement_status, virus_total_refinement_label, virus_total_refinement_severity,
             virus_total_refinement_message, virus_total_refinement_checked_at, virus_total_refinement_stats,
-            virus_total_refinement_report, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            virus_total_refinement_report, results_reminder_at, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         timestamp,
@@ -4474,7 +4503,8 @@ function insertScanResultRow(db: any, result: any, fallbackIndex = 0) {
         optionalNumber(virusTotalRefinement.checkedAt),
         appStateJson(asRecord(virusTotalRefinement.stats)),
         appStateJson(asRecord(virusTotalRefinement.report)),
-        appStateJson({ ...payload, id, timestamp })
+        resultsReminderAt,
+        appStateJson({ ...payload, id, timestamp, resultsReminderAt })
     );
 }
 
@@ -4560,6 +4590,21 @@ function cleanupDuplicateScanResults(db: any) {
             WHERE rn = 1
           )
     `).run();
+}
+
+function cleanupDuplicateScanResultsForPath(db: any, normalizedPath: string) {
+    if (!normalizedPath) return;
+    db.prepare(`
+        DELETE FROM scan_results
+        WHERE normalized_path = ?
+          AND rowid NOT IN (
+            SELECT rowid
+            FROM scan_results
+            WHERE normalized_path = ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+          )
+    `).run(normalizedPath, normalizedPath);
 }
 
 function escapeSqlLike(value: string) {
@@ -4664,7 +4709,9 @@ async function ensureAppStateReady() {
         appStateReadyPromise = migrateAppStateSchema(db).then(() => {
             return migrateLegacyAppState(db);
         }).then(() => {
-            cleanupDuplicateScanResults(db);
+            return runAppStateMigration(db, "data.scan_results.cleanup_duplicates.v1", async () => {
+                cleanupDuplicateScanResults(db);
+            });
         }).catch(e => {
             appStateReadyPromise = null;
             throw e;
@@ -5734,28 +5781,64 @@ async function manageStartup(settings: any) {
     }
 }
 
+function historySelectSql() {
+    return `SELECT id, date, type, target, result, threats_found, scanned_files, duration, action_taken, payload
+            FROM history`;
+}
+
+function mapHistoryRow(row: any) {
+    const payload = asRecord(parseAppStateJson(row.payload, {}));
+    return {
+        ...payload,
+        id: row.id,
+        date: row.date,
+        type: row.type || payload.type,
+        target: row.target || payload.target,
+        result: row.result === null || row.result === undefined ? payload.result : Number(row.result),
+        threatsFound: row.threats_found === null || row.threats_found === undefined ? payload.threatsFound : Number(row.threats_found),
+        scannedFiles: row.scanned_files === null || row.scanned_files === undefined ? payload.scannedFiles : Number(row.scanned_files),
+        duration: row.duration === null || row.duration === undefined ? payload.duration : Number(row.duration),
+        actionTaken: row.action_taken || payload.actionTaken
+    };
+}
+
+function getLatestHistoryRow(db: any, whereSql: string, params: any[] = []) {
+    const row = db.prepare(`${historySelectSql()} WHERE ${whereSql} ORDER BY date DESC LIMIT 1`).get(...params);
+    return row ? mapHistoryRow(row) : null;
+}
+
 async function getHistory() {
     await ensureAppStateReady();
-    const rows = getAppStateDb().prepare(`
-        SELECT id, date, type, target, result, threats_found, scanned_files, duration, action_taken, payload
-        FROM history
-        ORDER BY date DESC
-    `).all();
-    return rows.map((row: any) => {
-        const payload = asRecord(parseAppStateJson(row.payload, {}));
-        return {
-            ...payload,
-            id: row.id,
-            date: row.date,
-            type: row.type || payload.type,
-            target: row.target || payload.target,
-            result: row.result === null || row.result === undefined ? payload.result : Number(row.result),
-            threatsFound: row.threats_found === null || row.threats_found === undefined ? payload.threatsFound : Number(row.threats_found),
-            scannedFiles: row.scanned_files === null || row.scanned_files === undefined ? payload.scannedFiles : Number(row.scanned_files),
-            duration: row.duration === null || row.duration === undefined ? payload.duration : Number(row.duration),
-            actionTaken: row.action_taken || payload.actionTaken
-        };
-    });
+    const rows = getAppStateDb().prepare(`${historySelectSql()} ORDER BY date DESC`).all();
+    return rows.map(mapHistoryRow);
+}
+
+async function getDashboardHistorySummary() {
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    return {
+        lastScan: getLatestHistoryRow(db, "(type LIKE 'scan%' OR type LIKE 'scheduled-scan%')"),
+        lastUpdate: getLatestHistoryRow(db, "type = ?", ["update"]),
+        lastAppUpdateCheck: getLatestHistoryRow(db, "type = ?", ["app-update-check"]),
+        lastThreat: getLatestHistoryRow(db, "COALESCE(threats_found, 0) > 0"),
+        lastCloudCheck: getLatestHistoryRow(db, "type IN (?, ?, ?, ?, ?)", [
+            "virustotal-cloud-check",
+            "virustotal-auto-refine",
+            "virustotal-shield-check",
+            "virustotal-shield-upload",
+            "virustotal-results-upload"
+        ])
+    };
+}
+
+async function getLatestHistoryByType(type: string) {
+    await ensureAppStateReady();
+    return getLatestHistoryRow(getAppStateDb(), "type = ?", [type]);
+}
+
+async function getLatestSuccessfulClamAVUpdateHistory() {
+    await ensureAppStateReady();
+    return getLatestHistoryRow(getAppStateDb(), "type = ? AND result = 0 AND target LIKE ?", ["update", "%ClamAV%"]);
 }
 
 function getLocalDateRangeMs(dateValue: any) {
@@ -5789,26 +5872,11 @@ async function getHistoryPage(options: { limit?: number | null, offset?: number,
         ? null
         : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
     const rows = db.prepare(`
-        SELECT id, date, type, target, result, threats_found, scanned_files, duration, action_taken, payload
-        FROM history${whereSql}
+        ${historySelectSql()}${whereSql}
         ORDER BY date DESC${limit ? " LIMIT ? OFFSET ?" : ""}
     `).all(...params, ...(limit ? [limit, safeOffset] : []));
     return {
-        items: rows.map((row: any) => {
-            const payload = asRecord(parseAppStateJson(row.payload, {}));
-            return {
-                ...payload,
-                id: row.id,
-                date: row.date,
-                type: row.type || payload.type,
-                target: row.target || payload.target,
-                result: row.result === null || row.result === undefined ? payload.result : Number(row.result),
-                threatsFound: row.threats_found === null || row.threats_found === undefined ? payload.threatsFound : Number(row.threats_found),
-                scannedFiles: row.scanned_files === null || row.scanned_files === undefined ? payload.scannedFiles : Number(row.scanned_files),
-                duration: row.duration === null || row.duration === undefined ? payload.duration : Number(row.duration),
-                actionTaken: row.action_taken || payload.actionTaken
-            };
-        }),
+        items: rows.map(mapHistoryRow),
         total
     };
 }
@@ -6390,6 +6458,14 @@ async function getQuarantineItems(quarantineDir: string) {
     }
 }
 
+async function getQuarantineCount(quarantineDir: string) {
+    try {
+        return (await fs.readdir(quarantineDir)).length;
+    } catch {
+        return 0;
+    }
+}
+
 async function restoreQuarantinedFileAndAddException(settings: any, fileName: string) {
     const safeName = path.basename(fileName);
     if (safeName !== fileName) {
@@ -6453,7 +6529,7 @@ function scanResultSelectSql() {
                    virus_total_refinement_status, virus_total_refinement_label,
                    virus_total_refinement_severity, virus_total_refinement_message,
                    virus_total_refinement_checked_at, virus_total_refinement_stats,
-                   virus_total_refinement_report, payload
+                   virus_total_refinement_report, results_reminder_at, payload
             FROM scan_results`;
 }
 
@@ -6516,6 +6592,9 @@ function mapScanResultRow(row: any) {
         md5: row.md5 || payload.md5,
         sha1: row.sha1 || payload.sha1,
         sha256: row.sha256 || payload.sha256,
+        resultsReminderAt: row.results_reminder_at === null || row.results_reminder_at === undefined
+            ? Number(payload.resultsReminderAt || 0)
+            : Number(row.results_reminder_at || 0),
         virusTotalChecks: Object.keys(virusTotalChecks).length > 0 ? virusTotalChecks : payload.virusTotalChecks,
         virusTotalRefinement
     };
@@ -7452,6 +7531,20 @@ async function getResultsReminderState() {
     return state;
 }
 
+async function getResultsReminderSummary() {
+    await ensureAppStateReady();
+    const row = getAppStateDb().prepare(`
+        SELECT COUNT(*) AS count, MAX(results_reminder_at) AS latestTimestamp
+        FROM scan_results
+        WHERE LOWER(COALESCE(source, '')) = 'shield'
+          AND COALESCE(results_reminder_at, 0) > 0
+    `).get();
+    return {
+        count: Number(row?.count || 0),
+        latestTimestamp: Number(row?.latestTimestamp || 0)
+    };
+}
+
 async function saveResultsReminderState(state: any) {
     await ensureAppStateReady();
     const db = getAppStateDb();
@@ -7493,7 +7586,7 @@ async function addScanResult(result: any) {
     const db = getAppStateDb();
     runAppStateTransaction(db, () => {
         insertScanResultRow(db, nextResult, 0);
-        cleanupDuplicateScanResults(db);
+        cleanupDuplicateScanResultsForPath(db, normalizedStatePath(originalPath));
     });
     if (scanResultsChangedHandler) {
         Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify scan results change:", e));
@@ -8056,19 +8149,14 @@ async function startServer() {
         }
     };
     const getResultsReminderPayload = async () => {
-        const results = await getScanResults();
-        const reminderResults = results.filter((item: any) =>
-            String(item.source || "").toLowerCase() === "shield" &&
-            Number(item.resultsReminderAt || 0) > 0
-        );
-        if (reminderResults.length === 0) {
+        const reminder = await getResultsReminderSummary();
+        if (reminder.count === 0) {
             return { show: false, count: 0, latestTimestamp: 0 };
         }
-        const latestTimestamp = Math.max(...reminderResults.map((item: any) => Number(item.resultsReminderAt || 0)));
         const state = await getResultsReminderState();
         const now = Date.now();
-        const show = now >= Number(state.remindUntil || 0) && latestTimestamp > Number(state.forgottenUntil || 0);
-        return { show, count: reminderResults.length, latestTimestamp };
+        const show = now >= Number(state.remindUntil || 0) && reminder.latestTimestamp > Number(state.forgottenUntil || 0);
+        return { show, count: reminder.count, latestTimestamp: reminder.latestTimestamp };
     };
     let scheduleVirusTotalRefinement: (delayMs?: number) => void = () => {};
     const broadcastResultsReminder = async () => {
@@ -8867,24 +8955,13 @@ async function startServer() {
 
     app.get("/api/status", async (req, res) => {
         settings = await restoreInstalledSignatureProviderSettings(settings);
-        const history = await getHistory();
-        const lastScan = history.find((h: any) => h.type.startsWith("scan") || h.type.startsWith("scheduled-scan")) || null;
-        const lastUpdate = history.find((h: any) => h.type === "update") || null;
-        const lastAppUpdateCheck = history.find((h: any) => h.type === "app-update-check") || null;
-        const lastThreat = history.find((h: any) => h.threatsFound > 0) || null;
-        const lastCloudCheck = history.find((h: any) =>
-            h.type === "virustotal-cloud-check" ||
-            h.type === "virustotal-auto-refine" ||
-            h.type === "virustotal-shield-check" ||
-            h.type === "virustotal-shield-upload" ||
-            h.type === "virustotal-results-upload"
-        ) || null;
+        const historySummary = await getDashboardHistorySummary();
 
         let hasEngine = false;
         let hasDb = false;
         let hasYaraEngine = false;
         let hasYaraRules = false;
-        const quarantineItems = await getQuarantineItems(settings.quarantineDir);
+        const quarantineCount = await getQuarantineCount(settings.quarantineDir);
         try {
             hasEngine = await pathExists(settings.clamscanPath) && await pathExists(settings.freshclamPath);
             const dbFiles = await fs.readdir(settings.databaseDir);
@@ -8935,12 +9012,12 @@ async function startServer() {
                 yaraEngineLastCheckResult: settings.yaraEngineLastCheckResult || "",
                 lastClamAVUpdate: settings.lastClamAVUpdate || null,
                 lastClamAVUpdateResult: settings.lastClamAVUpdateResult || "",
-                lastAppUpdateCheck: settings.lastAppUpdateCheck || (lastAppUpdateCheck ? lastAppUpdateCheck.date : null),
-                lastScan: lastScan ? lastScan.date : null,
-                lastUpdate: lastUpdate ? lastUpdate.date : null,
-                lastThreat: lastThreat ? lastThreat.date : null,
-                lastCloudCheck: lastCloudCheck ? lastCloudCheck.date : null,
-                quarantineCount: quarantineItems.length,
+                lastAppUpdateCheck: settings.lastAppUpdateCheck || (historySummary.lastAppUpdateCheck ? historySummary.lastAppUpdateCheck.date : null),
+                lastScan: historySummary.lastScan ? historySummary.lastScan.date : null,
+                lastUpdate: historySummary.lastUpdate ? historySummary.lastUpdate.date : null,
+                lastThreat: historySummary.lastThreat ? historySummary.lastThreat.date : null,
+                lastCloudCheck: historySummary.lastCloudCheck ? historySummary.lastCloudCheck.date : null,
+                quarantineCount,
                 shieldCacheCount: shieldScanCache.count(),
                 shieldCacheBackend: shieldScanCache.type
             }
@@ -8985,8 +9062,7 @@ async function startServer() {
             try {
                 if (!isSimulated && settings.autoUpdateEnabled) {
                     const now = Date.now();
-                    const history = await getHistory();
-                    const lastClamAVHistory = history.find((h: any) => h.type === "update" && h.result === 0 && /ClamAV/.test(String(h.target || "")));
+                    const lastClamAVHistory = await getLatestSuccessfulClamAVUpdateHistory();
                     const lastClamAVTime = settings.lastClamAVUpdate
                         ? new Date(settings.lastClamAVUpdate).getTime()
                         : (lastClamAVHistory ? new Date(lastClamAVHistory.date).getTime() : 0);
@@ -9130,8 +9206,7 @@ async function startServer() {
 
         yaraAutoUpdateTimer = setTimeout(async () => {
             try {
-                const history = await getHistory();
-                const lastAttempt = history.find((h: any) => h.type === "yara-update");
+                const lastAttempt = await getLatestHistoryByType("yara-update");
                 const intervalMs = normalizePositiveNumber(settings.yaraUpdateIntervalHours, 168, 1, 8760) * 60 * 60 * 1000;
                 const shouldUpdate = !lastAttempt || Date.now() - new Date(lastAttempt.date).getTime() > intervalMs;
                 if (shouldUpdate) {
@@ -9175,8 +9250,7 @@ async function startServer() {
 
         appUpdateTimer = setTimeout(async () => {
             try {
-                const history = await getHistory();
-                const lastAttempt = history.find((h: any) => h.type === "app-update-check");
+                const lastAttempt = await getLatestHistoryByType("app-update-check");
                 const intervalMs = normalizePositiveNumber(settings.appUpdateIntervalHours, 168, 1, 8760) * 60 * 60 * 1000;
                 const shouldCheck = !lastAttempt || Date.now() - new Date(lastAttempt.date).getTime() > intervalMs;
                 if (shouldCheck) {
@@ -12137,12 +12211,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.post("/api/results-reminder/action", async (req, res) => {
         const action = req.body.action;
-        const results = await getScanResults();
-        const reminderResults = results.filter((item: any) =>
-            String(item.source || "").toLowerCase() === "shield" &&
-            Number(item.resultsReminderAt || 0) > 0
-        );
-        const latestTimestamp = reminderResults.length ? Math.max(...reminderResults.map((item: any) => Number(item.resultsReminderAt || 0))) : 0;
+        const reminder = await getResultsReminderSummary();
+        const latestTimestamp = reminder.latestTimestamp;
         const state = await getResultsReminderState();
         if (action === "remind-10") {
             state.remindUntil = Date.now() + 10 * 60 * 1000;
