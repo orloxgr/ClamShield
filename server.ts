@@ -4129,7 +4129,6 @@ function getAppStateDb() {
         CREATE INDEX IF NOT EXISTS idx_scan_results_timestamp ON scan_results(timestamp);
         CREATE INDEX IF NOT EXISTS idx_scan_results_normalized_path ON scan_results(normalized_path);
         CREATE INDEX IF NOT EXISTS idx_scan_results_vt_refinement_status ON scan_results(virus_total_refinement_status);
-        CREATE INDEX IF NOT EXISTS idx_scan_results_source_reminder ON scan_results(source, results_reminder_at);
         CREATE TABLE IF NOT EXISTS scan_failed_files (
             id TEXT PRIMARY KEY,
             timestamp INTEGER NOT NULL,
