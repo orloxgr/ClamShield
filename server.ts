@@ -629,6 +629,8 @@ const clamavEngineUpdateLoggers = new Set<(message: string) => void>();
 let yaraEngineUpdateInstallPromise: Promise<any> | null = null;
 const yaraEngineUpdateLoggers = new Set<(message: string) => void>();
 let freshclamUpdateInProgress = false;
+// A FreshClam run that never exits would hold freshclamUpdateInProgress forever and block every later update.
+const freshclamRunTimeoutMs = 30 * 60 * 1000;
 let freshclamUpdateJobId: string | null = null;
 let freshclamUpdateTarget: "clamav" | "securiteinfo" | null = null;
 let saneSecurityUpdateInProgress = false;
@@ -4841,6 +4843,7 @@ async function prepareFreshclamConfig(settings: any, options: { includeOfficial?
 async function runFreshclamWithConfig(settings: any, preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>>, options: {
     onLine?: (line: string) => void;
     onProcess?: (child: any) => void;
+    timeoutMs?: number;
 } = {}) {
     if (!await pathExists(settings.freshclamPath)) {
         throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
@@ -4867,10 +4870,20 @@ async function runFreshclamWithConfig(settings: any, preparedConfig: Awaited<Ret
         };
         child.stdout.on("data", handleOutput);
         child.stderr.on("data", handleOutput);
+        const timeoutMs = options.timeoutMs || 0;
+        const timer = timeoutMs > 0 ? setTimeout(() => {
+            settle(() => {
+                options.onLine?.(`FreshClam did not finish within ${Math.round(timeoutMs / 60000)} minutes and was stopped.`);
+                try { child.kill(); } catch {}
+                resolve(-2);
+            });
+        }, timeoutMs) : null;
         child.on("error", (err: any) => {
+            if (timer) clearTimeout(timer);
             settle(() => reject(new Error(preparedConfig.redact(err.message || String(err)))));
         });
         child.on("close", code => {
+            if (timer) clearTimeout(timer);
             settle(() => resolve(code ?? 0));
         });
     });
@@ -9190,44 +9203,46 @@ async function startServer() {
                             includeOfficial: true,
                             includeSecuriteInfo: false
                         });
-                        const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
+                        // Run through runFreshclamWithConfig like the manual update does. Spawning FreshClam
+                        // here without reading its output left the process stalled on Windows (seen live:
+                        // established connection, 0 bytes received, 0 CPU for over an hour).
                         freshclamUpdateInProgress = true;
-                        const child = spawn(settings.freshclamPath, args, { windowsHide: true });
-                        
-                        child.on("error", (err: any) => {
-                            freshclamUpdateInProgress = false;
-                            console.error("Auto-update process error:", preparedConfig.redact(err.message));
-                            preparedConfig.cleanup().catch(() => {});
-                        });
-
-                        child.on("close", async (code) => {
-                            freshclamUpdateInProgress = false;
-                            await preparedConfig.cleanup();
-                            if (code === 0) await reloadClamdDatabases(settings);
-                            settings = {
-                                ...settings,
-                                lastClamAVUpdate: code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
-                                lastClamAVUpdateResult: code === 0 ? "Updated" : "Update failed"
-                            };
-                            await saveConfig(settings);
-                            await addHistory({
-                                type: "update",
-                                target: "ClamAV (Auto)",
-                                result: code === 0 ? 0 : 1,
-                                threatsFound: 0,
-                                scannedFiles: 0,
-                                duration: 1, 
-                                actionTaken: code === 0 ? "Updated" : "Failed"
+                        let code = 1;
+                        try {
+                            code = await runFreshclamWithConfig(settings, preparedConfig, {
+                                onLine: line => console.log(`ClamAV auto-update: ${line}`),
+                                timeoutMs: freshclamRunTimeoutMs
                             });
-                            if (saneDue) {
-                                try {
-                                    await startSaneSecurityUpdate("automatic");
-                                } catch (e: any) {
-                                    console.error("Could not start automatic SaneSecurity update:", e?.message || e);
-                                }
-                            }
-                            console.log(`Auto-update finished with code ${code}`);
+                        } catch (e: any) {
+                            console.error("Auto-update process error:", preparedConfig.redact(e?.message || String(e)));
+                        } finally {
+                            freshclamUpdateInProgress = false;
+                            await preparedConfig.cleanup().catch(() => {});
+                        }
+                        if (code === 0) await reloadClamdDatabases(settings);
+                        settings = {
+                            ...settings,
+                            lastClamAVUpdate: code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
+                            lastClamAVUpdateResult: code === 0 ? "Updated" : "Update failed"
+                        };
+                        await saveConfig(settings);
+                        await addHistory({
+                            type: "update",
+                            target: "ClamAV (Auto)",
+                            result: code === 0 ? 0 : 1,
+                            threatsFound: 0,
+                            scannedFiles: 0,
+                            duration: 1, 
+                            actionTaken: code === 0 ? "Updated" : "Failed"
                         });
+                        if (saneDue) {
+                            try {
+                                await startSaneSecurityUpdate("automatic");
+                            } catch (e: any) {
+                                console.error("Could not start automatic SaneSecurity update:", e?.message || e);
+                            }
+                        }
+                        console.log(`Auto-update finished with code ${code}`);
                     } else if (saneDue) {
                         try {
                             await startSaneSecurityUpdate("automatic");
@@ -11389,8 +11404,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const child = spawn(settings.freshclamPath, args, { windowsHide: true });
             activeJobs[jobId].process = child;
             let processStartFailed = false;
-            
+            let timedOut = false;
+            const runTimer = setTimeout(() => {
+                timedOut = true;
+                appendJobLogs(jobId, [`FreshClam did not finish within ${Math.round(freshclamRunTimeoutMs / 60000)} minutes and was stopped.`]);
+                try { child.kill(); } catch {}
+            }, freshclamRunTimeoutMs);
+
             child.on("error", (err: any) => {
+                clearTimeout(runTimer);
                 processStartFailed = true;
                 if (freshclamUpdateJobId === jobId) {
                     freshclamUpdateInProgress = false;
@@ -11425,7 +11447,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (lines.length) appendJobLogs(jobId, lines);
             });
             
-            child.on("close", async (code) => {
+            child.on("close", async (exitCode) => {
+                clearTimeout(runTimer);
+                const code = timedOut ? -2 : exitCode;
                 if (freshclamUpdateJobId === jobId) {
                     freshclamUpdateInProgress = false;
                     freshclamUpdateJobId = null;
