@@ -115,6 +115,13 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
     }
   }, [status?.settings?.eulaAccepted]);
 
+  // The background updater can install the signatures while this screen is open; re-check so setup moves on.
+  useEffect(() => {
+    if (!eulaAccepted || !needsDb || installing || updating || updatingYara) return;
+    const iv = setInterval(onComplete, 5000);
+    return () => clearInterval(iv);
+  }, [eulaAccepted, needsDb, installing, updating, updatingYara]);
+
   if (eulaAccepted && !needsEngine && !needsDb && !needsYara) return null;
 
   const acceptEula = async () => {

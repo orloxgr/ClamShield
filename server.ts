@@ -9203,14 +9203,17 @@ async function startServer() {
                             includeOfficial: true,
                             includeSecuriteInfo: false
                         });
-                        // Run through runFreshclamWithConfig like the manual update does. Spawning FreshClam
-                        // here without reading its output left the process stalled on Windows (seen live:
-                        // established connection, 0 bytes received, 0 CPU for over an hour).
+                        // Run through runFreshclamWithConfig like the manual update does. FreshClam on Windows
+                        // writes its progress bar to stdout even when piped (about 3.5 MB per full update);
+                        // left unread, the pipe fills and FreshClam blocks forever on the write.
                         freshclamUpdateInProgress = true;
                         let code = 1;
                         try {
                             code = await runFreshclamWithConfig(settings, preparedConfig, {
-                                onLine: line => console.log(`ClamAV auto-update: ${line}`),
+                                onLine: line => {
+                                    if (/^Time:\s/.test(line)) return; // progress bar redraws
+                                    console.log(`ClamAV auto-update: ${line}`);
+                                },
                                 timeoutMs: freshclamRunTimeoutMs
                             });
                         } catch (e: any) {
