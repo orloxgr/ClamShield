@@ -3238,6 +3238,7 @@ async function getCurrentAppVersion() {
 async function getCurrentYaraEngineVersion(settings: any) {
     if (!settings.yaraPath || !existsSync(settings.yaraPath)) return "Not installed";
     try {
+        await ensureYaraRuntime(settings, settings.yaraPath);
         const stat = await fs.stat(settings.yaraPath);
         const now = Date.now();
         if (
@@ -3658,6 +3659,7 @@ async function installYaraEngine(settings: any, log?: (message: string) => void)
     settings.yaraDir = finalYaraDir;
     settings.yaraPath = finalYaraPath;
     settings.yaraEngineInstalledVersion = update.latestVersion;
+    await ensureYaraRuntime(settings, finalYaraPath);
     yaraVersionCache = null;
     await saveConfig(settings, { keys: ["yaraDir", "yaraPath", "yaraEngineInstalledVersion"] });
     log?.(`YARA engine ready: ${finalYaraPath}${finalYaracPath ? ` (compiler: ${finalYaracPath})` : ""}`);
@@ -3682,8 +3684,32 @@ async function queueYaraEngineUpdate(settings: any, log?: (message: string) => v
     }
 }
 
+// The official YARA Windows build links against the Visual C++ runtime (VCRUNTIME140.dll), which a
+// fresh Windows install does not have. Without it yara64.exe exits with 0xC0000135 (DLL not found)
+// before doing anything. The ClamAV engine ships that runtime next to its own binaries, so copy it
+// next to YARA (app-local deployment) when Windows doesn't already provide it.
+async function ensureYaraRuntime(settings: any, yaraPath: string) {
+    if (process.platform !== "win32" || !yaraPath) return;
+    const target = path.join(path.dirname(yaraPath), "vcruntime140.dll");
+    if (existsSync(target)) return;
+    if (existsSync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "vcruntime140.dll"))) return;
+    const source = path.join(settings.clamavDir || path.dirname(settings.freshclamPath || ""), "vcruntime140.dll");
+    if (!existsSync(source)) {
+        console.warn(`YARA needs vcruntime140.dll, but it was not found in Windows or at ${source}.`);
+        return;
+    }
+    try {
+        await fs.copyFile(source, target);
+        yaraVersionCache = null;
+        console.log(`Copied vcruntime140.dll next to YARA from ${source}.`);
+    } catch (e: any) {
+        console.warn("Could not copy vcruntime140.dll next to YARA:", e?.message || e);
+    }
+}
+
 async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
     if (settings.yaraPath && existsSync(settings.yaraPath)) {
+        await ensureYaraRuntime(settings, settings.yaraPath);
         log?.(`YARA engine found: ${settings.yaraPath}`);
         return settings.yaraPath;
     }
@@ -7996,6 +8022,15 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     });
     await fs.unlink(listPath).catch(() => {});
     if (job.process === child) job.process = null;
+    // yara exits 0 or 1 on its own. Anything else (for example 0xC0000135 when a DLL is missing) means
+    // it never scanned, and reporting "YARA matches: 0" would read as a clean result.
+    if (exitCode !== 0 && exitCode !== 1 && exitCode !== -1 && exitCode !== -2) {
+        const hex = `0x${(exitCode >>> 0).toString(16).toUpperCase()}`;
+        const reason = (exitCode >>> 0) === 0xC0000135 ? " A required DLL is missing (usually the Microsoft Visual C++ runtime)." : "";
+        options.appendJobLogs(options.jobId, [`YARA did not run (exit code ${hex}).${reason} ClamAV scan results are still valid.`]);
+        console.warn(`YARA exited with ${hex} without scanning.`);
+        return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
+    }
     if (openErrorCount > 0) {
         options.appendJobLogs(options.jobId, [
             `YARA skipped ${openErrorCount} file${openErrorCount === 1 ? "" : "s"} it could not open. ClamAV scan results are still valid.`
