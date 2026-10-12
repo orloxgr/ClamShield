@@ -4775,10 +4775,36 @@ async function cleanupStaleFreshclamSecretFiles() {
     }
 }
 
+const windowsRootStorePrimedHosts = new Set<string>();
+
+// FreshClam verifies TLS against the certificates already in the Windows root store, but it never
+// triggers Windows' automatic root certificate download. A fresh Windows install does not have the
+// root behind database.clamav.net yet (GlobalSign Root CA), so every update fails with
+// "SSL peer certificate or SSH remote key was not OK". One native Windows HTTPS request to the same
+// host makes Windows fetch the missing root, after which FreshClam succeeds.
+async function primeWindowsRootStore(hosts: string[]) {
+    if (process.platform !== "win32") return;
+    for (const host of hosts) {
+        if (windowsRootStorePrimedHosts.has(host)) continue;
+        // An HTTP error response still means the TLS handshake (and the root fetch) succeeded.
+        const script = `try { Invoke-WebRequest -Uri 'https://${host}/' -UseBasicParsing -Method Head -TimeoutSec 15 | Out-Null; 'ok' } catch { if ($_.Exception.Response) { 'ok' } else { 'fail' } }`;
+        try {
+            const result = await runHiddenProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeoutMs: 30000 });
+            if (/\bok\b/.test(result.stdout)) windowsRootStorePrimedHosts.add(host);
+        } catch (e: any) {
+            console.warn(`Could not prime the Windows root store for ${host}:`, e?.message || e);
+        }
+    }
+}
+
 async function prepareFreshclamConfig(settings: any, options: { includeOfficial?: boolean, includeSecuriteInfo?: boolean } = {}) {
     const includeOfficial = options.includeOfficial !== false;
     const includeSecuriteInfo = options.includeSecuriteInfo === true;
     await ensureFreshclamConfig(settings);
+    // FreshClam always contacts the official mirror, even for SecuriteInfo-only runs.
+    await primeWindowsRootStore(includeSecuriteInfo && settings.securiteInfoEnabled === true
+        ? ["database.clamav.net", new URL(securiteInfoBaseUrl).host]
+        : ["database.clamav.net"]);
     if (!includeSecuriteInfo || settings.securiteInfoEnabled !== true) {
         if (includeOfficial) {
             return {
