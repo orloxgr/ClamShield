@@ -629,6 +629,8 @@ const clamavEngineUpdateLoggers = new Set<(message: string) => void>();
 let yaraEngineUpdateInstallPromise: Promise<any> | null = null;
 const yaraEngineUpdateLoggers = new Set<(message: string) => void>();
 let freshclamUpdateInProgress = false;
+// A FreshClam run that never exits would hold freshclamUpdateInProgress forever and block every later update.
+const freshclamRunTimeoutMs = 30 * 60 * 1000;
 let freshclamUpdateJobId: string | null = null;
 let freshclamUpdateTarget: "clamav" | "securiteinfo" | null = null;
 let saneSecurityUpdateInProgress = false;
@@ -3236,6 +3238,7 @@ async function getCurrentAppVersion() {
 async function getCurrentYaraEngineVersion(settings: any) {
     if (!settings.yaraPath || !existsSync(settings.yaraPath)) return "Not installed";
     try {
+        await ensureYaraRuntime(settings.yaraPath);
         const stat = await fs.stat(settings.yaraPath);
         const now = Date.now();
         if (
@@ -3656,6 +3659,7 @@ async function installYaraEngine(settings: any, log?: (message: string) => void)
     settings.yaraDir = finalYaraDir;
     settings.yaraPath = finalYaraPath;
     settings.yaraEngineInstalledVersion = update.latestVersion;
+    await ensureYaraRuntime(finalYaraPath);
     yaraVersionCache = null;
     await saveConfig(settings, { keys: ["yaraDir", "yaraPath", "yaraEngineInstalledVersion"] });
     log?.(`YARA engine ready: ${finalYaraPath}${finalYaracPath ? ` (compiler: ${finalYaracPath})` : ""}`);
@@ -3680,8 +3684,32 @@ async function queueYaraEngineUpdate(settings: any, log?: (message: string) => v
     }
 }
 
+// The official YARA Windows build links against the Visual C++ runtime (VCRUNTIME140.dll), which a
+// fresh Windows install does not have. Without it yara64.exe exits with 0xC0000135 (DLL not found)
+// before doing anything. ClamShield's managed ClamAV engine ships that runtime next to its own
+// binaries, so copy it next to YARA (app-local deployment) when Windows doesn't already provide it.
+async function ensureYaraRuntime(yaraPath: string) {
+    if (process.platform !== "win32" || !yaraPath) return;
+    const target = path.join(path.dirname(yaraPath), "vcruntime140.dll");
+    if (existsSync(target)) return;
+    if (existsSync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "vcruntime140.dll"))) return;
+    const source = path.join(defaultSettings.clamavDir, "vcruntime140.dll");
+    if (!existsSync(source)) {
+        console.warn(`YARA needs vcruntime140.dll, but it was not found in Windows or in ClamShield's managed ClamAV engine at ${source}.`);
+        return;
+    }
+    try {
+        await fs.copyFile(source, target);
+        yaraVersionCache = null;
+        console.log(`Copied vcruntime140.dll next to YARA from ${source}.`);
+    } catch (e: any) {
+        console.warn("Could not copy vcruntime140.dll next to YARA:", e?.message || e);
+    }
+}
+
 async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
     if (settings.yaraPath && existsSync(settings.yaraPath)) {
+        await ensureYaraRuntime(settings.yaraPath);
         log?.(`YARA engine found: ${settings.yaraPath}`);
         return settings.yaraPath;
     }
@@ -4168,6 +4196,12 @@ function addAppStateColumnIfMissing(db: any, tableName: string, columnName: stri
     }
 }
 
+function hasAppStateColumn(db: any, tableName: string, columnName: string) {
+    return db.prepare(`PRAGMA table_info(${tableName})`)
+        .all()
+        .some((row: any) => String(row.name) === columnName);
+}
+
 function migrateScanResultsVirusTotalRefinementSchema(db: any) {
     addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_status", "TEXT");
     addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_label", "TEXT");
@@ -4192,6 +4226,14 @@ function migrateScanResultsReminderSchema(db: any) {
     });
 }
 
+function ensureScanResultsReminderSchema(db: any) {
+    if (!hasAppStateColumn(db, "scan_results", "results_reminder_at")) {
+        migrateScanResultsReminderSchema(db);
+        return;
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_scan_results_source_reminder ON scan_results(source, results_reminder_at)");
+}
+
 function migrateHistorySummarySchema(db: any) {
     db.exec(`
         CREATE INDEX IF NOT EXISTS idx_history_type_date ON history(type, date);
@@ -4213,6 +4255,12 @@ function assertScanResultsVirusTotalRefinementSchema(db: any) {
     const missing = required.filter(column => !columns.has(column));
     if (missing.length > 0) {
         throw new Error(`App state schema migration incomplete. Missing scan_results column(s): ${missing.join(", ")}`);
+    }
+}
+
+function assertScanResultsReminderSchema(db: any) {
+    if (!hasAppStateColumn(db, "scan_results", "results_reminder_at")) {
+        throw new Error("App state schema migration incomplete. Missing scan_results column: results_reminder_at");
     }
 }
 
@@ -4302,10 +4350,12 @@ async function migrateAppStateSchema(db: any) {
     await runAppStateMigration(db, "schema.scan_results.results_reminder_at.v1", async () => {
         migrateScanResultsReminderSchema(db);
     });
+    ensureScanResultsReminderSchema(db);
     await runAppStateMigration(db, "schema.history.summary_indexes.v1", async () => {
         migrateHistorySummarySchema(db);
     });
     assertScanResultsVirusTotalRefinementSchema(db);
+    assertScanResultsReminderSchema(db);
 }
 
 const auditedSettingsKeys = new Set([
@@ -4751,10 +4801,36 @@ async function cleanupStaleFreshclamSecretFiles() {
     }
 }
 
+const windowsRootStorePrimedHosts = new Set<string>();
+
+// FreshClam verifies TLS against the certificates already in the Windows root store, but it never
+// triggers Windows' automatic root certificate download. A fresh Windows install does not have the
+// root behind database.clamav.net yet (GlobalSign Root CA), so every update fails with
+// "SSL peer certificate or SSH remote key was not OK". One native Windows HTTPS request to the same
+// host makes Windows fetch the missing root, after which FreshClam succeeds.
+async function primeWindowsRootStore(hosts: string[]) {
+    if (process.platform !== "win32") return;
+    for (const host of hosts) {
+        if (windowsRootStorePrimedHosts.has(host)) continue;
+        // An HTTP error response still means the TLS handshake (and the root fetch) succeeded.
+        const script = `try { Invoke-WebRequest -Uri 'https://${host}/' -UseBasicParsing -Method Head -TimeoutSec 15 | Out-Null; 'ok' } catch { if ($_.Exception.Response) { 'ok' } else { 'fail' } }`;
+        try {
+            const result = await runHiddenProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeoutMs: 30000 });
+            if (/\bok\b/.test(result.stdout)) windowsRootStorePrimedHosts.add(host);
+        } catch (e: any) {
+            console.warn(`Could not prime the Windows root store for ${host}:`, e?.message || e);
+        }
+    }
+}
+
 async function prepareFreshclamConfig(settings: any, options: { includeOfficial?: boolean, includeSecuriteInfo?: boolean } = {}) {
     const includeOfficial = options.includeOfficial !== false;
     const includeSecuriteInfo = options.includeSecuriteInfo === true;
     await ensureFreshclamConfig(settings);
+    // FreshClam always contacts the official mirror, even for SecuriteInfo-only runs.
+    await primeWindowsRootStore(includeSecuriteInfo && settings.securiteInfoEnabled === true
+        ? ["database.clamav.net", new URL(securiteInfoBaseUrl).host]
+        : ["database.clamav.net"]);
     if (!includeSecuriteInfo || settings.securiteInfoEnabled !== true) {
         if (includeOfficial) {
             return {
@@ -4819,6 +4895,7 @@ async function prepareFreshclamConfig(settings: any, options: { includeOfficial?
 async function runFreshclamWithConfig(settings: any, preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>>, options: {
     onLine?: (line: string) => void;
     onProcess?: (child: any) => void;
+    timeoutMs?: number;
 } = {}) {
     if (!await pathExists(settings.freshclamPath)) {
         throw new Error(`FreshClam executable was not found at ${settings.freshclamPath}. Reinstall the ClamAV engine from the setup wizard.`);
@@ -4845,10 +4922,20 @@ async function runFreshclamWithConfig(settings: any, preparedConfig: Awaited<Ret
         };
         child.stdout.on("data", handleOutput);
         child.stderr.on("data", handleOutput);
+        const timeoutMs = options.timeoutMs || 0;
+        const timer = timeoutMs > 0 ? setTimeout(() => {
+            settle(() => {
+                options.onLine?.(`FreshClam did not finish within ${Math.round(timeoutMs / 60000)} minutes and was stopped.`);
+                try { child.kill(); } catch {}
+                resolve(-2);
+            });
+        }, timeoutMs) : null;
         child.on("error", (err: any) => {
+            if (timer) clearTimeout(timer);
             settle(() => reject(new Error(preparedConfig.redact(err.message || String(err)))));
         });
         child.on("close", code => {
+            if (timer) clearTimeout(timer);
             settle(() => resolve(code ?? 0));
         });
     });
@@ -5576,6 +5663,77 @@ async function loadInstallerOptions() {
     }
 }
 
+function getRuntimeDefaultSettings(installerConsent: any, installerOptions: any) {
+    return installerConsent
+        ? {
+            ...defaultSettings,
+            ...(installerOptions || {}),
+            eulaAccepted: true,
+            eulaVersion: legalNoticeVersion,
+            eulaAcceptedAt: installerConsent.acceptedAt
+        }
+        : { ...defaultSettings, ...(installerOptions || {}) };
+}
+
+function applyLoadedSettingsRuntime(settings: any) {
+    currentLogsDir = settings.logsDir || defaultLogsDir;
+    debugLoggingEnabled = settings.enableDebugLog === true;
+    return settings;
+}
+
+function parseSettingsRows(rows: any[]) {
+    return rows.reduce((settings: any, row: any) => {
+        settings[row.key] = parseAppStateJson(row.value, null);
+        return settings;
+    }, {});
+}
+
+async function buildLoadedSettingsFromRows(rows: any[], installerConsent: any, installerOptions: any, recoverInstalledProviders = true) {
+    if (!rows.length) {
+        return applyLoadedSettingsRuntime(getRuntimeDefaultSettings(installerConsent, installerOptions));
+    }
+    const parsed = parseSettingsRows(rows);
+    const parsedWithInstallerOptions = {
+        ...parsed,
+        ...(installerOptions || {})
+    };
+    const actionOnDetection = normalizeShieldDetectionAction(parsedWithInstallerOptions.actionOnDetection || defaultSettings.actionOnDetection);
+    const scanDetectionAction = parsedWithInstallerOptions.scanDetectionAction || defaultSettings.scanDetectionAction;
+    const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
+    const eulaAccepted = settingsConsentAccepted || Boolean(installerConsent);
+    const loadedSettings = {
+        ...defaultSettings,
+        ...parsedWithInstallerOptions,
+        ...normalizeScheduledScanSettings(parsedWithInstallerOptions),
+        actionOnDetection,
+        scanDetectionAction,
+        securiteInfoPlan: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan),
+        securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsedWithInstallerOptions.securiteInfoIncludePua),
+        eulaAccepted,
+        eulaVersion: eulaAccepted ? legalNoticeVersion : "",
+        eulaAcceptedAt: settingsConsentAccepted
+            ? String(parsedWithInstallerOptions.eulaAcceptedAt || "")
+            : String(installerConsent?.acceptedAt || "")
+    };
+    const recoveredSettings = recoverInstalledProviders
+        ? await restoreInstalledSignatureProviderSettings(loadedSettings)
+        : loadedSettings;
+    return applyLoadedSettingsRuntime(recoveredSettings);
+}
+
+async function loadPersistedSettingsBestEffort(installerConsent: any, installerOptions: any) {
+    try {
+        const db = getAppStateDb();
+        await recoverLegacySettingsIfSettingsEmpty(db);
+        const rows = db.prepare("SELECT key, value FROM settings").all();
+        if (!rows.length) return null;
+        return await buildLoadedSettingsFromRows(rows, installerConsent, installerOptions, false);
+    } catch (e: any) {
+        console.warn("Could not load persisted settings after app state migration failure:", e?.message || e);
+        return null;
+    }
+}
+
 async function loadConfig() {
     const installerConsent = await loadInstallerConsent();
     const installerOptions = await loadInstallerOptions();
@@ -5583,63 +5741,15 @@ async function loadConfig() {
     try {
         await ensureAppStateReady();
         const rows = getAppStateDb().prepare("SELECT key, value FROM settings").all();
-        if (!rows.length) {
-            const runtimeSettings = installerConsent
-                ? {
-                    ...defaultSettings,
-                    ...(installerOptions || {}),
-                    eulaAccepted: true,
-                    eulaVersion: legalNoticeVersion,
-                    eulaAcceptedAt: installerConsent.acceptedAt
-                }
-                : { ...defaultSettings, ...(installerOptions || {}) };
-            currentLogsDir = runtimeSettings.logsDir || defaultLogsDir;
-            debugLoggingEnabled = runtimeSettings.enableDebugLog === true;
-            return runtimeSettings;
-        }
-        const parsed = rows.reduce((settings: any, row: any) => {
-            settings[row.key] = parseAppStateJson(row.value, null);
-            return settings;
-        }, {});
-        const parsedWithInstallerOptions = {
-            ...parsed,
-            ...(installerOptions || {})
-        };
-        const actionOnDetection = normalizeShieldDetectionAction(parsedWithInstallerOptions.actionOnDetection || defaultSettings.actionOnDetection);
-        const scanDetectionAction = parsedWithInstallerOptions.scanDetectionAction || defaultSettings.scanDetectionAction;
-        const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
-        const eulaAccepted = settingsConsentAccepted || Boolean(installerConsent);
-        const loadedSettings = {
-            ...defaultSettings,
-            ...parsedWithInstallerOptions,
-            ...normalizeScheduledScanSettings(parsedWithInstallerOptions),
-            actionOnDetection,
-            scanDetectionAction,
-            securiteInfoPlan: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan),
-            securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsedWithInstallerOptions.securiteInfoIncludePua),
-            eulaAccepted,
-            eulaVersion: eulaAccepted ? legalNoticeVersion : "",
-            eulaAcceptedAt: settingsConsentAccepted
-                ? String(parsedWithInstallerOptions.eulaAcceptedAt || "")
-                : String(installerConsent?.acceptedAt || "")
-        };
-        const recoveredSettings = await restoreInstalledSignatureProviderSettings(loadedSettings);
-        currentLogsDir = recoveredSettings.logsDir || defaultLogsDir;
-        debugLoggingEnabled = recoveredSettings.enableDebugLog === true;
-        return recoveredSettings;
+        return await buildLoadedSettingsFromRows(rows, installerConsent, installerOptions);
     } catch (e: any) {
+        const persistedSettings = await loadPersistedSettingsBestEffort(installerConsent, installerOptions);
+        if (persistedSettings) {
+            console.warn("App state migration failed; loaded persisted settings without running optional recovery:", e?.message || e);
+            return persistedSettings;
+        }
         console.warn("Failed to load settings; using runtime defaults without persisting them:", e?.message || e);
-        currentLogsDir = defaultLogsDir;
-        debugLoggingEnabled = defaultSettings.enableDebugLog;
-        return installerConsent
-            ? {
-                ...defaultSettings,
-                ...(installerOptions || {}),
-                eulaAccepted: true,
-                eulaVersion: legalNoticeVersion,
-                eulaAcceptedAt: installerConsent.acceptedAt
-            }
-            : { ...defaultSettings, ...(installerOptions || {}) };
+        return applyLoadedSettingsRuntime(getRuntimeDefaultSettings(installerConsent, installerOptions));
     }
 }
 
@@ -7912,6 +8022,15 @@ async function runYaraScanForTargets(settings: any, targets: string[], options: 
     });
     await fs.unlink(listPath).catch(() => {});
     if (job.process === child) job.process = null;
+    // yara exits 0 or 1 on its own. Anything else (for example 0xC0000135 when a DLL is missing) means
+    // it never scanned, and reporting "YARA matches: 0" would read as a clean result.
+    if (exitCode !== 0 && exitCode !== 1 && exitCode !== -1 && exitCode !== -2) {
+        const hex = `0x${(exitCode >>> 0).toString(16).toUpperCase()}`;
+        const reason = (exitCode >>> 0) === 0xC0000135 ? " A required DLL is missing (usually the Microsoft Visual C++ runtime)." : "";
+        options.appendJobLogs(options.jobId, [`YARA did not run (exit code ${hex}).${reason} ClamAV scan results are still valid.`]);
+        console.warn(`YARA exited with ${hex} without scanning.`);
+        return { matches: 0, ignoredMatches: 0, actionTaken: "None" };
+    }
     if (openErrorCount > 0) {
         options.appendJobLogs(options.jobId, [
             `YARA skipped ${openErrorCount} file${openErrorCount === 1 ? "" : "s"} it could not open. ClamAV scan results are still valid.`
@@ -9145,44 +9264,49 @@ async function startServer() {
                             includeOfficial: true,
                             includeSecuriteInfo: false
                         });
-                        const args = ["--config-file=" + preparedConfig.configPath, "--datadir=" + settings.databaseDir];
+                        // Run through runFreshclamWithConfig like the manual update does. FreshClam on Windows
+                        // writes its progress bar to stdout even when piped (about 3.5 MB per full update);
+                        // left unread, the pipe fills and FreshClam blocks forever on the write.
                         freshclamUpdateInProgress = true;
-                        const child = spawn(settings.freshclamPath, args, { windowsHide: true });
-                        
-                        child.on("error", (err: any) => {
-                            freshclamUpdateInProgress = false;
-                            console.error("Auto-update process error:", preparedConfig.redact(err.message));
-                            preparedConfig.cleanup().catch(() => {});
-                        });
-
-                        child.on("close", async (code) => {
-                            freshclamUpdateInProgress = false;
-                            await preparedConfig.cleanup();
-                            if (code === 0) await reloadClamdDatabases(settings);
-                            settings = {
-                                ...settings,
-                                lastClamAVUpdate: code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
-                                lastClamAVUpdateResult: code === 0 ? "Updated" : "Update failed"
-                            };
-                            await saveConfig(settings);
-                            await addHistory({
-                                type: "update",
-                                target: "ClamAV (Auto)",
-                                result: code === 0 ? 0 : 1,
-                                threatsFound: 0,
-                                scannedFiles: 0,
-                                duration: 1, 
-                                actionTaken: code === 0 ? "Updated" : "Failed"
+                        let code = 1;
+                        try {
+                            code = await runFreshclamWithConfig(settings, preparedConfig, {
+                                onLine: line => {
+                                    if (/^Time:\s/.test(line)) return; // progress bar redraws
+                                    console.log(`ClamAV auto-update: ${line}`);
+                                },
+                                timeoutMs: freshclamRunTimeoutMs
                             });
-                            if (saneDue) {
-                                try {
-                                    await startSaneSecurityUpdate("automatic");
-                                } catch (e: any) {
-                                    console.error("Could not start automatic SaneSecurity update:", e?.message || e);
-                                }
-                            }
-                            console.log(`Auto-update finished with code ${code}`);
+                        } catch (e: any) {
+                            console.error("Auto-update process error:", preparedConfig.redact(e?.message || String(e)));
+                        } finally {
+                            freshclamUpdateInProgress = false;
+                            await preparedConfig.cleanup().catch(() => {});
+                        }
+                        if (code === 0) await reloadClamdDatabases(settings);
+                        settings = {
+                            ...settings,
+                            lastClamAVUpdate: code === 0 ? new Date().toISOString() : settings.lastClamAVUpdate,
+                            lastClamAVUpdateResult: code === 0 ? "Updated" : "Update failed"
+                        };
+                        await saveConfig(settings);
+                        await addHistory({
+                            type: "update",
+                            target: "ClamAV (Auto)",
+                            result: code === 0 ? 0 : 1,
+                            threatsFound: 0,
+                            scannedFiles: 0,
+                            duration: 1, 
+                            actionTaken: code === 0 ? "Updated" : "Failed"
                         });
+                        if (saneDue) {
+                            try {
+                                await startSaneSecurityUpdate("automatic");
+                            } catch (e: any) {
+                                console.error("Could not start automatic SaneSecurity update:", e?.message || e);
+                            }
+                        }
+                        console.log(`Auto-update finished with code ${code}`);
                     } else if (saneDue) {
                         try {
                             await startSaneSecurityUpdate("automatic");
@@ -11344,8 +11468,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const child = spawn(settings.freshclamPath, args, { windowsHide: true });
             activeJobs[jobId].process = child;
             let processStartFailed = false;
-            
+            let timedOut = false;
+            const runTimer = setTimeout(() => {
+                timedOut = true;
+                appendJobLogs(jobId, [`FreshClam did not finish within ${Math.round(freshclamRunTimeoutMs / 60000)} minutes and was stopped.`]);
+                try { child.kill(); } catch {}
+            }, freshclamRunTimeoutMs);
+
             child.on("error", (err: any) => {
+                clearTimeout(runTimer);
                 processStartFailed = true;
                 if (freshclamUpdateJobId === jobId) {
                     freshclamUpdateInProgress = false;
@@ -11380,7 +11511,9 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 if (lines.length) appendJobLogs(jobId, lines);
             });
             
-            child.on("close", async (code) => {
+            child.on("close", async (exitCode) => {
+                clearTimeout(runTimer);
+                const code = timedOut ? -2 : exitCode;
                 if (freshclamUpdateJobId === jobId) {
                     freshclamUpdateInProgress = false;
                     freshclamUpdateJobId = null;
