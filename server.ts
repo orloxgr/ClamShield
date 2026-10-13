@@ -3238,7 +3238,7 @@ async function getCurrentAppVersion() {
 async function getCurrentYaraEngineVersion(settings: any) {
     if (!settings.yaraPath || !existsSync(settings.yaraPath)) return "Not installed";
     try {
-        await ensureYaraRuntime(settings, settings.yaraPath);
+        await ensureYaraRuntime(settings.yaraPath);
         const stat = await fs.stat(settings.yaraPath);
         const now = Date.now();
         if (
@@ -3659,7 +3659,7 @@ async function installYaraEngine(settings: any, log?: (message: string) => void)
     settings.yaraDir = finalYaraDir;
     settings.yaraPath = finalYaraPath;
     settings.yaraEngineInstalledVersion = update.latestVersion;
-    await ensureYaraRuntime(settings, finalYaraPath);
+    await ensureYaraRuntime(finalYaraPath);
     yaraVersionCache = null;
     await saveConfig(settings, { keys: ["yaraDir", "yaraPath", "yaraEngineInstalledVersion"] });
     log?.(`YARA engine ready: ${finalYaraPath}${finalYaracPath ? ` (compiler: ${finalYaracPath})` : ""}`);
@@ -3686,16 +3686,16 @@ async function queueYaraEngineUpdate(settings: any, log?: (message: string) => v
 
 // The official YARA Windows build links against the Visual C++ runtime (VCRUNTIME140.dll), which a
 // fresh Windows install does not have. Without it yara64.exe exits with 0xC0000135 (DLL not found)
-// before doing anything. The ClamAV engine ships that runtime next to its own binaries, so copy it
-// next to YARA (app-local deployment) when Windows doesn't already provide it.
-async function ensureYaraRuntime(settings: any, yaraPath: string) {
+// before doing anything. ClamShield's managed ClamAV engine ships that runtime next to its own
+// binaries, so copy it next to YARA (app-local deployment) when Windows doesn't already provide it.
+async function ensureYaraRuntime(yaraPath: string) {
     if (process.platform !== "win32" || !yaraPath) return;
     const target = path.join(path.dirname(yaraPath), "vcruntime140.dll");
     if (existsSync(target)) return;
     if (existsSync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "vcruntime140.dll"))) return;
-    const source = path.join(settings.clamavDir || path.dirname(settings.freshclamPath || ""), "vcruntime140.dll");
+    const source = path.join(defaultSettings.clamavDir, "vcruntime140.dll");
     if (!existsSync(source)) {
-        console.warn(`YARA needs vcruntime140.dll, but it was not found in Windows or at ${source}.`);
+        console.warn(`YARA needs vcruntime140.dll, but it was not found in Windows or in ClamShield's managed ClamAV engine at ${source}.`);
         return;
     }
     try {
@@ -3709,7 +3709,7 @@ async function ensureYaraRuntime(settings: any, yaraPath: string) {
 
 async function ensureYaraEngine(settings: any, log?: (message: string) => void) {
     if (settings.yaraPath && existsSync(settings.yaraPath)) {
-        await ensureYaraRuntime(settings, settings.yaraPath);
+        await ensureYaraRuntime(settings.yaraPath);
         log?.(`YARA engine found: ${settings.yaraPath}`);
         return settings.yaraPath;
     }
