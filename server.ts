@@ -4362,6 +4362,9 @@ const auditedSettingsKeys = new Set([
     "runOnStartup",
     "startMinimized",
     "autoDisableDefender",
+    "virusTotalCloudEnabled",
+    "virusTotalShieldBackgroundCheckEnabled",
+    "virusTotalShieldUploadUnknownEnabled",
     "yaraEnabled",
     "yaraRuleset",
     "yaraRulesDir",
@@ -5688,6 +5691,45 @@ function parseSettingsRows(rows: any[]) {
     }, {});
 }
 
+async function restoreVirusTotalShieldCloudSettings(settings: any, parsedSettings: any) {
+    const parsed = asRecord(parsedSettings);
+    const next = { ...settings };
+    const recoveredKeys = new Set<string>();
+    const hasShieldBackgroundSetting = Object.prototype.hasOwnProperty.call(parsed, "virusTotalShieldBackgroundCheckEnabled");
+    const hasShieldUploadSetting = Object.prototype.hasOwnProperty.call(parsed, "virusTotalShieldUploadUnknownEnabled");
+
+    if (
+        next.virusTotalCloudEnabled === true &&
+        next.virusTotalShieldBackgroundCheckEnabled !== true &&
+        !hasShieldBackgroundSetting &&
+        await loadVirusTotalApiKey()
+    ) {
+        try {
+            const previousShieldCheck = getAppStateDb().prepare(`
+                SELECT type FROM history
+                WHERE type IN ('virustotal-shield-check', 'virustotal-shield-upload')
+                LIMIT 1
+            `).get();
+            if (previousShieldCheck) {
+                next.virusTotalShieldBackgroundCheckEnabled = true;
+                recoveredKeys.add("virusTotalShieldBackgroundCheckEnabled");
+            }
+
+            if (!hasShieldUploadSetting && String(previousShieldCheck?.type || "") === "virustotal-shield-upload") {
+                next.virusTotalShieldUploadUnknownEnabled = true;
+                recoveredKeys.add("virusTotalShieldUploadUnknownEnabled");
+            }
+        } catch (e: any) {
+            console.warn("Could not inspect VirusTotal Shield history for settings recovery:", e?.message || e);
+        }
+    }
+
+    if (recoveredKeys.size > 0) {
+        saveSettingsPatchRows(next, recoveredKeys);
+    }
+    return next;
+}
+
 async function buildLoadedSettingsFromRows(rows: any[], installerConsent: any, installerOptions: any, recoverInstalledProviders = true) {
     if (!rows.length) {
         return applyLoadedSettingsRuntime(getRuntimeDefaultSettings(installerConsent, installerOptions));
@@ -5715,9 +5757,10 @@ async function buildLoadedSettingsFromRows(rows: any[], installerConsent: any, i
             ? String(parsedWithInstallerOptions.eulaAcceptedAt || "")
             : String(installerConsent?.acceptedAt || "")
     };
-    const recoveredSettings = recoverInstalledProviders
+    const recoveredProviderSettings = recoverInstalledProviders
         ? await restoreInstalledSignatureProviderSettings(loadedSettings)
         : loadedSettings;
+    const recoveredSettings = await restoreVirusTotalShieldCloudSettings(recoveredProviderSettings, parsed);
     return applyLoadedSettingsRuntime(recoveredSettings);
 }
 
