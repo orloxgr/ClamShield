@@ -4168,6 +4168,12 @@ function addAppStateColumnIfMissing(db: any, tableName: string, columnName: stri
     }
 }
 
+function hasAppStateColumn(db: any, tableName: string, columnName: string) {
+    return db.prepare(`PRAGMA table_info(${tableName})`)
+        .all()
+        .some((row: any) => String(row.name) === columnName);
+}
+
 function migrateScanResultsVirusTotalRefinementSchema(db: any) {
     addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_status", "TEXT");
     addAppStateColumnIfMissing(db, "scan_results", "virus_total_refinement_label", "TEXT");
@@ -4192,6 +4198,14 @@ function migrateScanResultsReminderSchema(db: any) {
     });
 }
 
+function ensureScanResultsReminderSchema(db: any) {
+    if (!hasAppStateColumn(db, "scan_results", "results_reminder_at")) {
+        migrateScanResultsReminderSchema(db);
+        return;
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_scan_results_source_reminder ON scan_results(source, results_reminder_at)");
+}
+
 function migrateHistorySummarySchema(db: any) {
     db.exec(`
         CREATE INDEX IF NOT EXISTS idx_history_type_date ON history(type, date);
@@ -4213,6 +4227,12 @@ function assertScanResultsVirusTotalRefinementSchema(db: any) {
     const missing = required.filter(column => !columns.has(column));
     if (missing.length > 0) {
         throw new Error(`App state schema migration incomplete. Missing scan_results column(s): ${missing.join(", ")}`);
+    }
+}
+
+function assertScanResultsReminderSchema(db: any) {
+    if (!hasAppStateColumn(db, "scan_results", "results_reminder_at")) {
+        throw new Error("App state schema migration incomplete. Missing scan_results column: results_reminder_at");
     }
 }
 
@@ -4302,10 +4322,12 @@ async function migrateAppStateSchema(db: any) {
     await runAppStateMigration(db, "schema.scan_results.results_reminder_at.v1", async () => {
         migrateScanResultsReminderSchema(db);
     });
+    ensureScanResultsReminderSchema(db);
     await runAppStateMigration(db, "schema.history.summary_indexes.v1", async () => {
         migrateHistorySummarySchema(db);
     });
     assertScanResultsVirusTotalRefinementSchema(db);
+    assertScanResultsReminderSchema(db);
 }
 
 const auditedSettingsKeys = new Set([
@@ -5576,6 +5598,77 @@ async function loadInstallerOptions() {
     }
 }
 
+function getRuntimeDefaultSettings(installerConsent: any, installerOptions: any) {
+    return installerConsent
+        ? {
+            ...defaultSettings,
+            ...(installerOptions || {}),
+            eulaAccepted: true,
+            eulaVersion: legalNoticeVersion,
+            eulaAcceptedAt: installerConsent.acceptedAt
+        }
+        : { ...defaultSettings, ...(installerOptions || {}) };
+}
+
+function applyLoadedSettingsRuntime(settings: any) {
+    currentLogsDir = settings.logsDir || defaultLogsDir;
+    debugLoggingEnabled = settings.enableDebugLog === true;
+    return settings;
+}
+
+function parseSettingsRows(rows: any[]) {
+    return rows.reduce((settings: any, row: any) => {
+        settings[row.key] = parseAppStateJson(row.value, null);
+        return settings;
+    }, {});
+}
+
+async function buildLoadedSettingsFromRows(rows: any[], installerConsent: any, installerOptions: any, recoverInstalledProviders = true) {
+    if (!rows.length) {
+        return applyLoadedSettingsRuntime(getRuntimeDefaultSettings(installerConsent, installerOptions));
+    }
+    const parsed = parseSettingsRows(rows);
+    const parsedWithInstallerOptions = {
+        ...parsed,
+        ...(installerOptions || {})
+    };
+    const actionOnDetection = normalizeShieldDetectionAction(parsedWithInstallerOptions.actionOnDetection || defaultSettings.actionOnDetection);
+    const scanDetectionAction = parsedWithInstallerOptions.scanDetectionAction || defaultSettings.scanDetectionAction;
+    const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
+    const eulaAccepted = settingsConsentAccepted || Boolean(installerConsent);
+    const loadedSettings = {
+        ...defaultSettings,
+        ...parsedWithInstallerOptions,
+        ...normalizeScheduledScanSettings(parsedWithInstallerOptions),
+        actionOnDetection,
+        scanDetectionAction,
+        securiteInfoPlan: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan),
+        securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsedWithInstallerOptions.securiteInfoIncludePua),
+        eulaAccepted,
+        eulaVersion: eulaAccepted ? legalNoticeVersion : "",
+        eulaAcceptedAt: settingsConsentAccepted
+            ? String(parsedWithInstallerOptions.eulaAcceptedAt || "")
+            : String(installerConsent?.acceptedAt || "")
+    };
+    const recoveredSettings = recoverInstalledProviders
+        ? await restoreInstalledSignatureProviderSettings(loadedSettings)
+        : loadedSettings;
+    return applyLoadedSettingsRuntime(recoveredSettings);
+}
+
+async function loadPersistedSettingsBestEffort(installerConsent: any, installerOptions: any) {
+    try {
+        const db = getAppStateDb();
+        await recoverLegacySettingsIfSettingsEmpty(db);
+        const rows = db.prepare("SELECT key, value FROM settings").all();
+        if (!rows.length) return null;
+        return await buildLoadedSettingsFromRows(rows, installerConsent, installerOptions, false);
+    } catch (e: any) {
+        console.warn("Could not load persisted settings after app state migration failure:", e?.message || e);
+        return null;
+    }
+}
+
 async function loadConfig() {
     const installerConsent = await loadInstallerConsent();
     const installerOptions = await loadInstallerOptions();
@@ -5583,63 +5676,15 @@ async function loadConfig() {
     try {
         await ensureAppStateReady();
         const rows = getAppStateDb().prepare("SELECT key, value FROM settings").all();
-        if (!rows.length) {
-            const runtimeSettings = installerConsent
-                ? {
-                    ...defaultSettings,
-                    ...(installerOptions || {}),
-                    eulaAccepted: true,
-                    eulaVersion: legalNoticeVersion,
-                    eulaAcceptedAt: installerConsent.acceptedAt
-                }
-                : { ...defaultSettings, ...(installerOptions || {}) };
-            currentLogsDir = runtimeSettings.logsDir || defaultLogsDir;
-            debugLoggingEnabled = runtimeSettings.enableDebugLog === true;
-            return runtimeSettings;
-        }
-        const parsed = rows.reduce((settings: any, row: any) => {
-            settings[row.key] = parseAppStateJson(row.value, null);
-            return settings;
-        }, {});
-        const parsedWithInstallerOptions = {
-            ...parsed,
-            ...(installerOptions || {})
-        };
-        const actionOnDetection = normalizeShieldDetectionAction(parsedWithInstallerOptions.actionOnDetection || defaultSettings.actionOnDetection);
-        const scanDetectionAction = parsedWithInstallerOptions.scanDetectionAction || defaultSettings.scanDetectionAction;
-        const settingsConsentAccepted = parsed.eulaAccepted === true && parsed.eulaVersion === legalNoticeVersion;
-        const eulaAccepted = settingsConsentAccepted || Boolean(installerConsent);
-        const loadedSettings = {
-            ...defaultSettings,
-            ...parsedWithInstallerOptions,
-            ...normalizeScheduledScanSettings(parsedWithInstallerOptions),
-            actionOnDetection,
-            scanDetectionAction,
-            securiteInfoPlan: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan),
-            securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsedWithInstallerOptions.securiteInfoIncludePua),
-            eulaAccepted,
-            eulaVersion: eulaAccepted ? legalNoticeVersion : "",
-            eulaAcceptedAt: settingsConsentAccepted
-                ? String(parsedWithInstallerOptions.eulaAcceptedAt || "")
-                : String(installerConsent?.acceptedAt || "")
-        };
-        const recoveredSettings = await restoreInstalledSignatureProviderSettings(loadedSettings);
-        currentLogsDir = recoveredSettings.logsDir || defaultLogsDir;
-        debugLoggingEnabled = recoveredSettings.enableDebugLog === true;
-        return recoveredSettings;
+        return await buildLoadedSettingsFromRows(rows, installerConsent, installerOptions);
     } catch (e: any) {
+        const persistedSettings = await loadPersistedSettingsBestEffort(installerConsent, installerOptions);
+        if (persistedSettings) {
+            console.warn("App state migration failed; loaded persisted settings without running optional recovery:", e?.message || e);
+            return persistedSettings;
+        }
         console.warn("Failed to load settings; using runtime defaults without persisting them:", e?.message || e);
-        currentLogsDir = defaultLogsDir;
-        debugLoggingEnabled = defaultSettings.enableDebugLog;
-        return installerConsent
-            ? {
-                ...defaultSettings,
-                ...(installerOptions || {}),
-                eulaAccepted: true,
-                eulaVersion: legalNoticeVersion,
-                eulaAcceptedAt: installerConsent.acceptedAt
-            }
-            : { ...defaultSettings, ...(installerOptions || {}) };
+        return applyLoadedSettingsRuntime(getRuntimeDefaultSettings(installerConsent, installerOptions));
     }
 }
 
