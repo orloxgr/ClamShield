@@ -7191,6 +7191,13 @@ async function configureLegacyContextMenuRegistry(enabled: boolean, settings: an
     }
 }
 
+function isAppxPolicyFailure(message: string) {
+    return /0x80073CFF/i.test(message) ||
+        /sideloading policy/i.test(message) ||
+        /developer license/i.test(message) ||
+        /package origin\s+Unsigned/i.test(message);
+}
+
 async function configureWindowsContextMenuPackage(enabled: boolean, settings: any) {
     if (process.platform !== "win32") {
         throw new Error("Windows Context Menu integration is only available on Windows.");
@@ -7217,9 +7224,23 @@ async function configureWindowsContextMenuPackage(enabled: boolean, settings: an
         command
     ], { timeoutMs: 120000 });
     if (result.code !== 0) {
-        throw new Error((result.stderr || result.stdout || `PowerShell exited with code ${result.code}`).trim());
+        const errorText = (result.stderr || result.stdout || `PowerShell exited with code ${result.code}`).trim();
+        if (enabled && isAppxPolicyFailure(errorText)) {
+            await configureLegacyContextMenuRegistry(true, settings);
+            return {
+                success: true,
+                mode: "legacy",
+                warning: "Windows blocked the modern context menu package because AppX sideloading is restricted on this PC. ClamShield enabled the legacy File Explorer context menu instead; on Windows 11 it may appear under \"Show more options\"."
+            };
+        }
+        throw new Error(errorText);
     }
     await configureLegacyContextMenuRegistry(enabled, settings);
+    return {
+        success: true,
+        mode: enabled ? "modern" : "disabled",
+        warning: ""
+    };
 }
 
 function isVirusTotalAutoRefinementCandidate(result: any, settings: any) {
@@ -9600,7 +9621,7 @@ async function startServer() {
     app.post("/api/windows-context-menu/configure", async (req, res) => {
         try {
             const enabled = req.body?.enabled === true;
-            await configureWindowsContextMenuPackage(enabled, settings);
+            const contextMenuResult = await configureWindowsContextMenuPackage(enabled, settings);
             settings = {
                 ...settings,
                 windowsContextMenuEnabled: enabled
@@ -9610,9 +9631,10 @@ async function startServer() {
             res.json({
                 success: true,
                 settings,
-                message: enabled
+                contextMenu: contextMenuResult,
+                message: contextMenuResult.warning || (enabled
                     ? "Windows Context Menu integration is enabled. Restart File Explorer or sign out and back in if the menu does not appear immediately."
-                    : "Windows Context Menu integration is disabled."
+                    : "Windows Context Menu integration is disabled.")
             });
         } catch (e: any) {
             res.status(409).json({ success: false, error: e?.message || String(e) });
