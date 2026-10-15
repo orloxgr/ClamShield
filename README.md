@@ -38,6 +38,9 @@ For development transparency, runtime AI/cloud-service behavior, CI status, bina
 
 ClamShield is built for low disk and CPU impact:
 
+- The desktop window paints a bundled dark startup shell before loading the backend. Loading continues inside the window until the local service and protection status are ready; it does not navigate repeatedly to an unavailable server. Failed initial status requests retry automatically. Existing minimized-launch preferences are preserved.
+- ClamAV and YARA version checks run in parallel with provider status checks. The Dashboard's VirusTotal card shows current configuration, queue and usage information without the aggregate detection-vote count or last-result label.
+
 - The real-time shield does not scan existing files on startup.
 - Existing files are indexed only after the user manually runs a full, folder, or file scan.
 - Files are skipped by the shield if size and modification time have not changed since the last clean scan.
@@ -124,9 +127,11 @@ YARA engine updates are resolved from official VirusTotal/YARA GitHub releases. 
 
 Because YARA Forge rules contain detection patterns, Microsoft Defender or another antivirus may flag the rules file itself. If the affected file is under `C:\ProgramData\ClamShield\yara\rules\`, this is usually a false positive against the rule database rather than active malware.
 
+ClamShield stores its temporary scripts, scan lists, and FreshClam configuration files in `C:\ProgramData\ClamShield\temp`. ClamAV also uses this folder for temporary extraction files. This app-owned folder is excluded from ClamShield's scans alongside its rule and signature directories; the normal Windows Temp folders remain covered. Development and compatibility tests that download rule packages should use this app-owned folder too. Existing test leftovers in Windows Temp are not automatically moved or excluded.
+
 ## Updates
 
-The Updates page has separate actions:
+The Updates page groups its cards under **Signatures & Rules** and **Apps & Engines**, separated by a divider on the same page. Each card has its own settings and update action:
 
 - `Update ClamAV`: runs FreshClam for virus signatures.
 - `Update SecuriteInfo`: updates optional account-linked SecuriteInfo databases through FreshClam.
@@ -134,6 +139,8 @@ The Updates page has separate actions:
 - `Update YARA Rules`: checks the local YARA engine and downloads the selected YARA Forge ruleset.
 - `Check YARA`: checks for a newer installable Windows YARA engine package.
 - `Check ClamShield`: checks GitHub Releases for a newer ClamShield installer.
+
+Dashboard → Engine Info → Manage also shows live update output inside the SecuriteInfo and SaneSecurity dialogs. Logs remain available when a dialog is reopened, and a read-only polling fallback keeps progress visible if the event stream disconnects. SecuriteInfo setup stays open while its first update runs. FreshClam runs use the existing 30-minute timeout so an unresponsive process cannot hold the signature-update lock indefinitely.
 
 ClamShield update checks can be enabled weekly from Settings. Silent app install is available as an explicit setting; when enabled, ClamShield downloads the latest installer, launches it, and closes itself so the installer can replace application files.
 
@@ -177,7 +184,19 @@ When enabled, ClamShield can:
 - optionally use VirusTotal as a background Real-Time Shield engine
 - optionally upload unknown Shield-scanned files, subject to the Shield upload size limit
 
-ClamShield follows the public VirusTotal API pacing in the background queue and tracks local daily/monthly usage. The dashboard shows the daily API count. Unknown-file upload size limits are configurable and default to `20 MB`; the app currently caps those settings at `32 MB`, matching the normal VirusTotal file upload endpoint. Files above the configured limit are not uploaded and the Results page shows an `Upload skipped` label with the file size and configured limit.
+The On-Demand Scan page offers **Check every file with VirusTotal** for Full, Folder, File, and Process scans. This independently queues every eligible file, including files that ClamAV and YARA did not flag. Built-in exclusions and user exceptions still apply. Each file is checked by SHA-256 first; if its hash needs analysis, ClamShield automatically uploads the file and retrieves the completed analysis. The existing switch enables the complete flow. There is no file-count or executable-only filter. Files larger than 32 MB use VirusTotal's large-file upload endpoint, up to its 650 MB upload limit. Unreadable, excluded, changing, oversized, or provider-rejected files are skipped with a reason.
+
+Cloud queues and upload analysis IDs are stored in SQLite and continue separately after local scanning finishes. They survive app restarts, follow shared API pacing, and can be paused, resumed, or cancelled on the scan page. Pausing/resuming a local scan preserves its cloud-check choice. Identical file content within a scan shares an upload, analysis, and report (reports are cached for 24 hours). Pending analysis is polled at most once per minute per submitted hash and stays queued until completed; an upload acknowledgement is not a verdict. **Needs upload** and **analysing** counters show progress. Previously finished missing-hash entries are returned to the upload queue when upgrading. VirusTotal-only detections appear in Results with the VirusTotal engine label.
+
+When more than four files are queued for an on-demand VirusTotal scan, a confirmation shows the estimated duration using the actual file count, request pacing, and cached daily/monthly quotas. VirusTotal makes no scan requests until accepted. Choosing **Local scan only** cancels the cloud queue while local scanning continues. Accepted scans do not prompt again on resume, and unanswered confirmations survive restarts. **Show VirusTotal limit warnings** is available in Settings under Cloud Checks. For this preference only, missing or empty means on, checked means on, and explicitly unchecked (`false`) means off. Saving this preference alone updates only its settings row and does not change installer defaults or restart scan engines.
+
+Successful new-file uploads and their analysis retrievals do not spend the local daily/monthly lookup estimate, and can continue when ordinary hash lookups are waiting for their quota reset. They still follow shared request pacing and provider rate limits. Obtaining a large-file upload URL is conservatively treated as a quota-consuming request. All of these requests count toward the automatic usage-refresh interval; VirusTotal's fetched usage remains authoritative.
+
+ClamShield follows the public VirusTotal API pacing in the background queue. The Dashboard's **Fetch usage** button retrieves VirusTotal's quota summary, including actual daily/monthly usage and allowances. Shared group limits are respected alongside individual limits. Snapshots and local request counters are stored separately for each API key; the key itself is not stored in the usage tables. Counts between successful syncs are labelled as estimates.
+
+**Auto-fetch every** defaults to **500 requests** and can be changed on the Dashboard. Quotas are also checked when first configured, when a UTC usage period changes before the next lookup, and before an estimated quota would stop work. Repeated fetches share one request and have a 60-second cooldown; failed automatic fetches back off for 15 minutes. Ordinary dashboard polling reads the cached snapshot without contacting VirusTotal. If quota access fails, the last snapshot/local estimate remains visible with an error, rather than showing zero usage. A successful manual fetch with remaining allowance wakes waiting cloud queues.
+
+The separate Results and Shield unknown-file upload size limits are configurable and default to `20 MB`; those settings are capped at `32 MB`, matching the normal VirusTotal file upload endpoint. Files above those configured limits are not uploaded and the Results page shows an `Upload skipped` label with the file size and configured limit. On-demand scans use the complete upload-and-analysis flow described above.
 
 VirusTotal cloud checks are a second-opinion layer. They do not replace local ClamAV/YARA scanning, and uploads should be enabled only when the user is comfortable submitting unknown files to VirusTotal.
 

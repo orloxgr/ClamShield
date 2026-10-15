@@ -433,7 +433,9 @@ export default function Updates() {
 
   return (
     <div className="px-8 max-w-6xl mx-auto pb-20 flex flex-col gap-8">
-      <PageHeader title="Updates" description="Update signatures, engines, YARA Forge rules, and ClamShield." />
+      <PageHeader title="Updates" description="Update signatures and rules, ClamShield, and scanning engines." />
+
+      <h2 className="text-xl font-semibold text-white">Signatures &amp; Rules</h2>
 
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
         <div className={cardHeaderClass}>
@@ -595,7 +597,103 @@ export default function Updates() {
         )}
       </section>
 
-      <section className="order-last bg-slate-900 border border-emerald-500/20 rounded-xl overflow-hidden">
+      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full shrink-0"><ShieldCheck className="w-8 h-8" /></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">YARA Forge Rules</h3>
+              <p className="text-slate-400 text-sm">{status?.stats?.lastYaraUpdate ? `${statusLine(status.stats.lastYaraUpdate)} - ${status.stats.yaraRuleset} - ${status.stats.yaraRuleCount || 0} rules` : "Update required"}</p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            <button onClick={() => setOpenPanel(openPanel === "yara" ? null : "yara")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yara" ? "rotate-180" : ""}`} /></button>
+            <button onClick={runYaraUpdate} disabled={yaraUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${yaraUpdateState === "running" ? "animate-spin" : ""}`} />
+              {yaraUpdateState === "running" ? "Updating..." : "Update YARA Rules"}
+            </button>
+          </div>
+        </div>
+        {openPanel === "yara" && (
+          <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Auto-update YARA rules</span><input type="checkbox" checked={updateSettings.yaraAutoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ yaraAutoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <label className="block"><span className="text-xs font-medium text-slate-400">Ruleset</span><select value={updateSettings.yaraRuleset || "core"} onChange={event => saveUpdateSettings({ yaraRuleset: event.target.value })} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"><option value="core">Core</option><option value="extended">Extended</option><option value="full">Full</option></select></label>
+              <label className="block"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.yaraUpdateIntervalHours || 168} onChange={event => updateNumberSetting("yaraUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
+            </div>
+          </div>
+        )}
+        {(yaraUpdateActive || yaraUpdateState === "done") && (
+          <ProgressPanel
+            title={yaraUpdateActive ? "Updating YARA Forge rules" : yaraUpdateFailed ? "YARA update failed" : "YARA update complete"}
+            progress={yaraProgress}
+            failed={yaraUpdateFailed}
+            active={yaraUpdateActive}
+            label={yaraOutput.at(-1) || "YARA Forge is checking rules..."}
+            barClass="bg-gradient-to-r from-indigo-500 to-emerald-400"
+          />
+        )}
+        {(yaraUpdateState === "running" || yaraUpdateState === "done") && (
+          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title="YARA Output" running={yaraUpdateState === "running"} lines={yaraOutput} />
+          </div>
+        )}
+      </section>
+
+      <div className="mt-4 border-t border-slate-700 pt-8">
+        <h2 className="text-xl font-semibold text-white">Apps &amp; Engines</h2>
+      </div>
+
+      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">ClamShield Application</h3>
+              <p className="text-slate-400 text-sm">
+                Installed: {status?.appVersion || "Unknown"}{appUpdateInfo?.latestVersion ? ` - Latest: ${appUpdateInfo.latestVersion}` : ""} - Last checked: {statusLine(status?.stats?.lastAppUpdateCheck)}
+              </p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            {appUpdateState === "available" && <>
+              <button onClick={skipAppVersion} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
+              <button onClick={remindAppTomorrow} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
+            </>}
+            <button onClick={() => setOpenPanel(openPanel === "app" ? null : "app")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "app" ? "rotate-180" : ""}`} /></button>
+            <button onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate} disabled={appUpdateState === "checking" || appUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${appUpdateState === "checking" || appUpdateState === "running" ? "animate-spin" : ""}`} />
+              {appUpdateState === "checking" ? "Checking..." : appUpdateState === "running" ? "Installing..." : appUpdateState === "available" ? "Install Update" : "Check ClamShield"}
+            </button>
+          </div>
+        </div>
+        {openPanel === "app" && (
+          <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for ClamShield app updates</span><input type="checkbox" checked={updateSettings.appUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ appUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me when update is available</span><input type="checkbox" checked={updateSettings.appUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ appUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me on failed update</span><input type="checkbox" checked={updateSettings.appUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ appUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.appUpdateIntervalHours || 168} onChange={event => updateNumberSetting("appUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Silent install ClamShield updates</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
+          </div>
+        )}
+        {appUpdateState !== "idle" && (
+          <ProgressPanel
+            title={appUpdateActive ? "Checking ClamShield updates" : appUpdateFailed ? "ClamShield update check failed" : appUpdateState === "available" ? (appUpdateInfo?.skipped ? "ClamShield update skipped" : "ClamShield update available") : "ClamShield update check complete"}
+            progress={appProgress}
+            failed={appUpdateFailed}
+            active={appUpdateActive}
+            label={appOutput.at(-1) || "ClamShield is checking GitHub releases..."}
+            barClass="bg-gradient-to-r from-cyan-500 to-indigo-400"
+          />
+        )}
+        {appUpdateState !== "idle" && (
+          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title="ClamShield Output" running={appUpdateActive} lines={appOutput} />
+          </div>
+        )}
+      </section>
+
+      <section className="bg-slate-900 border border-emerald-500/20 rounded-xl overflow-hidden">
         <div className={cardHeaderClass}>
           <div className="flex items-center gap-4 min-w-0">
             <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
@@ -644,7 +742,7 @@ export default function Updates() {
         )}
       </section>
 
-      <section className="order-last bg-slate-900 border border-amber-500/20 rounded-xl overflow-hidden">
+      <section className="bg-slate-900 border border-amber-500/20 rounded-xl overflow-hidden">
         <div className={cardHeaderClass}>
           <div className="flex items-center gap-4 min-w-0">
             <div className="p-3 bg-amber-500/10 text-amber-300 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
@@ -689,98 +787,6 @@ export default function Updates() {
         {yaraEngineState !== "idle" && (
           <div className="px-8 pb-8 pt-4 border-t border-amber-500/20">
             <Terminal title="YARA Engine Output" running={yaraEngineActive} lines={yaraEngineOutput} accent="text-amber-300/80" />
-          </div>
-        )}
-      </section>
-
-      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className={cardHeaderClass}>
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full shrink-0"><ShieldCheck className="w-8 h-8" /></div>
-            <div className="min-w-0">
-              <h3 className="font-semibold text-white text-lg">YARA Forge Rules</h3>
-              <p className="text-slate-400 text-sm">{status?.stats?.lastYaraUpdate ? `${statusLine(status.stats.lastYaraUpdate)} - ${status.stats.yaraRuleset} - ${status.stats.yaraRuleCount || 0} rules` : "Update required"}</p>
-            </div>
-          </div>
-          <div className={cardActionsClass}>
-            <button onClick={() => setOpenPanel(openPanel === "yara" ? null : "yara")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yara" ? "rotate-180" : ""}`} /></button>
-            <button onClick={runYaraUpdate} disabled={yaraUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              <RefreshCw className={`w-5 h-5 ${yaraUpdateState === "running" ? "animate-spin" : ""}`} />
-              {yaraUpdateState === "running" ? "Updating..." : "Update YARA Rules"}
-            </button>
-          </div>
-        </div>
-        {openPanel === "yara" && (
-          <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
-            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Auto-update YARA rules</span><input type="checkbox" checked={updateSettings.yaraAutoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ yaraAutoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
-            <div className="grid sm:grid-cols-2 gap-4">
-              <label className="block"><span className="text-xs font-medium text-slate-400">Ruleset</span><select value={updateSettings.yaraRuleset || "core"} onChange={event => saveUpdateSettings({ yaraRuleset: event.target.value })} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"><option value="core">Core</option><option value="extended">Extended</option><option value="full">Full</option></select></label>
-              <label className="block"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.yaraUpdateIntervalHours || 168} onChange={event => updateNumberSetting("yaraUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
-            </div>
-          </div>
-        )}
-        {(yaraUpdateActive || yaraUpdateState === "done") && (
-          <ProgressPanel
-            title={yaraUpdateActive ? "Updating YARA Forge rules" : yaraUpdateFailed ? "YARA update failed" : "YARA update complete"}
-            progress={yaraProgress}
-            failed={yaraUpdateFailed}
-            active={yaraUpdateActive}
-            label={yaraOutput.at(-1) || "YARA Forge is checking rules..."}
-            barClass="bg-gradient-to-r from-indigo-500 to-emerald-400"
-          />
-        )}
-        {(yaraUpdateState === "running" || yaraUpdateState === "done") && (
-          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
-            <Terminal title="YARA Output" running={yaraUpdateState === "running"} lines={yaraOutput} />
-          </div>
-        )}
-      </section>
-
-      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className={cardHeaderClass}>
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
-            <div className="min-w-0">
-              <h3 className="font-semibold text-white text-lg">ClamShield Application</h3>
-              <p className="text-slate-400 text-sm">
-                Installed: {status?.appVersion || "Unknown"}{appUpdateInfo?.latestVersion ? ` - Latest: ${appUpdateInfo.latestVersion}` : ""} - Last checked: {statusLine(status?.stats?.lastAppUpdateCheck)}
-              </p>
-            </div>
-          </div>
-          <div className={cardActionsClass}>
-            {appUpdateState === "available" && <>
-              <button onClick={skipAppVersion} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Skip Version</button>
-              <button onClick={remindAppTomorrow} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Remind Tomorrow</button>
-            </>}
-            <button onClick={() => setOpenPanel(openPanel === "app" ? null : "app")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">Settings <ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "app" ? "rotate-180" : ""}`} /></button>
-            <button onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate} disabled={appUpdateState === "checking" || appUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              <RefreshCw className={`w-5 h-5 ${appUpdateState === "checking" || appUpdateState === "running" ? "animate-spin" : ""}`} />
-              {appUpdateState === "checking" ? "Checking..." : appUpdateState === "running" ? "Installing..." : appUpdateState === "available" ? "Install Update" : "Check ClamShield"}
-            </button>
-          </div>
-        </div>
-        {openPanel === "app" && (
-          <div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
-            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Check for ClamShield app updates</span><input type="checkbox" checked={updateSettings.appUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ appUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
-            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me when update is available</span><input type="checkbox" checked={updateSettings.appUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ appUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
-            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Notify me on failed update</span><input type="checkbox" checked={updateSettings.appUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ appUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
-            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">Update interval (hours)</span><input type="number" min={1} max={8760} value={updateSettings.appUpdateIntervalHours || 168} onChange={event => updateNumberSetting("appUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500" /></label>
-            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">Silent install ClamShield updates</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800" /></div>
-          </div>
-        )}
-        {appUpdateState !== "idle" && (
-          <ProgressPanel
-            title={appUpdateActive ? "Checking ClamShield updates" : appUpdateFailed ? "ClamShield update check failed" : appUpdateState === "available" ? (appUpdateInfo?.skipped ? "ClamShield update skipped" : "ClamShield update available") : "ClamShield update check complete"}
-            progress={appProgress}
-            failed={appUpdateFailed}
-            active={appUpdateActive}
-            label={appOutput.at(-1) || "ClamShield is checking GitHub releases..."}
-            barClass="bg-gradient-to-r from-cyan-500 to-indigo-400"
-          />
-        )}
-        {appUpdateState !== "idle" && (
-          <div className="px-8 pb-8 pt-4 border-t border-slate-800">
-            <Terminal title="ClamShield Output" running={appUpdateActive} lines={appOutput} />
           </div>
         )}
       </section>

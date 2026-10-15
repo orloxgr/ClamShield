@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import VirusTotalLimitWarning from '../components/VirusTotalLimitWarning';
 
 type ScanState = "idle" | "running" | "done";
 
@@ -9,9 +10,9 @@ interface ScanContextType {
   jobId: string | null;
   progress: any | null;
   resumableScan: any | null;
-  startScan: (type: string, target?: string) => Promise<void>;
+  startScan: (type: string, target?: string, options?: { virusTotalAllFiles?: boolean }) => Promise<void>;
   attachScan: (jobId: string) => Promise<void>;
-  resumeScan: () => Promise<void>;
+  resumeScan: (options?: { virusTotalAllFiles?: boolean }) => Promise<void>;
   discardResumableScan: () => Promise<void>;
   cancelScan: () => void;
   resetScan: () => void;
@@ -199,7 +200,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const startScan = async (type: string, target?: string) => {
+  const startScan = async (type: string, target?: string, options?: { virusTotalAllFiles?: boolean }) => {
     closeJobStream();
     setScanState("running");
     setOutput([`Starting ${scanLabel(type)} scan...`, target ? `Target: ${target}` : ''].filter(Boolean));
@@ -215,7 +216,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, target })
+        body: JSON.stringify({ type, target, virusTotalAllFiles: options?.virusTotalAllFiles === true })
       });
       const data = await res.json();
       
@@ -279,7 +280,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const resumeScan = async () => {
+  const resumeScan = async (options?: { virusTotalAllFiles?: boolean }) => {
     if (!resumableScan?.jobId) return;
     closeJobStream();
     setScanState("running");
@@ -295,7 +296,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resumeJobId: resumableScan.jobId })
+        body: JSON.stringify({ resumeJobId: resumableScan.jobId, virusTotalAllFiles: options?.virusTotalAllFiles === true })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -434,6 +435,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
   return (
     <ScanContext.Provider value={{ scanState, output, progressOutput, jobId, progress, resumableScan, startScan, attachScan, resumeScan, discardResumableScan, cancelScan, resetScan }}>
       {children}
+      <VirusTotalLimitWarning />
     </ScanContext.Provider>
   );
 }

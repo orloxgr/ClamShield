@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
-import { FolderSearch, HardDrive, FileSearch, Loader2, Cpu, Play, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Cloud, FolderSearch, HardDrive, FileSearch, Loader2, Cpu, Play, Trash2 } from "lucide-react";
 import { useScan } from "../context/ScanContext";
 import PageHeader from "../components/PageHeader";
 
@@ -8,6 +8,43 @@ export default function Scan() {
   const { scanState, output, progressOutput, progress, resumableScan, startScan, attachScan, resumeScan, discardResumableScan, cancelScan } = useScan();
   const [searchParams, setSearchParams] = useSearchParams();
   const attachedJobIdRef = useRef<string | null>(null);
+  const [virusTotalAllFiles, setVirusTotalAllFiles] = useState(() => {
+    try { return localStorage.getItem("clamshield.onDemandVirusTotalAllFiles") === "true"; } catch { return false; }
+  });
+  const [cloudStatus, setCloudStatus] = useState<any>(null);
+  const [cloudError, setCloudError] = useState("");
+  const [cloudPending, setCloudPending] = useState(false);
+  const [selectedCloudJobId, setSelectedCloudJobId] = useState("");
+  const cloudReady = cloudStatus?.enabled === true && cloudStatus?.configured === true;
+  const cloudJob = cloudStatus?.job;
+  const scanOptions = { virusTotalAllFiles: virusTotalAllFiles && cloudReady };
+  const refreshCloudStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/virustotal/on-demand");
+      if (!response.ok) throw new Error("Could not load VirusTotal scan status.");
+      const data = await response.json();
+      setCloudStatus({ ...data, job: data.jobs?.find((job: any) => job.jobId === selectedCloudJobId) || data.job });
+    } catch (error: any) { setCloudError(error.message); }
+  }, [selectedCloudJobId]);
+  useEffect(() => {
+    refreshCloudStatus();
+    const timer = window.setInterval(refreshCloudStatus, 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshCloudStatus]);
+  const changeCloudState = async (state: "active" | "paused" | "cancelled") => {
+    if (!cloudJob) return;
+    setCloudPending(true);
+    setCloudError("");
+    try {
+      const response = await fetch(`/api/virustotal/on-demand/${encodeURIComponent(cloudJob.jobId)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not update cloud checks.");
+      await refreshCloudStatus();
+    } catch (error: any) { setCloudError(error.message); }
+    finally { setCloudPending(false); }
+  };
   const scannedFiles = Number(progress?.scannedFiles || 0);
   const totalFiles = Number(progress?.totalFiles || 0);
   const elapsedSeconds = Number(progress?.elapsedSeconds || 0);
@@ -51,7 +88,7 @@ export default function Scan() {
         const data = await res.json();
         const selectedPath = data.path;
         if (selectedPath) {
-          startScan(type, selectedPath);
+          startScan(type, selectedPath, scanOptions);
         }
       } catch (e) {
         console.error("Failed to select folder:", e);
@@ -64,7 +101,7 @@ export default function Scan() {
         const data = await res.json();
         const selectedPath = data.path;
         if (selectedPath) {
-          startScan(type, selectedPath);
+          startScan(type, selectedPath, scanOptions);
         }
       } catch (e) {
         console.error("Failed to select file:", e);
@@ -72,7 +109,7 @@ export default function Scan() {
       return;
     }
 
-    startScan(type, target);
+    startScan(type, target, scanOptions);
   };
 
   return (
@@ -99,6 +136,49 @@ export default function Scan() {
         ))}
       </div>
 
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-start gap-3 min-w-0">
+            <Cloud className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
+            <div>
+              <label htmlFor="on-demand-virustotal" className="font-semibold text-white cursor-pointer">Check every file with VirusTotal</label>
+              <p id="on-demand-virustotal-description" className="text-xs text-slate-400 mt-1">Checks every file, even when ClamAV and YARA find nothing. Files needing analysis are uploaded automatically.</p>
+              {!cloudReady && <Link to="/settings" className="inline-block text-xs text-indigo-300 mt-2 hover:text-indigo-200">{cloudStatus ? "Enable VirusTotal and add your API key in Settings" : "Loading VirusTotal settings…"}</Link>}
+            </div>
+          </div>
+          <input id="on-demand-virustotal" type="checkbox" role="switch" aria-describedby="on-demand-virustotal-description"
+            checked={scanState === "running" && progress ? progress.virusTotalAllFiles === true : virusTotalAllFiles && cloudReady}
+            disabled={!cloudReady || scanState === "running"}
+            onChange={event => {
+              setVirusTotalAllFiles(event.target.checked);
+              try { localStorage.setItem("clamshield.onDemandVirusTotalAllFiles", String(event.target.checked)); } catch {}
+            }} className="relative h-6 w-11 shrink-0 cursor-pointer appearance-none rounded-full bg-slate-700 transition-colors checked:bg-indigo-500 after:absolute after:left-1 after:top-1 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform checked:after:translate-x-5 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-400" />
+        </div>
+        {virusTotalAllFiles && cloudReady && <p className="text-xs text-slate-400">Every eligible file is queued. Cloud checks follow API limits and can continue after the local scan finishes.</p>}
+        {cloudJob && (
+          <div className="border-t border-slate-800 pt-4 space-y-2">
+            {cloudStatus.jobs?.length > 1 && <select aria-label="VirusTotal scan queue" value={cloudJob.jobId}
+              onChange={event => setSelectedCloudJobId(event.target.value)} className="w-full rounded bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-300">
+              {cloudStatus.jobs.map((job: any) => <option key={job.jobId} value={job.jobId}>{job.target} · {job.status} · {job.pending.toLocaleString()} queued</option>)}
+            </select>}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-sm font-medium text-slate-200">VirusTotal checks · {cloudJob.status === "active" ? cloudJob.requiresConfirmation ? "Awaiting confirmation" : cloudJob.enumerated ? "Queued / running" : "Collecting files" : cloudJob.status}</span>
+              {["active", "paused"].includes(cloudJob.status) && <div className="flex gap-2">
+                <button disabled={cloudPending || (cloudJob.status === "paused" && (!cloudReady || !cloudJob.enumerated))} onClick={() => changeCloudState(cloudJob.status === "active" ? "paused" : "active")} className="px-3 py-1 rounded bg-slate-800 text-xs text-slate-200 disabled:opacity-50">{cloudJob.status === "active" ? "Pause cloud checks" : "Resume cloud checks"}</button>
+                <button disabled={cloudPending} onClick={() => changeCloudState("cancelled")} className="px-3 py-1 rounded bg-red-500/10 text-xs text-red-300 disabled:opacity-50">Cancel cloud checks</button>
+              </div>}
+            </div>
+            <p className="text-xs text-slate-500 truncate" title={cloudJob.target}>{cloudJob.target}</p>
+            <p className="text-xs text-slate-300">{cloudJob.checked.toLocaleString()} checked · {cloudJob.pending.toLocaleString()} queued · {cloudJob.detections.toLocaleString()} flagged · {(cloudJob.needsUpload ?? cloudJob.unknown).toLocaleString()} needs upload · {(cloudJob.analysing ?? 0).toLocaleString()} analysing · {cloudJob.skipped.toLocaleString()} skipped</p>
+            {cloudJob.message && <p className="text-xs text-amber-300">{cloudJob.message}</p>}
+            {cloudJob.status === "active" && !cloudReady && <p className="text-xs text-amber-300">Cloud checks are waiting for VirusTotal to be enabled and configured in Settings.</p>}
+            {cloudJob.status === "active" && cloudStatus.nextAllowedAt > Date.now() && <p className="text-xs text-slate-500">Next cloud check after {new Date(cloudStatus.nextAllowedAt).toLocaleString()}.</p>}
+            {cloudJob.detections > 0 && <Link to="/results" className="inline-block text-xs text-indigo-300 hover:text-indigo-200">Review VirusTotal findings in Results</Link>}
+          </div>
+        )}
+        {cloudError && <p role="alert" className="text-xs text-red-300">{cloudError}</p>}
+      </div>
+
       {resumableScan && scanState !== "running" && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
@@ -107,10 +187,11 @@ export default function Scan() {
               {Number(resumableScan.scannedFiles || 0).toLocaleString()} / {Number(resumableScan.totalFiles || 0).toLocaleString()} files scanned
               {resumableScan.target ? ` in ${resumableScan.target}` : ""}.
             </p>
+            {resumableScan.virusTotalAllFiles && <p className="text-xs text-amber-100/70 mt-1">VirusTotal checks for every file are enabled for this interrupted scan.</p>}
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={resumeScan}
+              onClick={() => resumeScan(scanOptions)}
               className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded bg-emerald-500 text-slate-950 hover:bg-emerald-400 transition-colors"
             >
               <Play className="w-4 h-4" />

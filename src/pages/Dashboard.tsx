@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw, Cloud, KeyRound, SearchCheck, Trash2, UploadCloud } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import PageHeader from "../components/PageHeader";
+import UpdateJobProgress from "../components/UpdateJobProgress";
 import { formatSystemDateTime } from "../lib/dateFormat";
 
 export default function Dashboard() {
@@ -13,10 +14,12 @@ export default function Dashboard() {
   const [securiteInfoIncludePua, setSecuriteInfoIncludePua] = useState(false);
   const [securiteInfoBusy, setSecuriteInfoBusy] = useState(false);
   const [securiteInfoMessage, setSecuriteInfoMessage] = useState("");
+  const [securiteInfoJob, setSecuriteInfoJob] = useState<{ jobId: string; simulated?: boolean } | null>(null);
   const [saneSecurityDialogOpen, setSaneSecurityDialogOpen] = useState(false);
   const [saneSecurityProfile, setSaneSecurityProfile] = useState<"malware" | "complete">("malware");
   const [saneSecurityBusy, setSaneSecurityBusy] = useState(false);
   const [saneSecurityMessage, setSaneSecurityMessage] = useState("");
+  const [saneSecurityJobId, setSaneSecurityJobId] = useState<string | null>(null);
   const [virusTotalDialogOpen, setVirusTotalDialogOpen] = useState(false);
   const [virusTotalApiKey, setVirusTotalApiKey] = useState("");
   const [virusTotalCloudEnabled, setVirusTotalCloudEnabled] = useState(false);
@@ -25,16 +28,58 @@ export default function Dashboard() {
   const [virusTotalResultsUploadMaxSizeMb, setVirusTotalResultsUploadMaxSizeMb] = useState(20);
   const [virusTotalBusy, setVirusTotalBusy] = useState<"save" | "disconnect" | "refine" | null>(null);
   const [virusTotalMessage, setVirusTotalMessage] = useState("");
+  const [usageFetchBusy, setUsageFetchBusy] = useState(false);
+  const [usageFetchError, setUsageFetchError] = useState("");
+  const [usageRefreshEvery, setUsageRefreshEvery] = useState("500");
 
-  const fetchStatus = () => {
-    fetch("/api/status", { cache: "no-store" }).then(r => r.json()).then(setStatus);
-  };
+  const fetchStatus = useCallback(() => {
+    fetch("/api/status", { cache: "no-store" }).then(r => r.json()).then(setStatus).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (status?.signatureUpdateTarget === "securiteinfo" && status.signatureUpdateJobId) {
+      setSecuriteInfoJob(current => current?.jobId === status.signatureUpdateJobId ? current : { jobId: status.signatureUpdateJobId });
+    }
+    if (status?.saneSecurityUpdateJobId) setSaneSecurityJobId(status.saneSecurityUpdateJobId);
+  }, [status?.signatureUpdateTarget, status?.signatureUpdateJobId, status?.saneSecurityUpdateJobId]);
 
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    setUsageRefreshEvery(String(status?.settings?.virusTotalUsageRefreshEveryRequests ?? 500));
+  }, [status?.settings?.virusTotalUsageRefreshEveryRequests]);
+
+  const fetchVirusTotalUsage = async () => {
+    setUsageFetchBusy(true);
+    setUsageFetchError("");
+    try {
+      const response = await fetch("/api/virustotal-cloud/usage/refresh", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not fetch VirusTotal usage.");
+      setStatus((current: any) => current ? { ...current, virusTotalCloud: { ...current.virusTotalCloud, usage: data.usage } } : current);
+    } catch (error: any) { setUsageFetchError(error.message); }
+    finally { setUsageFetchBusy(false); }
+  };
+
+  const saveUsageRefreshEvery = async () => {
+    const parsed = Number(usageRefreshEvery);
+    const value = Number.isFinite(parsed) ? Math.max(1, Math.min(10000, Math.round(parsed))) : 500;
+    setUsageRefreshEvery(String(value));
+    if (value === (status?.settings?.virusTotalUsageRefreshEveryRequests ?? 500)) return;
+    setUsageFetchError("");
+    try {
+      const response = await fetch("/api/virustotal-cloud/usage/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refreshEveryRequests: value })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save the usage refresh interval.");
+      fetchStatus();
+    } catch (error: any) { setUsageFetchError(error.message); }
+  };
 
   const installEngine = async () => {
     try {
@@ -71,8 +116,8 @@ export default function Dashboard() {
       if (!updateRes.ok) throw new Error(updateData.error || "Connected, but the signature update could not start.");
 
       setSecuriteInfoSetupUrl("");
-      setSecuriteInfoDialogOpen(false);
-      setSecuriteInfoMessage("SecuriteInfo connected. The signature update has started; detailed progress is available on Updates.");
+      setSecuriteInfoJob({ jobId: updateData.jobId, simulated: updateData.simulated });
+      setSecuriteInfoMessage("SecuriteInfo connected. Signature update started.");
       fetchStatus();
     } catch (e: any) {
       setSecuriteInfoMessage(e.message || "Could not connect SecuriteInfo.");
@@ -103,7 +148,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not start the signature update.");
-      setSecuriteInfoMessage("SecuriteInfo settings saved. Signature update started. Open Updates to view detailed FreshClam output.");
+      setSecuriteInfoJob({ jobId: data.jobId, simulated: data.simulated });
+      setSecuriteInfoMessage("SecuriteInfo settings saved. Signature update started.");
       fetchStatus();
     } catch (e: any) {
       setSecuriteInfoMessage(e.message || "Could not start the signature update.");
@@ -149,9 +195,8 @@ export default function Dashboard() {
       const updateData = await updateRes.json();
       if (!updateRes.ok) throw new Error(updateData.error || "Configured, but the signature update could not start.");
 
-      setSaneSecurityMessage(
-        "Installation started. The first setup downloads the helper tools before verifying and installing the databases. Detailed progress is available on Updates."
-      );
+      setSaneSecurityJobId(updateData.jobId);
+      setSaneSecurityMessage("Installation started. The first setup downloads the helper tools before verifying and installing the databases.");
       fetchStatus();
     } catch (e: any) {
       setSaneSecurityMessage(e.message || "Could not configure SaneSecurity.");
@@ -167,7 +212,8 @@ export default function Dashboard() {
       const res = await fetch("/api/update-sanesecurity", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not start the SaneSecurity update.");
-      setSaneSecurityMessage("SaneSecurity update started. Detailed progress is available on Updates.");
+      setSaneSecurityJobId(data.jobId);
+      setSaneSecurityMessage("SaneSecurity update started.");
       fetchStatus();
     } catch (e: any) {
       setSaneSecurityMessage(e.message || "Could not start the SaneSecurity update.");
@@ -277,12 +323,11 @@ export default function Dashboard() {
   const virusTotalCheckedCount = Number(virusTotalCloud.checkedCount || 0);
   const virusTotalQueuedCount = Math.max(0, Number(virusTotalCloud.queuedCount || 0));
   const virusTotalTotalFindings = Number(virusTotalCloud.totalFindings || 0);
-  const virusTotalTotals = virusTotalCloud.totals || {};
-  const virusTotalDetectionVotes = Number(virusTotalTotals.malicious || 0) + Number(virusTotalTotals.suspicious || 0);
-  const virusTotalLastLabel = String(virusTotalCloud.lastLabel || "");
   const virusTotalUsageDay = virusTotalCloud.usage?.day || {};
   const virusTotalUsageDayCount = Number(virusTotalUsageDay.count || 0);
   const virusTotalUsageDayLimit = Number(virusTotalUsageDay.limit || 0);
+  const virusTotalUsageSync = virusTotalCloud.usage?.sync || {};
+  const usageFetchCoolingDown = Number(virusTotalUsageSync.nextFetchAllowedAt || 0) > Date.now();
   const formatUpdateDate = (value: any) => formatSystemDateTime(value);
   const metadataValueClass = "font-medium text-slate-200";
   const attentionValueClass = "font-medium text-amber-400";
@@ -498,21 +543,28 @@ export default function Dashboard() {
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
               <span className="text-slate-500">API today</span>
-              <span className="font-medium text-slate-200 text-right">
-                {virusTotalUsageDayLimit > 0 ? `${virusTotalUsageDayCount}/${virusTotalUsageDayLimit}` : "0/500"}
-              </span>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span className="font-medium text-slate-200 text-right">{virusTotalUsageDayCount}/{virusTotalUsageDayLimit}</span>
+                <button onClick={fetchVirusTotalUsage} disabled={!virusTotalConfigured || usageFetchBusy || usageFetchCoolingDown || virusTotalUsageSync.fetching}
+                  title={usageFetchCoolingDown ? "Usage fetches are limited to once per minute." : "Fetch usage and allowances reported by VirusTotal"}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-xs text-slate-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <RefreshCw className={`w-3 h-3 ${usageFetchBusy || virusTotalUsageSync.fetching ? "animate-spin" : ""}`} />
+                  {usageFetchBusy || virusTotalUsageSync.fetching ? "Fetching…" : "Fetch usage"}
+                </button>
+              </div>
             </div>
-            <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
-              <span className="text-slate-500">VT detections</span>
-              <span className={virusTotalDetectionVotes > 0 ? "font-medium text-amber-300 text-right" : metadataValueClass}>
-                {virusTotalDetectionVotes}
-              </span>
-            </div>
-            <div className="flex justify-between items-center py-2 gap-4">
-              <span className="text-slate-500">Last result</span>
-              <span className="font-medium text-slate-200 text-right">
-                {virusTotalLastLabel || "Never checked"}
-              </span>
+            <div className="space-y-2 text-xs border-b border-slate-800/50 pb-3">
+              <label className="flex flex-wrap items-center justify-between gap-2 text-slate-400">
+                <span>Auto-fetch every</span>
+                <span className="flex items-center gap-2"><input type="number" min={1} max={10000} value={usageRefreshEvery}
+                  onChange={event => setUsageRefreshEvery(event.target.value)} onBlur={saveUsageRefreshEvery}
+                  onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                  aria-label="Requests between VirusTotal usage fetches"
+                  className="w-20 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500" /> requests</span>
+              </label>
+              <p className="text-slate-500">{virusTotalUsageDay.source === "virustotal" ? "Reported by VirusTotal" : virusTotalUsageDay.source === "estimate_since_sync" ? "Estimated since last sync" : "Local estimate"}
+                {virusTotalUsageSync.fetchedAt ? ` · Synced ${formatSystemDateTime(virusTotalUsageSync.fetchedAt)}` : " · Not synced yet"}</p>
+              {(usageFetchError || virusTotalUsageSync.error) && <p role="status" className="text-amber-300">{usageFetchError || virusTotalUsageSync.error}</p>}
             </div>
           </div>
         </div>
@@ -561,6 +613,7 @@ export default function Dashboard() {
               </div>
               <button
                 onClick={() => setSecuriteInfoDialogOpen(false)}
+                aria-label="Close SecuriteInfo"
                 className="shrink-0 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg"
               >
                 <X className="w-5 h-5" />
@@ -662,6 +715,7 @@ export default function Dashboard() {
                   {securiteInfoMessage}
                 </div>
               )}
+              <UpdateJobProgress jobId={securiteInfoJob?.jobId || null} title="SecuriteInfo Output" simulated={securiteInfoJob?.simulated} onFinished={fetchStatus} />
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <a
                   href="https://www.securiteinfo.com/clients/customers/signup"
@@ -724,6 +778,7 @@ export default function Dashboard() {
               </div>
               <button
                 onClick={() => setSaneSecurityDialogOpen(false)}
+                aria-label="Close SaneSecurity"
                 className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg"
               >
                 <X className="w-5 h-5" />
@@ -784,6 +839,7 @@ export default function Dashboard() {
                   {saneSecurityMessage}
                 </div>
               )}
+              <UpdateJobProgress jobId={saneSecurityJobId} title="SaneSecurity Output" onFinished={fetchStatus} />
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex flex-wrap gap-4">

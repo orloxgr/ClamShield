@@ -651,6 +651,16 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-start justify-between gap-6 border-b border-slate-800 pb-4">
               <div>
+                <label htmlFor="virustotal-limit-warnings" className="text-slate-200 font-medium block">Show VirusTotal limit warnings</label>
+                <span className="text-slate-500 text-xs">Ask before checking more than 4 files and show the estimated time.</span>
+              </div>
+              <input id="virustotal-limit-warnings" type="checkbox"
+                checked={settings.virusTotalShowLimitWarnings !== false}
+                onChange={e => updateSettings({ ...settings, virusTotalShowLimitWarnings: e.target.checked })}
+                className="mt-1 w-5 h-5 rounded border-slate-600 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-900 bg-slate-800" />
+            </div>
+            <div className="flex items-start justify-between gap-6 border-b border-slate-800 pb-4">
+              <div>
                 <span className="text-slate-200 font-medium block">False-positive refinement via VirusTotal</span>
                 <span className="text-slate-500 text-xs">Automatically labels new Results findings with a VirusTotal verdict.</span>
               </div>

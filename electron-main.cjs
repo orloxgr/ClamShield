@@ -1352,12 +1352,54 @@ function pollScheduledScans(port) {
   setTimeout(tick, 3000);
 }
 
+function waitForWindowBackend(window, port) {
+  const origin = `http://127.0.0.1:${port}`;
+  let stopped = false;
+  let timer = null;
+  let request = null;
+  const stop = () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    request?.destroy();
+    request = null;
+  };
+  window.once('closed', stop);
+  const probe = () => {
+    if (stopped || window.isDestroyed() || isQuiting) return stop();
+    // Keep a page opened by a tray/context-menu action instead of resetting its route.
+    if (window.webContents.getURL().startsWith(`${origin}/`)) return stop();
+    let settled = false;
+    const retry = () => {
+      if (settled || stopped) return;
+      settled = true;
+      request = null;
+      timer = setTimeout(probe, 300);
+    };
+    request = http.get({ hostname: '127.0.0.1', port, path: '/api/ready', headers: apiHeaders() }, response => {
+      response.resume();
+      response.on('end', () => {
+        if (settled || stopped) return;
+        if (response.statusCode !== 200) return retry();
+        settled = true;
+        request = null;
+        window.loadURL(origin).then(stop).catch(() => { settled = false; retry(); });
+      });
+      response.on('error', retry);
+    });
+    request.on('error', retry);
+    request.setTimeout(1500, () => request?.destroy());
+  };
+  probe();
+  return stop;
+}
+
 function createWindow(port, startHidden = false) {
   let rendererRecovering = false;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     title: 'ClamShield',
+    backgroundColor: '#020617',
     autoHideMenuBar: true,
     show: !startHidden,
     webPreferences: {
@@ -1365,6 +1407,11 @@ function createWindow(port, startHidden = false) {
       contextIsolation: true
     },
     icon: path.join(__dirname, 'public/icon.png')
+  });
+  const window = mainWindow;
+  const painted = new Promise(resolve => {
+    window.once('ready-to-show', resolve);
+    window.once('closed', resolve);
   });
   attachWindowLogging(mainWindow, 'Main window');
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -1382,14 +1429,14 @@ function createWindow(port, startHidden = false) {
     }
   });
 
-  // Wait a moment for server to start, then load
-  const loadURL = () => {
-    mainWindow.loadURL(`http://127.0.0.1:${port}`).catch(() => {
-      setTimeout(loadURL, 500); // Retry until server is up
+  // This local page paints before the backend module is loaded, including cold starts.
+  const startup = window.loadFile(getPublicAssetPath('startup.html'))
+    .then(() => painted)
+    .then(() => { if (!window.isDestroyed()) waitForWindowBackend(window, port); })
+    .catch(error => {
+      console.warn('Could not load the startup shell:', error.message);
+      if (!window.isDestroyed()) waitForWindowBackend(window, port);
     });
-  };
-  
-  loadURL();
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (rendererRecovering || isQuiting || details.reason === 'clean-exit') return;
@@ -1398,7 +1445,9 @@ function createWindow(port, startHidden = false) {
     setTimeout(() => {
       rendererRecovering = false;
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.loadURL(`http://127.0.0.1:${port}`).catch(err => console.error("Failed to recover main window", err));
+        window.loadFile(getPublicAssetPath('startup.html'))
+          .then(() => waitForWindowBackend(window, port))
+          .catch(err => console.error("Failed to recover main window", err));
       }
     }, 1000);
   });
@@ -1414,6 +1463,7 @@ function createWindow(port, startHidden = false) {
   mainWindow.on('closed', function () {
     mainWindow = null;
   });
+  return startup;
 }
 
 function createTray() {
@@ -1483,10 +1533,11 @@ app.on('ready', async () => {
   writeMainLog('info', ['ClamShield Electron ready', { port, startHidden, argv: process.argv, version: app.getVersion() }]);
   console.log('ClamShield Electron starting', { port, startHidden, debugLoggingEnabled });
   await setApiSessionCookie(port);
+  createTray();
+  await createWindow(port, startHidden);
+  if (isQuiting || !mainWindow || mainWindow.isDestroyed()) return;
   startServer(port);
   writeMainLog('info', ['ClamShield backend process requested', { port }]);
-  createTray();
-  createWindow(port, startHidden);
   startContextMenuBridge();
   connectApiEvents(port);
   pollAppUpdates(port);

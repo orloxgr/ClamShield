@@ -227,22 +227,22 @@ export default function Quarantine() {
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <div className="px-4 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
             <span className="text-slate-400">
               Showing {rangeStart}-{rangeEnd} of {totalItems}
             </span>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <label className="flex items-center gap-2 text-slate-400">
                 Date
                 <input
                   type="date"
                   value={dateFilter}
                   onChange={e => setDateFilter(e.target.value)}
-                  className="date-picker-control bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  className="date-picker-control w-36 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
                 />
               </label>
               {dateFilter && (
-                <button onClick={() => setDateFilter("")} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">
+                <button onClick={() => setDateFilter("")} className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">
                   Clear
                 </button>
               )}
@@ -251,7 +251,7 @@ export default function Quarantine() {
                 <select
                   value={pageSize}
                   onChange={e => setPageSize(e.target.value === "all" ? "all" : Number(e.target.value) as PageSize)}
-                  className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                  className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
                 >
                   <option value={50}>50</option>
                   <option value={100}>100</option>
@@ -265,7 +265,7 @@ export default function Quarantine() {
                   <button
                     onClick={() => setPage(current => Math.max(1, current - 1))}
                     disabled={currentPage <= 1}
-                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors"
+                    className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors"
                   >
                     Previous
                   </button>
@@ -273,7 +273,7 @@ export default function Quarantine() {
                   <button
                     onClick={() => setPage(current => Math.min(pageCount, current + 1))}
                     disabled={currentPage >= pageCount}
-                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors"
+                    className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors"
                   >
                     Next
                   </button>
@@ -281,10 +281,17 @@ export default function Quarantine() {
               )}
             </div>
           </div>
-          <table className="w-full text-left text-sm">
+          <table className="w-full table-fixed text-left text-xs">
+            <colgroup>
+              <col className="w-11" />
+              <col className="w-[32%]" />
+              <col />
+              <col className="w-32" />
+              <col className="w-36" />
+            </colgroup>
             <thead className="bg-slate-800/50 text-slate-400">
               <tr>
-                <th className="px-6 py-4 font-medium">
+                <th className="px-3 py-3 font-medium">
                   <input
                     type="checkbox"
                     checked={allVisibleSelected}
@@ -293,16 +300,16 @@ export default function Quarantine() {
                     title="Select visible quarantine items"
                   />
                 </th>
-                <th className="px-6 py-4 font-medium">Detection Name</th>
-                <th className="px-6 py-4 font-medium">Original Location</th>
-                <th className="px-6 py-4 font-medium">Date Caught</th>
-                <th className="px-6 py-4 font-medium text-right">Actions</th>
+                <th className="px-3 py-3 font-medium">Detection Name</th>
+                <th className="px-3 py-3 font-medium">Original Location</th>
+                <th className="px-3 py-3 font-medium">Date Caught</th>
+                <th className="px-3 py-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
               {items.map((item, idx) => (
                 <tr key={idx} className="hover:bg-slate-800/50 transition-colors">
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-3">
                     <input
                       type="checkbox"
                       checked={Boolean(selectedIds[item.fileName])}
@@ -311,19 +318,24 @@ export default function Quarantine() {
                       title="Select quarantine item"
                     />
                   </td>
-                  <td className="px-6 py-4 font-medium text-red-400">{item.threatName}</td>
-                  <td className="px-6 py-4 text-slate-400 font-mono text-xs">{item.originalPath}</td>
-                  <td className="px-6 py-4">{formatSystemDateTime(item.date)}</td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-3 break-all text-[13px] leading-5 font-medium text-red-400">{item.threatName}</td>
+                  <td className="min-w-0 px-3 py-3 text-slate-400 font-mono text-xs">
+                    <div tabIndex={0} role="region" aria-label={`Original location: ${item.threatName}`} title={item.originalPath}
+                      className="max-w-full overflow-x-auto whitespace-nowrap pb-1.5 focus-visible:outline focus-visible:outline-1 focus-visible:outline-indigo-400">
+                      {item.originalPath}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 tabular-nums leading-5">{formatSystemDateTime(item.date)}</td>
+                  <td className="px-3 py-3">
                     <div className="flex justify-end">
                       <button
                         onClick={() => restoreAndAddException(item)}
                         disabled={restoringId === item.fileName}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-200 rounded text-xs font-medium transition-colors border border-slate-700"
+                        className="inline-flex max-w-full items-center gap-1.5 px-2 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-200 rounded text-xs font-medium transition-colors border border-slate-700"
                         title="Restore and add to exceptions"
                       >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        {restoringId === item.fileName ? "Restoring..." : "Restore + exception"}
+                        <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                        <span className="min-w-0 text-left leading-tight">{restoringId === item.fileName ? "Restoring..." : "Restore + exception"}</span>
                       </button>
                     </div>
                   </td>

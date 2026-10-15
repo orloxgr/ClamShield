@@ -1,0 +1,20 @@
+html, body { margin: 0; background: #020617; color: #e2e8f0; }
+.startup-shell { display: flex; height: 100vh; overflow: hidden; font-family: Inter, "Segoe UI", sans-serif; background: #020617; }
+.startup-sidebar { width: 255px; flex-shrink: 0; display: flex; flex-direction: column; background: #0f172a; border-right: 1px solid #1e293b; }
+.startup-brand { height: 80px; box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 24px; border-bottom: 1px solid #1e293b; font-size: 20px; font-weight: 700; color: #fff; }
+.startup-brand svg { color: #34d399; flex-shrink: 0; }
+.startup-nav { padding: 16px; color: #64748b; font-size: 15px; line-height: 24px; }
+.startup-nav div { padding: 10px 12px; margin-bottom: 4px; }
+.startup-footer { margin-top: auto; padding: 16px; color: #475569; border-top: 1px solid #1e293b; font-size: 12px; }
+.startup-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.startup-header { padding: 24px 32px; border-bottom: 1px solid #1e293b; }
+.startup-header h1 { margin: 0 0 8px; font-size: 30px; color: #fff; }
+.startup-header p { margin: 0; color: #94a3b8; font-size: 14px; }
+.startup-content { flex: 1; display: grid; place-items: center; padding: 32px; }
+.startup-loading { width: 100%; max-width: 360px; padding: 32px; box-sizing: border-box; text-align: center; background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; }
+.startup-spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #334155; border-top-color: #818cf8; border-radius: 50%; animation: startup-spin .8s linear infinite; }
+.startup-loading h2 { margin: 18px 0 8px; color: #e2e8f0; font-size: 16px; font-weight: 600; }
+.startup-loading p { margin: 0; color: #94a3b8; font-size: 13px; line-height: 1.6; }
+.startup-loading button { margin-top: 16px; padding: 8px 16px; border: 1px solid #475569; border-radius: 6px; background: #1e293b; color: #e2e8f0; cursor: pointer; }
+@keyframes startup-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .startup-spinner { animation-duration: 2s; } }

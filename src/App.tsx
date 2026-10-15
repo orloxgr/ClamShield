@@ -13,13 +13,14 @@ import Quarantine from "./pages/Quarantine";
 import Updates from "./pages/Updates";
 import HistoryPage from "./pages/History";
 import SettingsPage from "./pages/Settings";
+import StartupShell from "./components/StartupShell";
 import ExceptionsPage from "./pages/Exceptions";
 import ScheduledScanner from "./pages/ScheduledScanner";
 import DnsProtection from "./pages/DnsProtection";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { ScanProvider, useScan } from "./context/ScanContext";
-import React, { type ReactNode, useEffect, useState } from "react";
+import React, { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 // Tailwind class merger utility
 export function cn(...inputs: ClassValue[]) {
@@ -425,16 +426,35 @@ function Sidebar({ status }: { status?: any }) {
 
 export default function App() {
   const [status, setStatus] = useState<any>(null);
+  const [startupRetrying, setStartupRetrying] = useState(false);
+  const statusRequestRef = useRef<Promise<boolean> | null>(null);
 
-  const fetchStatus = () => {
-    fetch("/api/status").then(r => r.json()).then(setStatus).catch(error => {
-      console.error("Failed to load ClamShield status:", error);
-      sendClientLog("error", "Failed to load ClamShield status", {
-        message: error?.message,
-        stack: error?.stack
-      });
-    });
-  };
+  const fetchStatus = useCallback(() => {
+    if (statusRequestRef.current) return statusRequestRef.current;
+    const request = fetch("/api/status", { cache: "no-store" }).then(async response => {
+      if (!response.ok) throw new Error(`Status request failed (HTTP ${response.status}).`);
+      const data = await response.json();
+      setStatus(data);
+      setStartupRetrying(false);
+      return true;
+    }).catch(() => {
+      setStartupRetrying(true);
+      return false;
+    }).finally(() => { statusRequestRef.current = null; });
+    statusRequestRef.current = request;
+    return request;
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const load = async () => {
+      const loaded = await fetchStatus();
+      if (!loaded && !stopped) timer = window.setTimeout(load, 2000);
+    };
+    load();
+    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [fetchStatus]);
 
   useEffect(() => {
     const handleError = (event: ErrorEvent) => {
@@ -455,7 +475,6 @@ export default function App() {
     };
     window.addEventListener("error", handleError);
     window.addEventListener("unhandledrejection", handleRejection);
-    fetchStatus();
     return () => {
       window.removeEventListener("error", handleError);
       window.removeEventListener("unhandledrejection", handleRejection);
@@ -463,7 +482,7 @@ export default function App() {
   }, []);
 
   if (!status) {
-    return <div className="h-screen flex items-center justify-center bg-slate-950"><Loader2 className="w-8 h-8 animate-spin text-indigo-500" /></div>;
+    return <StartupShell retrying={startupRetrying} onRetry={fetchStatus} />;
   }
 
   return (

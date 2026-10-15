@@ -28,6 +28,15 @@ jobs:
       - name: TypeScript check
         run: npm run lint
 
+      - name: VirusTotal on-demand queue tests
+        run: npm run test:virustotal-scan
+
+      - name: FreshClam timeout tests
+        run: npm run test:updates
+
+      - name: Desktop startup tests
+        run: npm run test:startup
+
       - name: Build
         run: npm run build
 
