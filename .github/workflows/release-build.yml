@@ -28,6 +28,9 @@ jobs:
       - name: TypeScript check
         run: npm run lint
 
+      - name: Full dependency security gate
+        run: npm run audit:security
+
       - name: Build installer
         run: npm run build:exe
 

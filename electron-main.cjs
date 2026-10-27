@@ -186,11 +186,11 @@ ipcMain.handle('clamshield-ui-error', (event, payload = {}) => {
   showWindowFailure(win, { stage: payload.stage, code: payload.code, message: payload.message, details: payload.details, url: win.webContents.getURL() });
   return windowDiagnostics.get(win)?.diagnostic.id;
 });
-ipcMain.handle('clamshield-copy-diagnostics', event => {
+ipcMain.handle('clamshield-copy-diagnostics', async event => {
   const win = trustedMainSender(event);
   const diagnostic = windowDiagnostics.get(win)?.diagnostic;
   if (!diagnostic) throw new Error('No diagnostic record is available.');
-  clipboard.writeText(JSON.stringify(diagnostic, null, 2));
+  await clipboard.writeText(JSON.stringify(diagnostic, null, 2));
 });
 ipcMain.handle('clamshield-open-logs', async event => {
   trustedMainSender(event);

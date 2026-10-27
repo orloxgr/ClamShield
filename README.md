@@ -324,6 +324,7 @@ Before publishing a release:
 1. Bump the version in `package.json` and `package-lock.json`.
 2. Run `npm install`.
 3. Run `npm run lint`.
+   Run `npm run audit:security`; releases require zero known vulnerabilities across all dependencies, including Electron and build tools. A failed or unavailable audit blocks packaging.
 4. Run `npm run build:exe`.
 5. Run `npm run release:checksums`.
 6. Publish the installer, `latest.yml`, blockmap, and `SHA256SUMS.txt` together.

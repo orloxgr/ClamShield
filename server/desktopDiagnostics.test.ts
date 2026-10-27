@@ -329,3 +329,32 @@ test("desktop diagnostics IPC rejects other frames and unsafe external protocols
   await open({ sender, senderFrame: frame }, "https://example.invalid/report");
   assert.deepEqual(opened, ["https://example.invalid/report"]);
 });
+
+test("copy diagnostics waits for the asynchronous Electron clipboard and reports write failures", async () => {
+  const handlers: Record<string, any> = {};
+  const frame = {}, sender = { mainFrame: frame, getURL: () => "http://127.0.0.1:1234/" };
+  const win = { isDestroyed: () => false, webContents: sender };
+  const diagnostics = new WeakMap(); diagnostics.set(win, { diagnostic: { id: "test" } });
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => release = resolve);
+  const clipboard = { writeText: async (_text: string) => pending };
+  const context = vm.createContext({
+    URL, require, mainWindow: win, currentApiPort: 1234, windowDiagnostics: diagnostics,
+    getPublicAssetPath: () => "/app/public/startup.html", clipboard,
+    ipcMain: { handle: (name: string, callback: any) => handlers[name] = callback }
+  });
+  let code = functionSource("trustedMainSender");
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(tree) === "ipcMain.handle" && node.arguments[0]?.getText(tree) === "'clamshield-copy-diagnostics'") code += `\n${node.getText(tree)};`;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree); vm.runInContext(code, context);
+  let completed = false;
+  const copy = handlers["clamshield-copy-diagnostics"]({ sender, senderFrame: frame }).then(() => completed = true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, false);
+  release(); await copy;
+  assert.equal(completed, true);
+  clipboard.writeText = async () => { throw new Error("Clipboard unavailable"); };
+  await assert.rejects(handlers["clamshield-copy-diagnostics"]({ sender, senderFrame: frame }), /Clipboard unavailable/);
+});

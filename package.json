@@ -11,7 +11,7 @@
     "desktop": "electron .",
     "build": "vite build && esbuild server.ts --platform=node --packages=external --bundle --outfile=dist/server.cjs",
     "build:shell": "node scripts/build-shell-extension.cjs",
-    "prebuild:exe": "node scripts/prepare-release.cjs",
+    "prebuild:exe": "npm run audit:security && node scripts/prepare-release.cjs",
     "build:exe": "npm run build:shell && npm run build && electron-builder",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
@@ -22,13 +22,16 @@
     "test:startup": "node --import tsx --test server/startup.test.ts server/desktopDiagnostics.test.ts",
     "test:desktop-navigation": "node scripts/test-desktop-navigation.cjs",
     "test:alerts": "node --import tsx --test server/pendingThreats.test.ts && node scripts/test-desktop-alerts.cjs",
+    "test:release-security": "node --import tsx --test server/releaseSecurity.test.ts",
     "audit:critical": "npm audit --omit=dev --audit-level=critical",
+    "audit:security": "node scripts/verify-release-security.cjs",
     "release:checksums": "node scripts/generate-checksums.cjs",
     "test:exceptions": "node --import tsx --test server/exceptionReporting.test.ts server/exceptionRoutes.test.ts"
   },
   "build": {
     "appId": "com.clamshield.app",
     "productName": "ClamShield",
+    "beforePack": "scripts/verify-release-security.cjs",
     "afterSign": "scripts/sign-windows-artifacts.cjs",
     "afterAllArtifactBuild": "scripts/sign-windows-artifacts.cjs",
     "directories": {
@@ -115,12 +118,12 @@
     "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.5.4",
     "concurrently": "^9.2.4",
-    "electron": "^41.10.3",
+    "electron": "^45.0.0",
     "electron-builder": "^26.15.7",
     "esbuild": "^0.28.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.1",
     "typescript": "~5.8.2",
-    "vite": "^6.4.3"
+    "vite": "^6.4.5"
   }
 }

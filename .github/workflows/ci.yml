@@ -46,8 +46,11 @@ jobs:
       - name: Threat notification tests
         run: npm run test:alerts
 
+      - name: Release security gate tests
+        run: npm run test:release-security
+
       - name: Build
         run: npm run build
 
-      - name: Critical dependency audit
-        run: npm run audit:critical
+      - name: Full dependency security gate
+        run: npm run audit:security

@@ -40,9 +40,9 @@ The repository includes GitHub Actions CI for:
 - focused tests for exception reporting, desktop startup and diagnostics, threat alerts, update timeouts, and VirusTotal queues and usage
 - real Electron checks for interface navigation, preload IPC and threat popup actions
 - production build with `npm run build`
-- critical production dependency audit with `npm run audit:critical`
+- full dependency audit and installed-version verification with `npm run audit:security`
 
-The production dependency audit uses `--omit=dev`. Electron is declared as a development dependency but is included in the desktop installer, so this audit does not cover the bundled Electron runtime. Review the full dependency audit as well when assessing a release.
+The release security gate audits production, development and optional dependencies, including Electron, and requires zero known vulnerabilities at every severity. It also verifies installed package versions against the lockfile so stale local modules cannot enter an installer. CI and the release workflow run this gate; Electron Builder also runs it before packaging. An unavailable or incomplete audit blocks packaging. Electron is declared as a development dependency but is included in the installer, so a production-only audit is insufficient for release validation.
 
 The project does not yet have a comprehensive automated test suite. Manual release testing is still required, especially for:
 
