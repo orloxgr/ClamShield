@@ -1,4 +1,7 @@
 import express from "express";
+import diagnostics from "./public/desktop-diagnostics.cjs";
+import { PendingThreats } from "./server/pendingThreats";
+import { exceptionQuery, originSql, providerSql, reportStatus, updateReportStatus } from "./server/exceptionReporting";
 import fs from "fs/promises";
 import { appendFileSync, createWriteStream, createReadStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from "fs";
 import path from "path";
@@ -260,7 +263,7 @@ function writeAppLog(fileName: string, level: string, args: any[]) {
         mkdirSync(currentLogsDir, { recursive: true });
         const logPath = path.join(currentLogsDir, fileName);
         rotateLogIfNeeded(logPath);
-        const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${args.map(logArgToString).join(" ")}\n`;
+        const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${diagnostics.sanitize(args, [process.env.CLAMSHIELD_API_TOKEN]).map(logArgToString).join(" ")}\n`;
         appendFileSync(logPath, line, "utf8");
     } catch {
         // Logging must never break protection or scans.
@@ -299,7 +302,7 @@ console.warn = (...args: any[]) => {
 };
 console.error = (...args: any[]) => {
     originalConsole.error(...args);
-    if (debugLoggingEnabled) writeAppLog("server.log", "error", args);
+    writeAppLog("server.log", "error", args);
 };
 
 process.on("uncaughtException", error => {
@@ -4219,6 +4222,8 @@ function getAppStateDb() {
             updated_at INTEGER NOT NULL
         );
     `);
+    addAppStateColumnIfMissing(appStateDb, "exceptions", "kind", "TEXT NOT NULL DEFAULT 'unknown'");
+    addAppStateColumnIfMissing(appStateDb, "exceptions", "origin", "TEXT NOT NULL DEFAULT 'unknown'");
     return appStateDb;
 }
 
@@ -4495,14 +4500,17 @@ function insertHistoryRow(db: any, entry: any, fallbackIndex = 0) {
     );
 }
 
-function insertExceptionRow(db: any, exceptionPath: any, addedAt = Date.now()) {
+function insertExceptionRow(db: any, exceptionPath: any, addedAt = Date.now(), metadata: any = {}) {
+    metadata = metadata || {};
     const value = String(exceptionPath || "");
     const normalizedPath = normalizedStatePath(value);
     if (!value || !normalizedPath) return;
-    db.prepare(`
-        INSERT OR REPLACE INTO exceptions(normalized_path, path, added_at)
-        VALUES (?, ?, ?)
-    `).run(normalizedPath, value, addedAt);
+    let kind = metadata.kind || "unknown";
+    if (kind === "unknown") {
+        try { const stat = statSync(value); kind = stat.isDirectory() ? "folder" : stat.isFile() ? "file" : "unknown"; } catch {}
+    }
+    db.prepare(`INSERT OR REPLACE INTO exceptions(normalized_path, path, added_at, kind, origin) VALUES (?, ?, ?, ?, ?)`)
+        .run(normalizedPath, value, addedAt, kind, metadata.origin || "unknown");
 }
 
 function insertExceptionReportRow(db: any, normalizedPath: string, report: any) {
@@ -6084,106 +6092,39 @@ async function getExceptions() {
         .map((row: any) => row.path);
 }
 
-function exceptionProviderSql() {
-    return `
-        CASE
-            WHEN r.normalized_path IS NULL THEN 'No report'
-            WHEN LOWER(COALESCE(r.engine, '')) = 'yara' OR LOWER(COALESCE(r.threat_name, '')) LIKE 'yara:%' THEN 'YARA'
-            WHEN INSTR(LOWER(COALESCE(r.threat_name, '')), 'securiteinfo.com') > 0
-                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'securiteinfo.%'
-                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'securiteinfo_%'
-                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'securiteinfo-%' THEN 'SecuriteInfo'
-            WHEN LOWER(COALESCE(r.threat_name, '')) LIKE 'sanesecurity.%'
-                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'sanesecurity_%'
-                 OR LOWER(COALESCE(r.threat_name, '')) LIKE 'sanesecurity-%' THEN 'SaneSecurity'
-            ELSE 'ClamAV'
-        END
-    `;
-}
-
-function addExceptionDateClause(clauses: string[], params: any[], date: any) {
-    const dateRange = getLocalDateRangeMs(date);
-    if (dateRange) {
-        clauses.push("e.added_at >= ? AND e.added_at <= ?");
-        params.push(dateRange.start, dateRange.end);
-    }
-}
-
-async function getExceptionProviderOptions(options: { date?: string }) {
+async function getExceptionItemsPage(options: Record<string, any>) {
     await ensureAppStateReady();
-    const clauses: string[] = [];
-    const params: any[] = [];
-    addExceptionDateClause(clauses, params, options.date);
-    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
-    const rows = getAppStateDb().prepare(`
-        SELECT DISTINCT ${exceptionProviderSql()} AS provider
-        FROM exceptions e
-        LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path
-        ${whereSql}
-        ORDER BY provider COLLATE NOCASE
-    `).all(...params);
-    return rows
-        .map((row: any) => String(row.provider || "").trim())
-        .filter(Boolean);
-}
-
-async function getExceptionItemsPage(options: { limit?: number | null, offset?: number, date?: string, provider?: string }) {
-    await ensureAppStateReady();
-    const clauses: string[] = [];
-    const params: any[] = [];
-    addExceptionDateClause(clauses, params, options.date);
-    const provider = String(options.provider || "").trim();
-    if (provider && provider.toLowerCase() !== "all") {
-        clauses.push(`${exceptionProviderSql()} = ?`);
-        params.push(provider);
-    }
-    const whereSql = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const { where, params, orderBy } = exceptionQuery(options);
     const db = getAppStateDb();
-    const total = Number(db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM exceptions e
-        LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path
-        ${whereSql}
-    `).get(...params)?.count || 0);
-    const safeOffset = Math.max(0, Math.floor(Number(options.offset || 0)));
-    const limit = options.limit === null || options.limit === undefined
-        ? null
-        : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
-    const rows = db.prepare(`
-        SELECT e.path, e.added_at, r.payload AS report_payload
-        FROM exceptions e
-        LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path
-        ${whereSql}
-        ORDER BY e.added_at DESC, e.path COLLATE NOCASE ASC${limit ? " LIMIT ? OFFSET ?" : ""}
-    `).all(...params, ...(limit ? [limit, safeOffset] : []));
+    const from = " FROM exceptions e LEFT JOIN exception_reports r ON r.normalized_path = e.normalized_path";
+    const total = Number(db.prepare(`SELECT COUNT(*) AS count${from}${where}`).get(...params)?.count || 0);
+    const totalAll = Number(db.prepare("SELECT COUNT(*) AS count FROM exceptions").get()?.count || 0);
+    const limit = options.limit === null ? null : Math.max(1, Math.min(500, Math.floor(Number(options.limit) || 50)));
+    const offset = limit ? Math.min(Math.max(0, Math.floor(Number(options.offset) || 0)), Math.max(0, Math.ceil(total / limit) - 1) * limit) : 0;
+    const rows = db.prepare(`SELECT e.path, e.added_at, e.kind, ${originSql} AS origin, ${providerSql} AS provider_name, r.payload AS report_payload
+        ${from}${where} ORDER BY ${orderBy}${limit ? " LIMIT ? OFFSET ?" : ""}`)
+        .all(...params, ...(limit ? [limit, offset] : []));
     return {
         items: rows.map((row: any) => {
             const report = row.report_payload ? asRecord(parseAppStateJson(row.report_payload, {})) : null;
-            return {
-                path: row.path,
-                addedAt: Number(row.added_at || 0),
-                date: new Date(Number(row.added_at || Date.now())).toISOString(),
-                report: report ? {
-                    ...report,
-                    provider: getFalsePositiveProvider(report)
-                } : null
-            };
-        }),
-        total
+            return { path: row.path, addedAt: Number(row.added_at), kind: row.kind, origin: row.origin,
+                providerName: row.provider_name, report: report ? { ...report, reportStatus: reportStatus(report), provider: getFalsePositiveProvider(report) } : null };
+        }), total, totalAll, page: limit ? Math.floor(offset / limit) + 1 : 1
     };
 }
 
-async function saveExceptions(list: string[]) {
+async function saveExceptions(list: string[], newOrigin = "unknown") {
     await ensureAppStateReady();
     const db = getAppStateDb();
-    const existingRows = db.prepare("SELECT normalized_path, added_at FROM exceptions").all();
+    const existingRows = db.prepare("SELECT normalized_path, added_at, kind, origin FROM exceptions").all();
+    const existingMetadata = new Map(existingRows.map((row: any) => [String(row.normalized_path), row]));
     const existingAddedAt = new Map<string, number>(existingRows.map((row: any) => [String(row.normalized_path), Number(row.added_at || 0)]));
     const now = Date.now();
     runAppStateTransaction(db, () => {
         db.prepare("DELETE FROM exceptions").run();
         list.forEach((item, index) => {
             const key = normalizedStatePath(item);
-            insertExceptionRow(db, item, existingAddedAt.get(key) || now + index);
+            insertExceptionRow(db, item, existingAddedAt.get(key) || now + index, existingMetadata.get(key) || { origin: newOrigin });
         });
     });
     const normalizedPaths = new Set(list.map(item => normalizedStatePath(item)).filter(Boolean));
@@ -6243,7 +6184,7 @@ function exceptionReportKey(filePath: string) {
     return path.resolve(filePath).toLowerCase();
 }
 
-async function rememberExceptionDetection(result: any) {
+async function rememberExceptionDetection(result: any, addedFrom = "unknown") {
     if (!result?.originalPath) return null;
     const sha256 = result.sha256 || (existsSync(result.originalPath)
         ? await hashFile(result.originalPath).catch(() => "")
@@ -6253,6 +6194,7 @@ async function rememberExceptionDetection(result: any) {
         threatName: String(result.threatName || "Unknown Threat"),
         engine: String(result.engine || (String(result.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV")),
         source: String(result.source || "scan"),
+        addedFrom,
         yaraRuleset: result.yaraRuleset ? String(result.yaraRuleset) : "",
         sha256,
         detectedAt: Number(result.timestamp || Date.now()),
@@ -6275,7 +6217,7 @@ function getFalsePositiveProvider(report: any) {
             url: "https://github.com/YARAHQ/yara-forge/issues/new"
         };
     }
-    if (/securiteinfo\.com(?:[._-]|$)/i.test(threatName)) {
+    if (/securiteinfo\.com(?:[._-]|$)|^securiteinfo[._-]/i.test(threatName)) {
         return {
             id: "securiteinfo",
             name: "SecuriteInfo",
@@ -6284,7 +6226,7 @@ function getFalsePositiveProvider(report: any) {
             url: "https://www.securiteinfo.com/services-cybersecurite/contacter-securiteinfo.shtml"
         };
     }
-    if (/^sanesecurity\./i.test(threatName)) {
+    if (/^sanesecurity[._-]/i.test(threatName)) {
         return {
             id: "sanesecurity",
             name: "SaneSecurity",
@@ -6561,7 +6503,7 @@ function buildFalsePositiveReport(report: any) {
         "ClamShield false-positive report",
         "",
         `Detection: ${report.threatName || "Unknown Threat"}`,
-        `Engine: ${report.engine || "ClamAV"}`,
+        `Engine: ${report.engine || "Unavailable"}`,
         `File name: ${fileName}`,
         `SHA-256: ${report.sha256 || "Unavailable"}`,
         `Detection source: ${report.source || "scan"}`,
@@ -8010,8 +7952,7 @@ async function handleYaraDetection(settings: any, detection: any, options: any) 
             engine: "YARA",
             timestamp: Date.now()
         };
-        options.pendingThreats.push(pendingThreat);
-        if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+        await options.queuePendingThreat(pendingThreat);
         options.appendJobLogs(options.jobId, [
             `YARA threat found: ${displayFileName(detection.originalPath)}`,
             "Action: Waiting for your decision"
@@ -8361,7 +8302,16 @@ async function startServer() {
         const timer = setTimeout(() => process.exit(0), 2000);
         timer.unref?.();
     };
-    let pendingThreats: any[] = [];
+    const pendingThreatStore = new PendingThreats();
+    const pendingThreats = pendingThreatStore.items;
+    const pendingThreatActions = new Map<string, Promise<any>>();
+    const queuePendingThreat = async (threat: any) => {
+        const fingerprint = await getFileFingerprint(threat.originalPath);
+        // Keep unavailable-file detections visible, but ignore late reports for
+        // a file whose decision has already been completed.
+        const pending = pendingThreatStore.register(threat, fingerprint);
+        if (pending && pendingThreatHandler) pendingThreatHandler(pending);
+    };
     const virusTotalShieldQueue = new Map<string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string, forceCloudCheck?: boolean }>();
     const eventClients = new Set<express.Response>();
     const sendApiEventToClient = (client: express.Response, event: string, data: any) => {
@@ -8476,8 +8426,7 @@ async function startServer() {
                 engine: "VirusTotal",
                 timestamp: Date.now()
             };
-            pendingThreats.push(pendingThreat);
-            if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+            await queuePendingThreat(pendingThreat);
             return "Pending";
         }
 
@@ -8979,6 +8928,7 @@ async function startServer() {
 
         const enqueueShieldFile = (filePath: string, reason: "add" | "change") => {
             if (shouldSkipShieldPath(filePath)) return;
+            if (reason === "add") pendingThreatStore.fileAdded(filePath);
             const normalizedPath = path.resolve(filePath).toLowerCase();
             pendingShieldScans.set(normalizedPath, { filePath, reason });
             processShieldQueue();
@@ -8997,7 +8947,7 @@ async function startServer() {
             filesBeingScanned.add(normalizedPath);
             console.log(`Shield: File ${reason === "add" ? "detected" : "changed"} -> ${filePath}`);
             const fingerprint = await getFileFingerprint(filePath);
-            if (!fingerprint || cacheEntryMatches(fingerprint, shieldScanCache.get(normalizedPath)) || isSimulated) {
+            if (!fingerprint || (reason !== "add" && cacheEntryMatches(fingerprint, shieldScanCache.get(normalizedPath))) || isSimulated) {
                 filesBeingScanned.delete(normalizedPath);
                 return;
             }
@@ -9177,8 +9127,7 @@ async function startServer() {
                                                 threatName,
                                                 timestamp: Date.now()
                                             };
-                                            pendingThreats.push(pendingThreat);
-                                            if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+                                            await queuePendingThreat(pendingThreat);
                                             appendJobLogs(jobId, [`Threat found, waiting for user action: ${originalPath}`]);
                                             actionTaken = "Pending";
                                         } else {
@@ -9231,6 +9180,7 @@ async function startServer() {
                                 target: filePath,
                                 action: normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask")),
                                 pendingThreats,
+                                queuePendingThreat,
                                 notifyThreat: (threat: any) => sendApiEvent("threat", threat)
                             });
                             if (yaraResult.matches > 0) {
@@ -10413,7 +10363,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 res.status(500).json({ error: e.message });
             }
         } else {
-            res.json({ path: "" });
+            res.json({ path: "", simulated: true });
         }
     });
 
@@ -10448,7 +10398,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 res.status(500).json({ error: e.message });
             }
         } else {
-            res.json({ path: "" });
+            res.json({ path: "", simulated: true });
         }
     });
 
@@ -10468,7 +10418,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 existing.add(normalized);
                 addedCount++;
             }
-            if (addedCount > 0) await saveExceptions(exceptions);
+            if (addedCount > 0) await saveExceptions(exceptions, "manual");
             await addHistory({
                 type: "context-menu-exceptions",
                 target: targets.length === 1 ? targets[0] : `${targets.length} selected items`,
@@ -12663,7 +12613,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                     if (!exceptions.includes(result.originalPath)) {
                         exceptions.push(result.originalPath);
                     }
-                    await rememberExceptionDetection(result);
+                    await rememberExceptionDetection(result, "scan");
                     affectedCount++;
                 }
             }
@@ -12749,7 +12699,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 exceptions.push(result.originalPath);
                 await saveExceptions(exceptions);
             }
-            const exceptionReport = await rememberExceptionDetection(result);
+            const exceptionReport = await rememberExceptionDetection(result, "scan");
             await saveScanResults(results.filter((item: any) => item.id !== req.params.id));
             await addHistory({
                 type: "results-exception",
@@ -12780,53 +12730,69 @@ if ($dialog.ShowDialog() -eq 'OK') {
             threatName: "Win32.Test.SimulatedThreat.A",
             timestamp: Date.now()
         };
-        pendingThreats.push(pendingThreat);
-        if (pendingThreatHandler) pendingThreatHandler(pendingThreat);
+        const pending = pendingThreatStore.register(pendingThreat, null);
+        if (pending && pendingThreatHandler) pendingThreatHandler(pending);
         res.json({ success: true });
     });
 
     app.post("/api/pending-threats/:id/action", async (req, res) => {
         const threatId = req.params.id;
         const action = req.body.action; // "quarantine" | "exception" | "results"
-        const index = pendingThreats.findIndex(t => t.id === threatId);
-        
-        if (index === -1) {
-            return res.json({ success: false, error: "Threat not found" });
+        if (!["quarantine", "exception", "results"].includes(action)) {
+            return res.status(400).json({ success: false, error: "Invalid threat action." });
         }
-        
-        const threat = pendingThreats[index];
-
+        const threat = pendingThreats.find(t => t.id === threatId);
+        if (!threat) {
+            return res.json(pendingThreatStore.wasResolved(threatId)
+                ? { success: true, alreadyResolved: true }
+                : { success: false, error: "This alert is no longer available. Review the latest detections in Results." });
+        }
         try {
-            if (action === "quarantine") {
-                const quarantined = await quarantineFile(threat.originalPath, threat.threatName, settings.quarantineDir);
-                const qMap = await getQuarantineMap();
-                qMap[quarantined.fileName] = quarantined.metadata;
-                await saveQuarantineMap(qMap);
-            } else if (action === "exception") {
-                const exceptions = await getExceptions();
-                if (!exceptions.includes(threat.originalPath)) {
-                    exceptions.push(threat.originalPath);
-                    await saveExceptions(exceptions);
-                }
-                await rememberExceptionDetection(threat);
-            } else if (action === "results") {
-                await addScanResult({
-                    source: "shield",
-                    scanType: "shield",
-                    target: threat.originalPath,
-                    originalPath: threat.originalPath,
-                    threatName: threat.threatName,
-                    engine: threat.engine || (String(threat.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV"),
-                    yaraRuleset: threat.engine === "YARA" ? normalizeYaraRuleset(settings.yaraRuleset) : undefined
-                });
-            } else {
-                return res.status(400).json({ success: false, error: "Invalid threat action." });
+            if (pendingThreatActions.has(threatId)) {
+                return res.status(409).json({ success: false, error: "An action is already in progress for this file." });
             }
-            pendingThreats.splice(index, 1);
+            const task = (async () => {
+                if (action === "quarantine") {
+                    const quarantined = await quarantineFile(threat.originalPath, threat.threatName, settings.quarantineDir);
+                    Object.assign(quarantined.metadata, { detections: threat.detections });
+                    const qMap = await getQuarantineMap();
+                    qMap[quarantined.fileName] = quarantined.metadata;
+                    await saveQuarantineMap(qMap);
+                } else if (action === "exception") {
+                    const exceptions = await getExceptions();
+                    if (!exceptions.includes(threat.originalPath)) {
+                        exceptions.push(threat.originalPath);
+                        await saveExceptions(exceptions);
+                    }
+                    await rememberExceptionDetection(threat, "shield");
+                } else if (action === "results") {
+                    for (const detection of threat.detections || [threat]) {
+                        await addScanResult({
+                            source: "shield",
+                            scanType: "shield",
+                            target: threat.originalPath,
+                            originalPath: threat.originalPath,
+                            threatName: detection.threatName,
+                            engine: detection.engine || (String(detection.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV"),
+                            yaraRuleset: detection.engine === "YARA" ? normalizeYaraRuleset(settings.yaraRuleset) : undefined
+                        });
+                    }
+                }
+                pendingThreatStore.resolve(threatId);
+                sendApiEvent("threat-resolved", { id: threatId });
+            })();
+            pendingThreatActions.set(threatId, task);
+            try { await task; } finally { pendingThreatActions.delete(threatId); }
             res.json({ success: true });
         } catch (e: any) {
             console.error("Failed to apply pending threat action:", e?.message || e);
-            res.status(400).json({ success: false, error: e?.message || "Threat action failed." });
+            res.status(400).json({
+                success: false,
+                code: e?.code === "ENOENT" ? "FILE_UNAVAILABLE" : "ACTION_FAILED",
+                error: e?.code === "ENOENT"
+                    ? "The file is no longer at this location. It may have been moved, deleted or quarantined. Choose Decide later to keep the detection in Results."
+                    : e?.message || "Threat action failed."
+            });
         }
     });
 
@@ -12857,40 +12823,22 @@ if ($dialog.ShowDialog() -eq 'OK') {
 
     app.get("/api/exceptions/reporting", async (req, res) => {
         try {
-            const hasPagedQuery = req.query.page !== undefined || req.query.pageSize !== undefined || req.query.date !== undefined || req.query.provider !== undefined;
-            if (hasPagedQuery) {
-                const requestedPageSize = String(req.query.pageSize || "50").toLowerCase();
-                const page = Math.max(1, Math.floor(Number(req.query.page || 1) || 1));
-                const pageSize = requestedPageSize === "all"
-                    ? null
-                    : Math.max(1, Math.min(500, Math.floor(Number(requestedPageSize) || 50)));
-                const offset = pageSize ? (page - 1) * pageSize : 0;
-                const date = typeof req.query.date === "string" ? req.query.date : "";
-                const provider = typeof req.query.provider === "string" ? req.query.provider : "";
-                const paged = await getExceptionItemsPage({
-                    limit: pageSize,
-                    offset,
-                    date,
-                    provider
-                });
-                const providerOptions = await getExceptionProviderOptions({ date });
-                res.json({ items: paged.items, total: paged.total, page, pageSize: pageSize || "all", providerOptions });
-                return;
-            }
-            const [exceptions, reports] = await Promise.all([getExceptions(), getExceptionReports()]);
-            res.json(exceptions.map(exceptionPath => {
-                const report = reports[exceptionReportKey(exceptionPath)] || null;
-                return {
-                    path: exceptionPath,
-                    report: report ? {
-                        ...report,
-                        provider: getFalsePositiveProvider(report)
-                    } : null
-                };
-            }));
-        } catch (e: any) {
-            res.status(500).json({ error: e?.message || String(e) });
-        }
+            const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+            const pageSize = req.query.pageSize === "all" ? null : Math.max(1, Math.min(500, Math.floor(Number(req.query.pageSize) || 50)));
+            res.json(await getExceptionItemsPage({ ...req.query, limit: pageSize, offset: pageSize ? (page - 1) * pageSize : 0 }));
+        } catch (e: any) { res.status(400).json({ error: e.message }); }
+    });
+
+    app.post("/api/exceptions/add", async (req, res) => {
+        try {
+            const value = String(req.body?.path || "").trim();
+            if (!value || !path.isAbsolute(value)) throw new Error("Select an absolute file or folder path.");
+            await ensureAppStateReady();
+            const db = getAppStateDb();
+            if (db.prepare("SELECT 1 FROM exceptions WHERE normalized_path = ?").get(normalizedStatePath(value))) throw new Error("Path is already in exceptions.");
+            insertExceptionRow(db, value, Date.now(), { origin: "manual", kind: ["file", "folder"].includes(req.body?.kind) ? req.body.kind : "unknown" });
+            res.json({ success: true });
+        } catch (e: any) { res.status(400).json({ error: e.message }); }
     });
 
     app.post("/api/exceptions/delete-selected", async (req, res) => {
@@ -12975,45 +12923,38 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
+    // Preview is deliberately read-only: opening this dialog does not mean a report was submitted.
     app.post("/api/exceptions/report-false-positive", async (req, res) => {
         try {
             const exceptionPath = String(req.body?.path || "");
-            if (!exceptionPath) throw new Error("Missing exception path.");
-            const exceptions = await getExceptions();
-            if (!exceptions.some(item => path.resolve(item).toLowerCase() === path.resolve(exceptionPath).toLowerCase())) {
-                throw new Error("This path is not in exceptions.");
-            }
-            const reports = await getExceptionReports();
-            const report = reports[exceptionReportKey(exceptionPath)];
-            if (!report) {
-                throw new Error("No original detection information is available for this manually added exception.");
-            }
-            if (!report.sha256 && existsSync(report.originalPath)) {
-                report.sha256 = await hashFile(report.originalPath).catch(() => "");
-            }
-            const channel = String(req.body?.channel || "default").replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "default";
-            const openedAt = Date.now();
-            report.falsePositiveOpenedAt = report.falsePositiveOpenedAt || openedAt;
-            report.falsePositiveLastOpenedAt = openedAt;
-            report.falsePositiveChannels = {
-                ...(report.falsePositiveChannels && typeof report.falsePositiveChannels === "object" && !Array.isArray(report.falsePositiveChannels)
-                    ? report.falsePositiveChannels
-                    : {}),
-                [channel]: openedAt
-            };
-            reports[exceptionReportKey(exceptionPath)] = report;
-            await saveExceptionReports(reports);
-            res.json({ success: true, ...buildFalsePositiveReport(report) });
-        } catch (e: any) {
-            res.status(400).json({ success: false, error: e?.message || String(e) });
-        }
+            await ensureAppStateReady();
+            const db = getAppStateDb();
+            if (!db.prepare("SELECT 1 FROM exceptions WHERE normalized_path = ?").get(normalizedStatePath(exceptionPath))) throw new Error("This path is not in exceptions.");
+            const row = db.prepare("SELECT payload FROM exception_reports WHERE normalized_path = ?").get(normalizedStatePath(exceptionPath));
+            if (!row) throw new Error("No original detection information is available for this exception.");
+            const report = asRecord(parseAppStateJson(row.payload, {}));
+            if (!report.sha256 && existsSync(report.originalPath)) report.sha256 = await hashFile(report.originalPath).catch(() => "");
+            res.json({ success: true, ...buildFalsePositiveReport(report), report: { ...report, reportStatus: reportStatus(report) } });
+        } catch (e: any) { res.status(400).json({ success: false, error: e.message }); }
+    });
+
+    app.post("/api/exceptions/report-status", async (req, res) => {
+        try {
+            await ensureAppStateReady();
+            const db = getAppStateDb(), key = normalizedStatePath(String(req.body?.path || ""));
+            const row = db.prepare("SELECT r.payload FROM exception_reports r JOIN exceptions e ON e.normalized_path = r.normalized_path WHERE r.normalized_path = ?").get(key);
+            if (!row) throw new Error("No detection report exists for this exception.");
+            const report = updateReportStatus(asRecord(parseAppStateJson(row.payload, {})), String(req.body?.action || ""));
+            insertExceptionReportRow(db, key, report);
+            res.json({ success: true, reportStatus: reportStatus(report), reportSentAt: report.reportSentAt || null });
+        } catch (e: any) { res.status(400).json({ success: false, error: e.message }); }
     });
 
     app.post("/api/exceptions", async (req, res) => {
         try {
             const list = req.body.exceptions;
             if (Array.isArray(list)) {
-                await saveExceptions(list);
+                await saveExceptions(list, "manual");
                 res.json({ success: true });
             } else {
                 res.status(400).json({ error: "Invalid array" });
@@ -13207,13 +13148,29 @@ if ($dialog.ShowDialog() -eq 'OK') {
     } else {
         const distPath = path.join(runtimeDir);
         app.use(express.static(distPath));
-        app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
+        app.get("*", (req, res, next) => {
+            if (path.extname(req.path)) {
+                const error: any = new Error("A requested interface resource was not found.");
+                error.status = 404; return next(error);
+            }
+            res.sendFile(path.join(distPath, "index.html"), error => { if (error) next(error); });
+        });
     }
 
+    app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+        writeAppLog("server.log", "error", ["HTTP request failed", { method: req.method, path: req.path, code: error.code, status: error.status || 500, message: error.message, stack: error.stack }]);
+        if (res.headersSent) return next(error);
+        res.status(error.status || 500).json({ error: "The local service could not complete this request. See the application logs for details." });
+    });
     const PORT = process.env.PORT || 3000;
     app.listen(Number(PORT), "127.0.0.1", () => {
         console.log(`Server running on http://127.0.0.1:${PORT} (Simulated: ${isSimulated})`);
-    });
+    }).on("error", reportBackendStartupFailure);
 }
 
-startServer();
+function reportBackendStartupFailure(error: any) {
+    writeAppLog("server.log", "fatal", ["Backend startup failed", error]);
+    if (process.listenerCount("clamshield-backend-failed")) (process as NodeJS.EventEmitter).emit("clamshield-backend-failed", error);
+    else { originalConsole.error(error); process.exitCode = 1; }
+}
+startServer().catch(reportBackendStartupFailure);

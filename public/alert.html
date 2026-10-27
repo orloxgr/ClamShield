@@ -73,8 +73,11 @@
       display: grid;
       gap: 5px;
       align-content: start;
-      overflow: hidden;
+      overflow: auto;
     }
+
+    .action-error { margin: 0; color: #fca5a5; font-size: 12px; line-height: 1.4; }
+    .providers { color: #94a3b8; font-size: 11px; }
 
     .name {
       font-size: 13px;
@@ -170,6 +173,8 @@
     <section class="details">
       <div id="threatName" class="name"></div>
       <div id="threatPath" class="path"></div>
+      <div id="providers" class="providers" hidden></div>
+      <p id="actionError" class="action-error" role="alert" hidden></p>
     </section>
 
     <section class="actions">
@@ -226,9 +231,20 @@
     document.querySelector(".sub").textContent = subtitle;
     document.getElementById("threatName").textContent = name;
     document.getElementById("threatPath").textContent = filePath;
-    document.getElementById("closeBtn").addEventListener("click", () => window.close());
+    if (bridge && typeof bridge.onUpdate === "function") {
+      bridge.onUpdate(threat => {
+        document.getElementById("threatName").textContent = threat.threatName || name;
+        const providers = [...new Set((threat.detections || []).map(detection => detection.engine))].filter(Boolean);
+        const label = document.getElementById("providers");
+        label.textContent = providers.length > 1 ? `Detected by ${providers.join(" + ")}` : "";
+        label.hidden = !label.textContent;
+      });
+    }
+    const dismiss = () => mode === "notice" ? window.close() : sendAction("results");
+    if (mode !== "notice") document.getElementById("closeBtn").title = "Decide later";
+    document.getElementById("closeBtn").addEventListener("click", dismiss);
     window.addEventListener("keydown", event => {
-      if (event.key === "Escape") window.close();
+      if (event.key === "Escape") dismiss();
     });
 
     if (mode === "notice") {
@@ -243,8 +259,13 @@
       audio.play().catch(() => {});
     }
 
+    let actionInProgress = false;
     async function sendAction(action) {
+      if (actionInProgress) return;
+      actionInProgress = true;
       const buttons = document.querySelectorAll("button");
+      const errorMessage = document.getElementById("actionError");
+      errorMessage.hidden = true;
       buttons.forEach(button => button.disabled = true);
       try {
         if (bridge && typeof bridge.sendAction === "function") {
@@ -266,6 +287,9 @@
           threatId,
           message: error && error.message ? error.message : String(error)
         });
+        errorMessage.textContent = error && error.message ? error.message : "The action failed. Try again or choose Decide later.";
+        errorMessage.hidden = false;
+        actionInProgress = false;
         buttons.forEach(button => button.disabled = false);
       }
     }

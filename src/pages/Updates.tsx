@@ -647,7 +647,7 @@ export default function Updates() {
       <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
         <div className={cardHeaderClass}>
           <div className="flex items-center gap-4 min-w-0">
-            <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full"><DownloadCloud className="w-8 h-8" /></div>
+            <div className="p-3 bg-emerald-500/10 rounded-full"><img src="/shield.svg" width={32} height={32} alt="" aria-hidden="true" /></div>
             <div className="min-w-0">
               <h3 className="font-semibold text-white text-lg">ClamShield Application</h3>
               <p className="text-slate-400 text-sm">

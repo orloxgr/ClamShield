@@ -15,6 +15,8 @@ function functionSource(name: string) {
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function pollingFixture() {
+    let now = 0;
+    const failures: any[] = [];
     const timers: Array<{ callback: () => void; delay: number }> = [];
     const requests: any[] = [], navigations: string[] = [];
     const window = Object.assign(new EventEmitter(), {
@@ -24,6 +26,8 @@ function pollingFixture() {
         loadURL: async (url: string) => { navigations.push(url); window.url = url; }
     });
     const context = vm.createContext({
+        Date: { now: () => now },
+        showWindowFailure: (_window: any, error: any) => failures.push(error),
         isQuiting: false, apiHeaders: () => ({ "X-ClamShield-Session": "test-session" }),
         setTimeout: (callback: () => void, delay: number) => { const timer = { callback, delay }; timers.push(timer); return timer; },
         clearTimeout: (timer: any) => { const i = timers.indexOf(timer); if (i >= 0) timers.splice(i, 1); },
@@ -42,8 +46,18 @@ function pollingFixture() {
         requests[index].receive(response); response.emit("end");
     };
     context.wait(window, 1234);
-    return { window, timers, requests, navigations, reply };
+    return { window, timers, requests, navigations, reply, failures, advance: (ms: number) => { now += ms; } };
 }
+
+test("a backend that never becomes ready surfaces a diagnostic instead of waiting forever", () => {
+    const f = pollingFixture();
+    f.requests[0].emit("error", new Error("ECONNREFUSED"));
+    f.advance(45000);
+    f.timers.shift()!.callback();
+    assert.equal(f.failures[0].code, "BACKEND_TIMEOUT");
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.navigations.length, 0);
+});
 
 test("the startup shell stays visible through connection failures and opens the app only when the lightweight endpoint is ready", async () => {
     const f = pollingFixture();

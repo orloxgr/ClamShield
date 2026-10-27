@@ -1,3 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="#5fb885">
+  <g transform="translate(8.2 -9.4) scale(1.1)">
+    <path fill-rule="evenodd" d="M458 52C436 52 421 59 404 73C335 131 267 168 191 172C143 174 104 208 104 254V532C104 693 222 822 424 889C449 899 465 899 490 889C694 803 812 687 812 532V254C812 207 774 174 727 172C650 170 584 144 514 86C492 66 479 52 458 52ZM458 132C371 207 281 247 185 250Q182 250 182 254V532C182 651 285 753 458 816C631 753 734 651 734 532V254Q734 250 731 250C635 247 545 207 458 132Z"/>
+    <path id="horn" d="M326 286C289 307 266 345 271 387C275 426 300 453 333 451C354 450 374 439 380 423C383 412 372 405 359 398C326 377 316 345 326 316C329 304 340 286 331 285C329 284 328 285 326 286Z"/>
+    <use href="#horn" transform="translate(916 0) scale(-1 1)"/>
+    <path id="eye" d="M312 484L398 525C397 553 377 574 347 573C307 572 278 535 312 484Z"/>
+    <use href="#eye" transform="translate(916 0) scale(-1 1)"/>
+    <path d="M372 618Q458 695 546 618" fill="none" stroke="#5fb885" stroke-width="36" stroke-linecap="round"/>
+  </g>
 </svg>

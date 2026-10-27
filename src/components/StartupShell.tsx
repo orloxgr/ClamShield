@@ -2,7 +2,7 @@ export default function StartupShell({ retrying, onRetry }: { retrying?: boolean
   return (
     <div className="startup-shell" aria-busy="true">
       <aside className="startup-sidebar" aria-label="ClamShield navigation" aria-disabled="true">
-        <div className="startup-brand"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z" /></svg>ClamShield</div>
+        <div className="startup-brand"><img src="/shield.svg" width={32} height={32} alt="" aria-hidden="true" />ClamShield</div>
         <div className="startup-nav">{["Dashboard", "Shield", "On-Demand Scan", "Scheduled Scanner", "Results", "Exceptions", "Quarantine", "DNS Protection", "Updates", "History", "Settings"].map(label => <div key={label}>{label}</div>)}</div>
         <div className="startup-footer">Made by Byron Iniotakis</div>
       </aside>

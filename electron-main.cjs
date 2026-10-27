@@ -6,6 +6,11 @@ const net = require('net');
 const { randomBytes } = require('crypto');
 
 const http = require('http');
+const os = require('os');
+const { clipboard } = require('electron');
+const { sanitize, createDiagnostic, errorHtml } = require('./public/desktop-diagnostics.cjs');
+const windowDiagnostics = new WeakMap();
+const { notificationLayout } = require('./public/notification-layout.cjs');
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -14,7 +19,9 @@ let serverProcess;
 let tray = null;
 let isQuiting = false;
 let activeAlerts = new Map();
-let primaryDisplay;
+const notificationWindows = new Map();
+const dismissedAlerts = new Set();
+let notificationScreenListeners = false;
 let resultsReminderWindow = null;
 let scanSummaryWindow = null;
 let updateAvailableWindow = null;
@@ -93,7 +100,7 @@ function writeMainLog(level, args) {
     fs.mkdirSync(getLogsDir(), { recursive: true });
     const logPath = path.join(getLogsDir(), 'electron-main.log');
     rotateLogIfNeeded(logPath);
-    const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] ${args.map(logArgToString).join(' ')}\n`;
+    const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] ${sanitize(args, [apiSessionToken, contextMenuBridgeToken]).map(logArgToString).join(' ')}\n`;
     fs.appendFileSync(logPath, line, 'utf8');
   } catch {
     // Logging must never stop the app from launching.
@@ -132,7 +139,7 @@ console.warn = (...args) => {
 };
 console.error = (...args) => {
   originalConsole.error(...args);
-  if (debugLoggingEnabled) writeMainLog('error', args);
+  writeMainLog('error', args);
 };
 
 process.on('uncaughtException', (error) => {
@@ -145,40 +152,130 @@ process.on('unhandledRejection', (reason) => {
   originalConsole.error('Unhandled rejection:', reason);
 });
 
+function showWindowFailure(win, input) {
+  if (!win || win.isDestroyed() || isQuiting) return;
+  const previous = windowDiagnostics.get(win);
+  if (previous) return;
+  win.stopBackendWait?.();
+  clearTimeout(win.uiReadyTimer);
+  const diagnostic = createDiagnostic(input, { version: app.getVersion(), os: `${os.platform()} ${os.release()} ${os.arch()}` }, [apiSessionToken, contextMenuBridgeToken]);
+  const pageUrl = `data:text/html;charset=utf-8,${encodeURIComponent(errorHtml(diagnostic))}`;
+  windowDiagnostics.set(win, { diagnostic, pageUrl });
+  writeMainLog('error', ['Interface failure', diagnostic]);
+  win.loadURL(pageUrl).catch(error => writeMainLog('fatal', ['Could not display the diagnostic page', error]));
+}
+
+function trustedMainSender(event) {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted diagnostics request.');
+  const url = event.sender.getURL();
+  const diagnostic = windowDiagnostics.get(mainWindow);
+  const fileUrl = require('url').pathToFileURL(getPublicAssetPath('startup.html')).href;
+  let local = false;
+  try { local = new URL(url).origin === `http://127.0.0.1:${currentApiPort}`; } catch {}
+  if (!local && url !== fileUrl && url !== diagnostic?.pageUrl) throw new Error('Diagnostics are only available in the local app.');
+  return mainWindow;
+}
+
+ipcMain.handle('clamshield-open-external', async (event, value) => {
+  trustedMainSender(event);
+  if (typeof value !== 'string' || value.length > 64000 || !/^(https:\/\/|mailto:)/i.test(value)) throw new Error('Unsupported report address.');
+  await shell.openExternal(value);
+});
+ipcMain.handle('clamshield-ui-error', (event, payload = {}) => {
+  const win = trustedMainSender(event);
+  showWindowFailure(win, { stage: payload.stage, code: payload.code, message: payload.message, details: payload.details, url: win.webContents.getURL() });
+  return windowDiagnostics.get(win)?.diagnostic.id;
+});
+ipcMain.handle('clamshield-copy-diagnostics', event => {
+  const win = trustedMainSender(event);
+  const diagnostic = windowDiagnostics.get(win)?.diagnostic;
+  if (!diagnostic) throw new Error('No diagnostic record is available.');
+  clipboard.writeText(JSON.stringify(diagnostic, null, 2));
+});
+ipcMain.handle('clamshield-open-logs', async event => {
+  trustedMainSender(event);
+  fs.mkdirSync(getLogsDir(), { recursive: true });
+  const error = await shell.openPath(getLogsDir());
+  if (error) throw new Error(error);
+});
+ipcMain.handle('clamshield-retry-ui', async event => {
+  const win = trustedMainSender(event);
+  windowDiagnostics.delete(win);
+  await win.loadFile(getPublicAssetPath('startup.html')).catch(error => { showWindowFailure(win, { stage: 'Loading startup screen', code: error.code, message: error.message }); throw error; });
+  waitForWindowBackend(win, currentApiPort);
+});
+function markWindowUiReady(event) {
+  const win = trustedMainSender(event);
+  win.uiMounted = true;
+  clearTimeout(win.uiReadyTimer);
+  if (debugLoggingEnabled) writeMainLog('debug', ['Interface ready', { document: win.uiDocumentGeneration }]);
+  return true;
+}
+ipcMain.handle('clamshield-ui-ready', markWindowUiReady);
+process.on('clamshield-backend-failed', error => showWindowFailure(mainWindow, { stage: 'Starting local service', code: error.code || 'BACKEND_START_FAILED', message: error.message, details: error.stack }));
+
+async function verifyWindowStartup(win, generation, url) {
+  if (win.isDestroyed() || win.uiMounted || generation !== win.uiDocumentGeneration) return;
+  try {
+    // A missing IPC acknowledgement is not proof that the interface failed.
+    const state = await win.webContents.executeJavaScript(`(() => {
+      const root = document.getElementById('root');
+      return { mounted: document.documentElement.dataset.clamshieldUiReady === 'true' ||
+        Boolean(root && root.children.length && !root.querySelector('.startup-shell')),
+        readyState: document.readyState };
+    })()`);
+    if (win.isDestroyed() || win.uiMounted || generation !== win.uiDocumentGeneration) return;
+    if (state.mounted) {
+      win.uiMounted = true;
+      writeMainLog('warn', ['Interface rendered without a readiness acknowledgement', { generation }]);
+      return;
+    }
+    showWindowFailure(win, { stage: 'Starting interface', code: 'UI_START_TIMEOUT', message: 'The application interface did not finish starting within 30 seconds.', url, details: state });
+  } catch (error) {
+    // HTTP, resource and renderer-crash events handle confirmed failures separately.
+    // An inconclusive readiness probe must never replace a working page.
+    writeMainLog('warn', ['Could not verify interface readiness', error]);
+  }
+}
+
 function attachWindowLogging(win, label) {
   if (!win || !win.webContents) return;
-  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    if (debugLoggingEnabled) {
-      writeMainLog('error', [`${label} failed to load`, { errorCode, errorDescription, validatedURL }]);
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (errorCode === -3) return; // An intentionally replaced navigation is not a failure.
+    writeMainLog('error', [`${label} failed to load`, { errorCode, errorDescription, validatedURL, isMainFrame }]);
+    if (win === mainWindow && isMainFrame !== false && !validatedURL.startsWith('data:')) showWindowFailure(win, { stage: 'Loading interface', code: errorCode, message: errorDescription, url: validatedURL });
+  });
+  win.webContents.on('did-navigate', (_event, url, status) => {
+    if (win === mainWindow && status >= 400) showWindowFailure(win, { stage: 'Loading interface', code: `HTTP ${status}`, message: 'The local service could not serve the application page.', url });
+  });
+  win.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
+    const targetUrl = event.url ?? url;
+    const sameDocument = event.isSameDocument ?? isInPlace;
+    const mainFrame = event.isMainFrame ?? isMainFrame;
+    // BrowserRouter changes the URL without replacing the mounted React document.
+    if (sameDocument || mainFrame !== true || win !== mainWindow) return;
+    clearTimeout(win.uiReadyTimer);
+    win.uiMounted = false;
+    const generation = win.uiDocumentGeneration = (win.uiDocumentGeneration || 0) + 1;
+    if (targetUrl.startsWith(`http://127.0.0.1:${currentApiPort}/`)) {
+      windowDiagnostics.delete(win);
+      win.uiReadyTimer = setTimeout(() => verifyWindowStartup(win, generation, targetUrl), 30000);
     }
+  });
+  win.webContents.on('preload-error', (_event, preloadPath, error) => {
+    writeMainLog('error', [`${label} preload failed`, { preloadPath, error }]);
+    if (win === mainWindow) showWindowFailure(win, { stage: 'Starting interface bridge', code: 'PRELOAD_FAILED', message: error.message, details: error.stack });
   });
   win.webContents.on('render-process-gone', (_event, details) => {
-    const crash = {
-      reason: details && details.reason,
-      exitCode: details && details.exitCode
-    };
-    if (debugLoggingEnabled) {
-      try {
-        crash.url = win.webContents.getURL();
-        crash.title = win.getTitle();
-        crash.osProcessId = win.webContents.getOSProcessId();
-        crash.isVisible = win.isVisible();
-        crash.isDestroyed = win.isDestroyed();
-      } catch (error) {
-        if (debugLoggingEnabled) writeMainLog('debug', [`${label} crash detail enrichment failed`, error]);
-      }
-    }
-    writeMainLog('fatal', [`${label} renderer process gone`, crash]);
+    writeMainLog('fatal', [`${label} renderer process gone`, details]);
+    if (win === mainWindow && details.reason !== 'clean-exit') showWindowFailure(win, { stage: 'Running interface', code: `RENDERER_${details.reason}`, message: 'The interface process stopped unexpectedly.', details });
   });
-  win.webContents.on('unresponsive', () => {
-    if (debugLoggingEnabled) writeMainLog('warn', [`${label} window became unresponsive`]);
+  win.webContents.on('unresponsive', () => writeMainLog('warn', [`${label} window became unresponsive`]));
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const severity = event.level || (level === 3 ? 'error' : level === 2 ? 'warning' : 'info');
+    if (debugLoggingEnabled || severity === 'error') writeMainLog(severity === 'error' ? 'error' : 'debug', [`${label} console`, { message: event.message || message, line: event.lineNumber || line, sourceId: event.sourceId || sourceId }]);
   });
-  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    const isErrorLevel = level >= 2;
-    if (debugLoggingEnabled) {
-      writeMainLog(isErrorLevel ? 'error' : 'debug', [`${label} console`, { message, line, sourceId }]);
-    }
-  });
+  win.once('closed', () => { clearTimeout(win.uiReadyTimer); win.stopBackendWait?.(); });
 }
 
 function parseStoredSettingValue(value) {
@@ -274,23 +371,30 @@ function readAppSettings() {
 }
 
 async function handleThreatEvent(threat, port) {
-  if (!threat || !threat.id || activeAlerts.has(threat.id)) return;
-  activeAlerts.set(threat.id, true);
-  let playSound = false;
-  try {
-    const status = await requestJson(port, '/api/status');
-    const settings = status.settings || {};
-    playSound = settings.playSoundOnAlert === true;
-    debugLoggingEnabled = settings.enableDebugLog === true;
-  } catch {
-    // If status is temporarily unavailable, still show the threat alert.
+  if (!threat || !threat.id || dismissedAlerts.has(threat.id)) return;
+  if (activeAlerts.has(threat.id)) {
+    const win = activeAlerts.get(threat.id);
+    if (win !== true && !win.isDestroyed()) {
+      win.latestThreat = threat;
+      win.webContents.send('clamshield-alert-update', threat);
+    }
+    return;
   }
-  createAlertWindow(threat, port, playSound);
+  const existing = [...activeAlerts.values()].find(win => win !== true && !win.isDestroyed() &&
+    win.threatPath === String(threat.originalPath || '').toLowerCase());
+  if (existing) return;
+  activeAlerts.set(threat.id, true);
+  // Reading /api/status here delayed every alert behind aggregate engine stats.
+  const settings = readAppSettings();
+  createAlertWindow(threat, port, settings.playSoundOnAlert === true);
 }
 
 function handleApiEvent(eventName, data, port) {
   if (eventName === 'threat') {
     handleThreatEvent(data, port).catch(error => console.warn('Failed to handle threat event', error.message));
+  } else if (eventName === 'threat-resolved') {
+    const win = activeAlerts.get(data?.id);
+    if (win && win !== true && !win.isDestroyed()) win.close();
   } else if (eventName === 'scan-summary') {
     if (data && !(scanSummaryWindow && !scanSummaryWindow.isDestroyed())) {
       createScanSummaryWindow(data, port);
@@ -356,20 +460,48 @@ function connectApiEvents(port) {
   req.end();
 }
 
+function reflowNotifications() {
+  const { screen } = require('electron');
+  const displays = screen.getAllDisplays();
+  for (const entry of notificationWindows.values()) {
+    if (!displays.some(display => display.id === entry.displayId)) entry.displayId = screen.getPrimaryDisplay().id;
+  }
+  for (const display of displays) {
+    const entries = [...notificationWindows.entries()].filter(([win, entry]) => !win.isDestroyed() && entry.ready && entry.displayId === display.id);
+    const bounds = notificationLayout(display.workArea, entries.map(([win]) => win.getBounds()));
+    entries.forEach(([win], index) => {
+      if (!bounds[index]) { win.hide(); return; }
+      win.setBounds(bounds[index]);
+      if (!win.isVisible()) win.showInactive();
+    });
+  }
+}
+
+function trackNotification(win) {
+  const { screen } = require('electron');
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  notificationWindows.set(win, { displayId: display.id, ready: false });
+  win.once('ready-to-show', () => {
+    const entry = notificationWindows.get(win);
+    if (entry) entry.ready = true;
+    reflowNotifications();
+  });
+  win.once('closed', () => { notificationWindows.delete(win); reflowNotifications(); });
+  if (!notificationScreenListeners) {
+    notificationScreenListeners = true;
+    for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, reflowNotifications);
+  }
+}
+
 function createAlertWindow(threat, port, playSound) {
-   const { screen } = require('electron');
-   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
-   const workArea = primaryDisplay.workArea;
 
    const alertWidth = 460;
-   const alertHeight = 205;
-   const offset = (activeAlerts.size - 1) * 225; 
+   const alertHeight = 240;
 
    const alertWin = new BrowserWindow({
       width: alertWidth,
       height: alertHeight,
-      x: workArea.x + workArea.width - alertWidth - 20,
-      y: workArea.y + workArea.height - alertHeight - 20 - offset,
+      show: false,
       frame: false,
       transparent: false,
       backgroundColor: '#0f172a',
@@ -386,10 +518,16 @@ function createAlertWindow(threat, port, playSound) {
    });
    
    activeAlerts.set(threat.id, alertWin);
+   alertWin.threatPath = String(threat.originalPath || '').toLowerCase();
+   alertWin.latestThreat = threat;
+   trackNotification(alertWin);
    attachWindowLogging(alertWin, 'Threat alert');
+   alertWin.webContents.on('did-finish-load', () => alertWin.webContents.send('clamshield-alert-update', alertWin.latestThreat));
 
    alertWin.on('closed', () => {
       activeAlerts.delete(threat.id);
+      dismissedAlerts.add(threat.id);
+      if (dismissedAlerts.size > 1000) dismissedAlerts.delete(dismissedAlerts.values().next().value);
    });
    
    console.debug('Opening threat alert window', { threatId: threat.id, playSound });
@@ -411,15 +549,10 @@ function createAlertWindow(threat, port, playSound) {
 }
 
 function createResultsReminderWindow(reminder, port) {
-   const { screen } = require('electron');
-   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
-   const workArea = primaryDisplay.workArea;
-
    resultsReminderWindow = new BrowserWindow({
       width: 440,
       height: 180,
-      x: workArea.x + workArea.width - 440 - 20,
-      y: workArea.y + workArea.height - 180 - 20,
+      show: false,
       frame: false,
       transparent: false,
       backgroundColor: '#0f172a',
@@ -435,6 +568,7 @@ function createResultsReminderWindow(reminder, port) {
       }
    });
 
+   trackNotification(resultsReminderWindow);
    attachWindowLogging(resultsReminderWindow, 'Results reminder');
 
    resultsReminderWindow.on('closed', () => {
@@ -459,15 +593,10 @@ function createResultsReminderWindow(reminder, port) {
 }
 
 function createScanSummaryWindow(summary, port) {
-   const { screen } = require('electron');
-   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
-   const workArea = primaryDisplay.workArea;
-
    scanSummaryWindow = new BrowserWindow({
       width: 460,
       height: 205,
-      x: workArea.x + workArea.width - 460 - 20,
-      y: workArea.y + workArea.height - 205 - 20,
+      show: false,
       frame: false,
       transparent: false,
       backgroundColor: '#0f172a',
@@ -482,6 +611,7 @@ function createScanSummaryWindow(summary, port) {
       }
    });
 
+   trackNotification(scanSummaryWindow);
    attachWindowLogging(scanSummaryWindow, 'Scan summary');
 
    scanSummaryWindow.on('closed', () => {
@@ -514,10 +644,6 @@ function createScanSummaryWindow(summary, port) {
 }
 
 function createUpdateAvailableWindow(update, config, port) {
-   const { screen } = require('electron');
-   if(!primaryDisplay) primaryDisplay = screen.getPrimaryDisplay();
-   const workArea = primaryDisplay.workArea;
-
    if (updateAvailableWindow && !updateAvailableWindow.isDestroyed()) {
       updateAvailableWindow.close();
    }
@@ -525,8 +651,7 @@ function createUpdateAvailableWindow(update, config, port) {
    updateAvailableWindow = new BrowserWindow({
       width: 460,
       height: 190,
-      x: workArea.x + workArea.width - 460 - 20,
-      y: workArea.y + workArea.height - 190 - 20,
+      show: false,
       frame: false,
       transparent: false,
       backgroundColor: '#0f172a',
@@ -541,6 +666,7 @@ function createUpdateAvailableWindow(update, config, port) {
       }
    });
 
+   trackNotification(updateAvailableWindow);
    attachWindowLogging(updateAvailableWindow, 'Update available');
 
    updateAvailableWindow.on('closed', () => {
@@ -585,7 +711,7 @@ function getFreePort() {
   });
 }
 
-function requestJson(port, pathName, method = 'GET', body = null) {
+function requestJson(port, pathName, method = 'GET', body = null, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
     const req = http.request({
@@ -615,6 +741,7 @@ function requestJson(port, pathName, method = 'GET', body = null) {
       });
     });
     req.on('error', reject);
+    if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy(new Error('The action timed out. Check Results before trying again.')));
     if (payload) req.write(payload);
     req.end();
   });
@@ -824,12 +951,17 @@ ipcMain.handle('clamshield-alert-action', async (_event, payload = {}) => {
   if (!currentApiPort || !threatId || !action) {
     throw new Error('The alert action is missing required data.');
   }
-  return requestJson(
-    currentApiPort,
-    `/api/pending-threats/${encodeURIComponent(threatId)}/action`,
-    'POST',
-    { action }
-  );
+  try {
+    return await requestJson(
+      currentApiPort,
+      `/api/pending-threats/${encodeURIComponent(threatId)}/action`,
+      'POST',
+      { action },
+      30000
+    );
+  } catch (error) {
+    return { success: false, error: error.message || 'The action failed. Try again or choose Decide later.' };
+  }
 });
 
 ipcMain.handle('clamshield-alert-log', async (_event, payload = {}) => {
@@ -1353,6 +1485,8 @@ function pollScheduledScans(port) {
 }
 
 function waitForWindowBackend(window, port) {
+  window.stopBackendWait?.();
+  const startedAt = Date.now();
   const origin = `http://127.0.0.1:${port}`;
   let stopped = false;
   let timer = null;
@@ -1362,10 +1496,17 @@ function waitForWindowBackend(window, port) {
     if (timer) clearTimeout(timer);
     request?.destroy();
     request = null;
+    window.removeListener?.('closed', stop);
   };
+  window.stopBackendWait = stop;
   window.once('closed', stop);
   const probe = () => {
     if (stopped || window.isDestroyed() || isQuiting) return stop();
+    if (Date.now() - startedAt >= 45000) {
+      stop();
+      showWindowFailure(window, { stage: 'Connecting to local service', code: 'BACKEND_TIMEOUT', message: 'The local service did not become ready within 45 seconds.' });
+      return;
+    }
     // Keep a page opened by a tray/context-menu action instead of resetting its route.
     if (window.webContents.getURL().startsWith(`${origin}/`)) return stop();
     let settled = false;
@@ -1394,7 +1535,6 @@ function waitForWindowBackend(window, port) {
 }
 
 function createWindow(port, startHidden = false) {
-  let rendererRecovering = false;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -1404,7 +1544,8 @@ function createWindow(port, startHidden = false) {
     show: !startHidden,
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      preload: getPublicAssetPath('desktop-preload.cjs')
     },
     icon: path.join(__dirname, 'public/icon.png')
   });
@@ -1422,7 +1563,7 @@ function createWindow(port, startHidden = false) {
   });
   mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
     const localOrigin = `http://127.0.0.1:${port}`;
-    if (targetUrl.startsWith(localOrigin)) return;
+    try { if (new URL(targetUrl).origin === localOrigin) return; } catch {}
     event.preventDefault();
     if (/^(https?:\/\/|mailto:)/i.test(targetUrl)) {
       shell.openExternal(targetUrl).catch(error => console.warn('Failed to open external link', error.message));
@@ -1437,20 +1578,6 @@ function createWindow(port, startHidden = false) {
       console.warn('Could not load the startup shell:', error.message);
       if (!window.isDestroyed()) waitForWindowBackend(window, port);
     });
-
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    if (rendererRecovering || isQuiting || details.reason === 'clean-exit') return;
-    rendererRecovering = true;
-    console.warn('Main window renderer stopped; reloading UI', details);
-    setTimeout(() => {
-      rendererRecovering = false;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        window.loadFile(getPublicAssetPath('startup.html'))
-          .then(() => waitForWindowBackend(window, port))
-          .catch(err => console.error("Failed to recover main window", err));
-      }
-    }, 1000);
-  });
 
   mainWindow.on('close', function (event) {
     if (!isQuiting) {
@@ -1521,6 +1648,7 @@ function startServer(port) {
     }
   } catch (err) {
     console.error("Failed to start server:", err);
+    showWindowFailure(mainWindow, { stage: 'Starting local service', code: err.code || 'BACKEND_START_FAILED', message: err.message, details: err.stack });
   }
 }
 

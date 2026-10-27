@@ -417,7 +417,11 @@ export default function Dashboard() {
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
               <span className="text-slate-500">YARA Engine</span>
               <span className={status.hasYaraEngine ? metadataValueClass : attentionValueClass}>
-                {status.hasYaraEngine ? "Installed" : "Not installed"}
+                {status.hasYaraEngine
+                  ? /^\d/.test(status.stats.yaraEngineVersion || "")
+                    ? `YARA ${status.stats.yaraEngineVersion}`
+                    : "Installed · version unavailable"
+                  : "Not installed"}
               </span>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">

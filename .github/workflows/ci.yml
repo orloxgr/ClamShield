@@ -34,8 +34,17 @@ jobs:
       - name: FreshClam timeout tests
         run: npm run test:updates
 
+      - name: Exception reporting tests
+        run: npm run test:exceptions
+
       - name: Desktop startup tests
         run: npm run test:startup
+
+      - name: Real Electron navigation test
+        run: npm run test:desktop-navigation
+
+      - name: Threat notification tests
+        run: npm run test:alerts
 
       - name: Build
         run: npm run build

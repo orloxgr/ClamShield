@@ -13,6 +13,7 @@ import Quarantine from "./pages/Quarantine";
 import Updates from "./pages/Updates";
 import HistoryPage from "./pages/History";
 import SettingsPage from "./pages/Settings";
+import { reportUiFailure } from "./lib/uiDiagnostics";
 import StartupShell from "./components/StartupShell";
 import ExceptionsPage from "./pages/Exceptions";
 import ScheduledScanner from "./pages/ScheduledScanner";
@@ -41,54 +42,6 @@ function normalizeSetupLogLines(lines: unknown[]) {
     .flatMap(line => String(line ?? "").split(/\r\n|\n|\r/g))
     .map(line => line.trim())
     .filter(Boolean);
-}
-
-class ErrorBoundary extends React.Component<{ children: ReactNode }, { error: Error | null }> {
-  constructor(props: { children: ReactNode }) {
-    super(props);
-  }
-
-  state: { error: Error | null } = { error: null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
-  componentDidCatch(error: Error, info: any) {
-    console.error("ClamShield UI crashed:", error, info);
-    sendClientLog("error", "ClamShield UI crashed", {
-      message: error.message,
-      stack: error.stack,
-      componentStack: info?.componentStack
-    });
-  }
-
-  render() {
-    if (!this.state.error) return (this as any).props.children;
-
-    return (
-      <div className="h-screen bg-slate-950 text-slate-200 flex items-center justify-center p-8">
-        <div className="max-w-xl w-full bg-slate-900 border border-red-500/30 rounded-xl p-6 shadow-2xl">
-          <div className="flex items-center gap-3 text-red-400 mb-3">
-            <AlertTriangle className="w-5 h-5" />
-            <h1 className="font-semibold">ClamShield UI recovered from an error</h1>
-          </div>
-          <p className="text-sm text-slate-400 mb-4">
-            The scan service can keep running in the background. Reload the interface to continue.
-          </p>
-          <pre className="max-h-40 overflow-auto rounded bg-slate-950 border border-slate-800 p-3 text-xs text-slate-400 mb-4">
-            {this.state.error.message}
-          </pre>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium"
-          >
-            Reload UI
-          </button>
-        </div>
-      </div>
-    );
-  }
 }
 
 function SetupWizard({ status, onComplete }: { status: any, onComplete: () => void }) {
@@ -264,7 +217,7 @@ function SetupWizard({ status, onComplete }: { status: any, onComplete: () => vo
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-8 shadow-2xl">
         <div className="flex flex-col items-center text-center space-y-6">
           <div className="w-16 h-16 bg-indigo-500/10 rounded-full flex items-center justify-center mb-2">
-            <Shield className="w-8 h-8 text-indigo-400" />
+            <img src="/shield.svg" width={32} height={32} alt="" aria-hidden="true" className="shrink-0" />
           </div>
           
           <div>
@@ -384,7 +337,7 @@ function Sidebar({ status }: { status?: any }) {
   return (
     <div className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col h-full text-slate-300">
       <div className="p-6 flex items-center gap-3 border-b border-slate-800">
-        <Shield className="w-8 h-8 text-emerald-500" />
+        <img src="/shield.svg" width={32} height={32} alt="" aria-hidden="true" className="shrink-0" />
         <h1 className="text-xl font-bold text-white tracking-wide">ClamShield</h1>
       </div>
       <nav className="flex-1 p-4 space-y-1">
@@ -427,23 +380,35 @@ function Sidebar({ status }: { status?: any }) {
 export default function App() {
   const [status, setStatus] = useState<any>(null);
   const [startupRetrying, setStartupRetrying] = useState(false);
+  const startupErrorRef = useRef("The local service did not return protection status.");
   const statusRequestRef = useRef<Promise<boolean> | null>(null);
 
   const fetchStatus = useCallback(() => {
     if (statusRequestRef.current) return statusRequestRef.current;
-    const request = fetch("/api/status", { cache: "no-store" }).then(async response => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    const request = fetch("/api/status", { cache: "no-store", signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error(`Status request failed (HTTP ${response.status}).`);
       const data = await response.json();
       setStatus(data);
       setStartupRetrying(false);
       return true;
-    }).catch(() => {
+    }).catch((error: any) => {
+      const message = error.name === "AbortError" ? "Protection status request timed out after 10 seconds." : error.message;
+      if (startupErrorRef.current !== message) sendClientLog("error", "Initial protection status unavailable", { message });
+      startupErrorRef.current = message;
       setStartupRetrying(true);
       return false;
-    }).finally(() => { statusRequestRef.current = null; });
+    }).finally(() => { window.clearTimeout(timeout); statusRequestRef.current = null; });
     statusRequestRef.current = request;
     return request;
   }, []);
+
+  useEffect(() => {
+    if (status) return;
+    const timer = window.setTimeout(() => reportUiFailure({ stage: "Loading protection status", code: "STATUS_UNAVAILABLE", message: startupErrorRef.current }), 45000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   useEffect(() => {
     let stopped = false;
@@ -487,7 +452,6 @@ export default function App() {
 
   return (
     <ScanProvider>
-      <ErrorBoundary>
         <Router>
           <div className="flex h-screen bg-slate-950 text-slate-200 selection:bg-emerald-500/30">
             <SetupWizard status={status} onComplete={fetchStatus} />
@@ -509,7 +473,6 @@ export default function App() {
             </main>
           </div>
         </Router>
-      </ErrorBoundary>
     </ScanProvider>
   );
 }

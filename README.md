@@ -32,6 +32,7 @@ For development transparency, runtime AI/cloud-service behavior, CI status, bina
 - Results page actions for per-file quarantine, exception, VirusTotal cloud checks, MD5 hash reports, and user-controlled VirusTotal upload checks.
 - One-click false-positive reporting helpers for exceptions with provider-specific routing for ClamAV, SecuriteInfo, SaneSecurity, and YARA Forge detections.
 - Tray app with background monitoring and threat popup alerts.
+- One threat decision per file across ClamAV, YARA and VirusTotal, with visible action errors. Closing a decision popup keeps its detections in Results. Notifications stack inside the work area of the monitor under the pointer.
 - Clean NSIS installer and uninstaller.
 
 ## Performance Model
@@ -43,7 +44,7 @@ ClamShield is built for low disk and CPU impact:
 
 - The real-time shield does not scan existing files on startup.
 - Existing files are indexed only after the user manually runs a full, folder, or file scan.
-- Files are skipped by the shield if size and modification time have not changed since the last clean scan.
+- File changes can use the Shield cache when size and modification time are unchanged. Newly added or recreated files are scanned even when their size and modification time match a cached entry.
 - Shield depth is configurable. The default is shallow to avoid scanning entire profile trees.
 - Concurrent shield scans default to `1` to avoid disk saturation.
 - Terminal output is capped so long scans do not overload the UI.
@@ -219,7 +220,15 @@ When an exception was created from a detection, the Exceptions page can prepare 
 - SaneSecurity detections open a pre-filled false-positive email.
 - YARA detections open a pre-filled YARA Forge GitHub issue.
 
-Report details are copied to the clipboard, but the user must still review and send the report manually.
+The report dialog shows the original detection details and editable report text, with explicit copy controls and provider-specific submission links. Opening the dialog does not change report status. Opening a submission channel or copying the report marks it as **Submission unconfirmed**; only **Mark as sent** changes it to **Reported by you**. This is the user's confirmation, not confirmation from the provider. Status can be reset without removing the exception. Existing records that only tracked opening a channel are shown as unconfirmed. ClamShield does not automatically send reports or attach samples.
+
+Exceptions can be searched across all records and filtered by provider, origin, report status, file/folder type, and date added. Selection applies to the current page and clears when filters or pages change. **Remove from exceptions** makes the paths eligible for future scans; it does not delete files or immediately start a scan. Older entries with missing origin or type information are shown as Unknown.
+
+### Startup and interface diagnostics
+
+If the local service, page, required interface resources, or renderer fails, ClamShield shows a diagnostic screen independently of the normal web interface. It includes the failure stage, code, time, app version and diagnostic ID, with **Retry**, **Copy diagnostics**, **Open logs folder**, and expandable technical details. The screen does not assume protection is still running.
+
+Backend readiness has a 45-second deadline and initial protection-status loading has a 45-second deadline. After a full document load, interface mounting is checked after 30 seconds. Switching between React pages does not restart this check. Before showing a mounting failure, ClamShield checks whether the interface actually rendered; a missing readiness acknowledgement or inconclusive check alone does not replace a working page. Errors are logged even with Debug Log disabled; debug logging adds extra detail. Desktop diagnostics redact credentials and URL queries. Default logs are under `C:\ProgramData\ClamShield\logs`.
 
 ### Scheduled scanner
 

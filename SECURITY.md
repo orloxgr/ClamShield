@@ -37,8 +37,12 @@ The repository includes GitHub Actions CI for:
 
 - `npm ci`
 - TypeScript validation with `npm run lint`
+- focused tests for exception reporting, desktop startup and diagnostics, threat alerts, update timeouts, and VirusTotal queues and usage
+- real Electron checks for interface navigation, preload IPC and threat popup actions
 - production build with `npm run build`
 - critical production dependency audit with `npm run audit:critical`
+
+The production dependency audit uses `--omit=dev`. Electron is declared as a development dependency but is included in the desktop installer, so this audit does not cover the bundled Electron runtime. Review the full dependency audit as well when assessing a release.
 
 The project does not yet have a comprehensive automated test suite. Manual release testing is still required, especially for:
 
@@ -68,9 +72,10 @@ Current limitations:
 
 - builds are not reproducible byte-for-byte
 - public releases may be maintainer-built unless the release notes explicitly say the GitHub Actions artifact was used
-- the installer is not Authenticode-signed yet
+- maintainer-built installers may use a local self-signed Authenticode certificate; this is not a publicly trusted publisher certificate and does not remove Windows trust warnings
+- automated builds without access to a signing certificate may be unsigned
 
-Code signing and stricter release provenance are planned improvements.
+Publicly trusted code signing and stricter release provenance are planned improvements.
 
 ## Third-Party Engines and Rules
 

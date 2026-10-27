@@ -1,7 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-export type DropdownOption = { value: string, label: ReactNode };
+export type DropdownOption = { value: string; label: ReactNode };
 
 export default function DropdownSelect({
   ariaLabel,
@@ -10,19 +10,22 @@ export default function DropdownSelect({
   onChange,
   compact = false,
   align = "left",
-  active = false
+  active = false,
+  fullWidth = false,
 }: {
-  ariaLabel: string,
-  value: string,
-  options: DropdownOption[],
-  onChange: (value: string) => void,
-  compact?: boolean,
-  align?: "left" | "right",
-  active?: boolean
+  ariaLabel: string;
+  value: string;
+  options: DropdownOption[];
+  onChange: (value: string) => void;
+  compact?: boolean;
+  align?: "left" | "right";
+  active?: boolean;
+  fullWidth?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const selected = options.find(option => option.value === value) || options[0];
+  const selected =
+    options.find((option) => option.value === value) || options[0];
 
   useEffect(() => {
     if (!open) return;
@@ -41,21 +44,27 @@ export default function DropdownSelect({
   }, [open]);
 
   return (
-    <div ref={menuRef} className="relative inline-flex">
+    <div
+      ref={menuRef}
+      className={`relative inline-flex ${fullWidth ? "w-full min-w-0" : ""}`}
+    >
       <button
         type="button"
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen(current => !current)}
+        title={typeof selected?.label === "string" ? selected.label : undefined}
+        onClick={() => setOpen((current) => !current)}
         className={`inline-flex items-center justify-between gap-1.5 rounded-md border transition-colors ${
           compact
             ? "border-slate-700/70 bg-slate-900/70 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-slate-100"
             : "border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-300 hover:border-slate-700 hover:bg-slate-900"
-        } ${active ? "border-indigo-500/60 text-indigo-200" : ""}`}
+        } ${active ? "border-indigo-500/60 text-indigo-200" : ""} ${fullWidth ? "w-full min-w-0" : ""}`}
       >
         <span className="truncate">{selected?.label}</span>
-        <ChevronDown className={`shrink-0 transition-transform ${compact ? "w-3.5 h-3.5" : "w-4 h-4"} ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`shrink-0 transition-transform ${compact ? "w-3.5 h-3.5" : "w-4 h-4"} ${open ? "rotate-180" : ""}`}
+        />
       </button>
       {open && (
         <div
@@ -65,7 +74,7 @@ export default function DropdownSelect({
             align === "right" ? "right-0" : "left-0"
           }`}
         >
-          {options.map(option => {
+          {options.map((option) => {
             const selectedOption = option.value === value;
             return (
               <button
@@ -78,11 +87,15 @@ export default function DropdownSelect({
                   setOpen(false);
                 }}
                 className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors ${
-                  selectedOption ? "bg-indigo-500/15 text-indigo-200" : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                  selectedOption
+                    ? "bg-indigo-500/15 text-indigo-200"
+                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
                 }`}
               >
                 <span className="truncate">{option.label}</span>
-                {selectedOption && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-300" />}
+                {selectedOption && (
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-300" />
+                )}
               </button>
             );
           })}
