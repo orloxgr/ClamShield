@@ -1,6 +1,8 @@
 import express from "express";
 import diagnostics from "./public/desktop-diagnostics.cjs";
 import { PendingThreats } from "./server/pendingThreats";
+import { getVirusTotalQueuePage } from "./server/virusTotalQueueView";
+import { describeVirusTotalResult } from "./shared/virusTotalState";
 import { exceptionQuery, originSql, providerSql, reportStatus, updateReportStatus } from "./server/exceptionReporting";
 import fs from "fs/promises";
 import { appendFileSync, createWriteStream, createReadStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from "fs";
@@ -18,6 +20,8 @@ import chokidar from "chokidar";
 import { VirusTotalScanQueue } from "./server/virusTotalScanQueue";
 import { VirusTotalUsage } from "./server/virusTotalUsage";
 import { VirusTotalFileAnalysis } from "./server/virusTotalFileAnalysis";
+import { advanceVirusTotalResult, nextVirusTotalResultAttempt } from "./server/virusTotalResultWorkflow";
+import { freshScanEvidence } from "./server/resultEvidence";
 import { estimateVirusTotalScan, virusTotalLimitWarningsEnabled } from "./server/virusTotalLimitWarning";
 
 const runtimeFileName = typeof __filename === "string" ? __filename : path.resolve(process.argv[1] || ".");
@@ -658,6 +662,13 @@ let virusTotalShieldRunning = false;
 let virusTotalShieldTimer: NodeJS.Timeout | null = null;
 let virusTotalShieldNextAllowedAt = 0;
 let virusTotalShieldLastMessage = "";
+let virusTotalQueueViewHandler: ((options: any, configured: boolean) => any) | null = null;
+let currentVirusTotalSettings: () => any = () => ({});
+let virusTotalActiveResultsId = "";
+let virusTotalActiveResultsPhase = "pending";
+let virusTotalActiveScanId = 0;
+let virusTotalResultsWaitReason = "";
+let virusTotalShieldWaitReason = "";
 let virusTotalNextLookupAllowedAt = 0;
 let scanResultsCleanupTimer: NodeJS.Timeout | null = null;
 let clamAVVersionCache: { path: string, mtimeMs: number, value: string, expiresAt: number } | null = null;
@@ -6795,6 +6806,12 @@ async function getScanResultsPage(options: { limit?: number | null, offset?: num
     if (refinementFilter !== "all") {
         if (refinementFilter === "unrefined") {
             clauses.push("(virus_total_refinement_status IS NULL OR virus_total_refinement_status = '')");
+        } else if (refinementFilter === "upload_required") {
+            clauses.push("(virus_total_refinement_status = 'upload_required' OR (virus_total_refinement_status = 'unknown' AND COALESCE(json_extract(virus_total_checks, '$.resultsUploadedUnknownHash'), '') = ''))");
+        } else if (refinementFilter === "awaiting_analysis") {
+            clauses.push("(virus_total_refinement_status = 'awaiting_analysis' OR (virus_total_refinement_status = 'unknown' AND COALESCE(json_extract(virus_total_checks, '$.resultsUploadedUnknownHash'), '') != ''))");
+        } else if (refinementFilter === "blocked") {
+            clauses.push("virus_total_refinement_status IN ('blocked', 'error')");
         } else {
             clauses.push("virus_total_refinement_status = ?");
             params.push(refinementFilter);
@@ -6911,7 +6928,8 @@ async function ensureScanResultHash(results: any[], result: any, algorithm: stri
         }
         hash = await hashFile(result.originalPath, key);
         result[key] = hash;
-        await saveScanResults(results);
+        await ensureAppStateReady();
+        getAppStateDb().prepare(`UPDATE scan_results SET ${key} = ? WHERE id = ? AND timestamp = ?`).run(hash, result.id, result.timestamp);
     }
     return hash.toLowerCase();
 }
@@ -7269,7 +7287,8 @@ async function getVirusTotalDashboardStatus(settings: any) {
         needs_review: 0,
         confirmed_suspicious: 0,
         confirmed_malicious: 0,
-        unknown: 0,
+        upload_required: 0,
+        awaiting_analysis: 0,
         error: 0
     };
     const totals = {
@@ -7294,7 +7313,7 @@ async function getVirusTotalDashboardStatus(settings: any) {
             }
             continue;
         }
-        checkedCount++;
+        if (["likely_false_positive", "needs_review", "confirmed_suspicious", "confirmed_malicious"].includes(statusValue)) checkedCount++;
         if (Object.prototype.hasOwnProperty.call(breakdown, statusValue)) breakdown[statusValue]++;
         const stats = asRecord(parseAppStateJson(row.stats, {}));
         totals.malicious += Number(stats.malicious || 0);
@@ -7308,11 +7327,13 @@ async function getVirusTotalDashboardStatus(settings: any) {
             lastMessage = String(row.message || "");
         }
     }
+    const queue = virusTotalQueueViewHandler?.({ summary: true }, cloudStatus.configured);
     return {
         ...cloudStatus,
         totalFindings: rows.length,
         checkedCount,
-        queuedCount,
+        queuedCount: queue?.totalPending ?? queuedCount,
+        queueCounts: queue?.counts,
         lastCheckedAt: lastCheckedAt || null,
         lastLabel,
         lastMessage,
@@ -7326,7 +7347,7 @@ function createVirusTotalNoReport(hash: string) {
         found: false,
         hash,
         url: `https://www.virustotal.com/gui/file/${hash}/detection`,
-        message: "VirusTotal has no report for this item."
+        message: "Hash lookup completed: VirusTotal returned no report for this hash. This does not indicate whether the file was uploaded."
     };
 }
 
@@ -7459,16 +7480,20 @@ async function uploadVirusTotalFile(apiKey: string, filePath: string, options: {
 function classifyVirusTotalRefinement(report: any) {
     if (report?.found === false) {
         return {
-            status: "unknown",
-            label: "Unknown to VirusTotal",
+            status: "upload_required",
+            label: "Upload required",
             severity: "neutral",
-            message: "VirusTotal has no report for this item."
+            message: "Hash checked: no report. Upload the file for analysis or quarantine it."
         };
     }
     const stats = report?.stats || {};
     const malicious = Number(stats.malicious || 0);
     const suspicious = Number(stats.suspicious || 0);
     const detections = malicious + suspicious;
+    if (detections <= 0 && Number(stats.harmless || 0) + Number(stats.undetected || 0) === 0) {
+        return { status: "needs_review", label: "Needs review", severity: "warning",
+            message: "VirusTotal returned a report with no completed engine verdicts. Review the file or quarantine it." };
+    }
     if (detections <= 0) {
         return {
             status: "likely_false_positive",
@@ -7488,14 +7513,14 @@ function classifyVirusTotalRefinement(report: any) {
     if (detections < 10) {
         return {
             status: "confirmed_suspicious",
-            label: "Confirmed suspicious",
+            label: "Suspicious",
             severity: "danger",
             message: "Several VirusTotal engines flag this hash."
         };
     }
     return {
         status: "confirmed_malicious",
-        label: "Confirmed malicious",
+        label: "Malicious",
         severity: "danger",
         message: "Many VirusTotal engines flag this hash."
     };
@@ -7538,38 +7563,28 @@ function getVirusTotalRefinementStatus(result: any) {
 }
 
 function isVirusTotalResultUploadFollowupDue(result: any) {
-    const checks = getVirusTotalResultChecks(result);
-    const uploadedHash = String(checks.resultsUploadedUnknownHash || "");
-    const checkAfter = Number(checks.resultsUploadCheckAfter || 0);
-    const followupCount = Number(checks.resultsUploadFollowupCount || 0);
-    if (!uploadedHash || !checkAfter || followupCount >= 5) return false;
-    return getVirusTotalRefinementStatus(result) === "unknown" && Date.now() >= checkAfter;
+    const at = nextVirusTotalResultAttempt(result);
+    return at > 0 && Date.now() >= at;
 }
 
 function getVirusTotalResultUploadFollowupAt(result: any) {
-    const checks = getVirusTotalResultChecks(result);
-    const uploadedHash = String(checks.resultsUploadedUnknownHash || "");
-    const checkAfter = Number(checks.resultsUploadCheckAfter || 0);
-    const followupCount = Number(checks.resultsUploadFollowupCount || 0);
-    if (!uploadedHash || !checkAfter || followupCount >= 5) return 0;
-    if (getVirusTotalRefinementStatus(result) !== "unknown") return 0;
-    return checkAfter;
+    return nextVirusTotalResultAttempt(result);
 }
 
-async function getVirusTotalResultUploadEligibility(result: any, settings: any) {
+async function getVirusTotalResultUploadEligibility(result: any, settings: any, explicit = false) {
     const fileStat = result.originalPath ? await fs.stat(result.originalPath).catch(() => null) : null;
     const maxBytes = getVirusTotalResultsUploadMaxBytes(settings);
-    if (settings.virusTotalResultsUploadUnknownEnabled !== true) {
-        return { allowed: false, reason: "disabled", message: "" };
+    if (!explicit && settings.virusTotalResultsUploadUnknownEnabled !== true) {
+        return { allowed: false, reason: "disabled", message: "Hash checked: no report. Automatic uploads are off. Choose Upload for analysis to submit this file, or quarantine it." };
     }
     if (!result.originalPath || !existsSync(result.originalPath) || !fileStat || !fileStat.isFile() || fileStat.size <= 0) {
-        return { allowed: false, reason: "unavailable", message: "Original file unavailable; upload skipped." };
+        return { allowed: false, reason: "unavailable", message: "The original file is unavailable. Restore it to upload, or remove this finding if it is already gone." };
     }
     if (fileStat.size > maxBytes) {
         return {
             allowed: false,
             reason: "too_large",
-            message: `File exceeds VirusTotal upload size: ${formatVirusTotalUploadSize(fileStat.size)}; limit is ${formatVirusTotalUploadSize(maxBytes)}.`
+            message: `File exceeds VirusTotal upload size: ${formatVirusTotalUploadSize(fileStat.size)}; limit is ${formatVirusTotalUploadSize(maxBytes)}. Adjust the upload limit in Settings if appropriate, or quarantine the file.`
         };
     }
     return { allowed: true, reason: "", message: "" };
@@ -7579,118 +7594,67 @@ async function canUploadVirusTotalResultUnknown(result: any, settings: any) {
     return (await getVirusTotalResultUploadEligibility(result, settings)).allowed;
 }
 
-async function uploadUnknownVirusTotalResult(result: any, apiKey: string, sha256: string) {
-    const upload = await uploadVirusTotalFile(apiKey, result.originalPath, { waitForSlot: true });
-    markVirusTotalCheckOpened(result, "upload");
-    setVirusTotalResultChecks(result, {
-        resultsUploadedUnknownHash: sha256,
-        resultsUploadAnalysisId: upload.analysisId || "",
-        resultsUploadCheckAfter: Date.now() + 2 * 60 * 1000,
-        resultsUploadFollowupCount: 0
-    });
-    return upload;
+const virusTotalFileAnalysis = new VirusTotalFileAnalysis({
+    reserveSlot: async wait => { if (wait) await waitForVirusTotalLookupSlot(); else reserveVirusTotalLookupSlot(); },
+    checkQuota: assertVirusTotalQuotaAvailable,
+    recordRequest: recordVirusTotalLookupSafely
+});
+const virusTotalResultChecksRunning = new Map<string, Promise<any>>();
+
+// Network work must not restore a deleted/quarantined finding or overwrite other rows.
+async function persistVirusTotalResult(result: any) {
+    await ensureAppStateReady();
+    const db = getAppStateDb();
+    const row = db.prepare(scanResultSelectSql() + " WHERE id = ?").get(result.id);
+    if (!row) return;
+    const current = mapScanResultRow(row);
+    if (Number(current.timestamp) !== Number(result.timestamp)) return;
+    insertScanResultRow(db, { ...current, sha256: result.sha256,
+        virusTotalChecks: result.virusTotalChecks, virusTotalRefinement: result.virusTotalRefinement });
 }
 
-async function runVirusTotalResultCloudCheck(results: any[], result: any, settings: any, apiKey: string) {
-    const sha256 = await ensureScanResultHash(results, result, "sha256");
-    const existingChecks = getVirusTotalResultChecks(result);
-    const existingUploadHash = String(existingChecks.resultsUploadedUnknownHash || "");
-    if (
-        getVirusTotalRefinementStatus(result) === "unknown" &&
-        existingUploadHash !== sha256 &&
-        (await getVirusTotalResultUploadEligibility(result, settings)).allowed
-    ) {
-        const upload = await uploadUnknownVirusTotalResult(result, apiKey, sha256);
-        markVirusTotalCheckOpened(result, "cloud");
-        const report: any = {
-            ...createVirusTotalNoReport(sha256),
-            uploaded: true,
-            analysisId: upload.analysisId || "",
-            message: "VirusTotal analysis queued."
-        };
-        result.virusTotalRefinement = {
-            ...buildVirusTotalRefinement(report),
-            label: "Analysis queued",
-            message: "VirusTotal analysis queued."
-        };
-        return {
-            sha256,
-            report,
-            refinement: result.virusTotalRefinement,
-            uploaded: true,
-            uploadAnalysisId: upload.analysisId || ""
-        };
+async function runVirusTotalResultCloudCheck(results: any[], result: any, settings: any, apiKey: string,
+    onProgress: (phase: string) => void = () => {}, explicitUpload = false) {
+    const running = virusTotalResultChecksRunning.get(result.id);
+    if (running) {
+        const response = await running;
+        result.virusTotalRefinement = response.refinement;
+        result.virusTotalChecks = response.checks;
+        return response;
     }
-
-    let report: any = await fetchVirusTotalFileReport(apiKey, sha256);
-    let uploaded = false;
-    let uploadAnalysisId = "";
-    markVirusTotalCheckOpened(result, "cloud");
-
-    if (report?.found === false) {
-        const checks = getVirusTotalResultChecks(result);
-        const alreadyUploaded = String(checks.resultsUploadedUnknownHash || "") === sha256;
-        const followupCount = Math.max(0, Number(checks.resultsUploadFollowupCount || 0));
-        const uploadEligibility = await getVirusTotalResultUploadEligibility(result, settings);
-        const canUpload = uploadEligibility.allowed;
-
-        if (canUpload && !alreadyUploaded) {
-            const upload = await uploadUnknownVirusTotalResult(result, apiKey, sha256);
-            uploaded = true;
-            uploadAnalysisId = upload.analysisId;
-            report = {
-                ...report,
-                uploaded: true,
-                analysisId: upload.analysisId || "",
-                message: "VirusTotal analysis queued."
-            };
-        } else if (alreadyUploaded && followupCount < 5) {
-            setVirusTotalResultChecks(result, {
-                resultsUploadCheckAfter: Date.now() + 5 * 60 * 1000,
-                resultsUploadFollowupCount: followupCount + 1
-            });
-        } else if (uploadEligibility.message) {
-            report = {
-                ...report,
-                uploadSkipped: true,
-                uploadSkipReason: uploadEligibility.reason,
-                message: uploadEligibility.message
-            };
-        }
-    } else {
-        setVirusTotalResultChecks(result, {
-            resultsUploadCheckAfter: 0,
-            resultsUploadFollowupCount: 0
-        });
-    }
-
-    result.virusTotalRefinement = buildVirusTotalRefinement(report);
-    if (uploaded) {
-        result.virusTotalRefinement = {
-            ...result.virusTotalRefinement,
-            label: "Analysis queued",
-            message: "VirusTotal analysis queued."
-        };
-    } else if (report?.uploadSkipped) {
-        result.virusTotalRefinement = {
-            ...result.virusTotalRefinement,
-            label: "Upload skipped",
-            message: String(report.message || result.virusTotalRefinement?.message || "")
-        };
-    }
-
-    return {
-        sha256,
-        report,
-        refinement: result.virusTotalRefinement,
-        uploaded,
-        uploadAnalysisId
-    };
+    const task = (async () => {
+        const sha256 = await ensureScanResultHash(results, result, "sha256");
+        return advanceVirusTotalResult(result, sha256, {
+            lookup: hash => fetchVirusTotalFileReport(apiKey, hash),
+            upload: async hash => {
+                if (await hashFile(result.originalPath, "sha256") !== hash) {
+                    throw Object.assign(new Error("File content changed since the detection. Scan it again before submitting it."), { fileError: true, fileChanged: true });
+                }
+                return virusTotalFileAnalysis.upload(apiKey, result.originalPath, async () => {
+                    const latest = currentVirusTotalSettings();
+                    const current = getAppStateDb().prepare("SELECT timestamp FROM scan_results WHERE id = ?").get(result.id);
+                    return current && Number(current.timestamp) === Number(result.timestamp) &&
+                        latest.virusTotalCloudEnabled === true && await loadVirusTotalApiKey() === apiKey &&
+                        (result.virusTotalChecks?.resultsUploadRequestedHash === hash || latest.virusTotalResultsUploadUnknownEnabled === true);
+                });
+            },
+            analysis: async (id, hash) => {
+                const payload = await virusTotalFileAnalysis.analysis(apiKey, id, hash);
+                return payload ? summarizeVirusTotalFileReport(hash, payload) : null;
+            },
+            eligibility: explicit => getVirusTotalResultUploadEligibility(result, currentVirusTotalSettings(), explicit),
+            classify: buildVirusTotalRefinement,
+            persist: () => persistVirusTotalResult(result), progress: onProgress
+        }, explicitUpload);
+    })();
+    virusTotalResultChecksRunning.set(result.id, task);
+    try { return await task; }
+    finally { virusTotalResultChecksRunning.delete(result.id); }
 }
 
 function normalizeVirusTotalRefinementFilter(value: any) {
     const status = String(value || "all").trim().toLowerCase();
-    if (["all", "unrefined", "likely_false_positive", "needs_review", "confirmed_suspicious", "confirmed_malicious", "unknown", "error"].includes(status)) {
+    if (["all", "unrefined", "likely_false_positive", "needs_review", "confirmed_suspicious", "confirmed_malicious", "upload_required", "awaiting_analysis", "upload_queued", "retry_pending", "blocked", "unknown", "error"].includes(status)) {
         return status;
     }
     return "all";
@@ -7745,6 +7709,7 @@ async function addScanResult(result: any) {
     const nextResult = existing
         ? {
             ...existing,
+            ...freshScanEvidence(result, existing),
             ...result,
             id: existing.id,
             originalPath,
@@ -8157,6 +8122,7 @@ async function startServer() {
     app.use(requireLocalApiSession);
     
     let settings = await loadConfig();
+    currentVirusTotalSettings = () => settings;
     await ensureDirs(settings);
     virusTotalUsageTracker = new VirusTotalUsage(getAppStateDb(), async apiKey => {
         // VirusTotal permits an API key as the user ID for this self-service endpoint.
@@ -8312,7 +8278,25 @@ async function startServer() {
         const pending = pendingThreatStore.register(threat, fingerprint);
         if (pending && pendingThreatHandler) pendingThreatHandler(pending);
     };
-    const virusTotalShieldQueue = new Map<string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string, forceCloudCheck?: boolean }>();
+    const virusTotalShieldQueue = new Map<string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string, forceCloudCheck?: boolean, analysisId?: string }>();
+    let virusTotalShieldActiveItem: any = null;
+    virusTotalQueueViewHandler = (options, configured) => {
+        const pending = new Map<string, any>();
+        for (const [id, item] of virusTotalShieldQueue) pending.set(id, {
+            id: `shield:${id}`, filePath: item.filePath, createdAt: item.queuedAt,
+            phase: item.pendingUploadHash ? "needs_upload" : item.uploadedHash ? "analysing" : "pending",
+            nextAttemptAt: item.notBefore || 0, analysisId: item.analysisId || ""
+        });
+        if (virusTotalShieldActiveItem) pending.set(normalizedStatePath(virusTotalShieldActiveItem.filePath), virusTotalShieldActiveItem);
+        return getVirusTotalQueuePage(getAppStateDb(), settings, [...pending.values()], {
+            enabled: settings.virusTotalCloudEnabled === true, configured,
+            activeResultsId: virusTotalActiveResultsId, activeScanId: virusTotalActiveScanId,
+            activeResultsPhase: virusTotalActiveResultsPhase,
+            resultsNextAt: virusTotalRefinementNextAllowedAt, shieldNextAt: virusTotalShieldNextAllowedAt,
+            scanNextAt: virusTotalScanNextAllowedAt, lookupNextAt: virusTotalNextLookupAllowedAt,
+            resultsWaitReason: virusTotalResultsWaitReason, shieldWaitReason: virusTotalShieldWaitReason,
+        }, options);
+    };
     const eventClients = new Set<express.Response>();
     const sendApiEventToClient = (client: express.Response, event: string, data: any) => {
         client.write(`event: ${event}\n`);
@@ -8458,7 +8442,7 @@ async function startServer() {
     const processNextShieldVirusTotalCheck = async () => {
         if (virusTotalShieldRunning) return;
         if (settings.virusTotalCloudEnabled !== true) return;
-        if (settings.virusTotalShieldBackgroundCheckEnabled !== true && !Array.from(virusTotalShieldQueue.values()).some(item => item.forceCloudCheck)) return;
+        if (settings.virusTotalShieldBackgroundCheckEnabled !== true && !Array.from(virusTotalShieldQueue.values()).some(item => item.forceCloudCheck || item.uploadedHash)) return;
         const apiKey = await loadVirusTotalApiKey();
         if (!apiKey) {
             virusTotalShieldLastMessage = "VirusTotal API key is not configured.";
@@ -8471,7 +8455,7 @@ async function startServer() {
         }
 
         const next = Array.from(virusTotalShieldQueue.entries())
-            .find(([, queuedItem]) => Number(queuedItem.notBefore || 0) <= now) as [string, { filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string }] | undefined;
+            .find(([, queuedItem]) => Number(queuedItem.notBefore || 0) <= now);
         if (!next) {
             const nextAt = Math.min(...Array.from(virusTotalShieldQueue.values()).map(item => Number(item.notBefore || now)));
             if (Number.isFinite(nextAt)) scheduleShieldVirusTotalCheck(Math.max(1000, nextAt - now));
@@ -8480,14 +8464,17 @@ async function startServer() {
         const [normalizedPath, item] = next;
         virusTotalShieldQueue.delete(normalizedPath);
         virusTotalShieldRunning = true;
+        virusTotalShieldActiveItem = { id: `shield:${normalizedPath}`, filePath: item.filePath, createdAt: item.queuedAt,
+            phase: item.pendingUploadHash ? "needs_upload" : item.uploadedHash ? "analysing" : "pending", active: true };
         try {
-            if (!existsSync(item.filePath)) {
-                virusTotalShieldLastMessage = `Skipped unavailable file: ${item.filePath}`;
+            if (!existsSync(item.filePath) && !item.uploadedHash) {
+                virusTotalShieldLastMessage = `File unavailable. Restore it and scan again: ${item.filePath}`;
                 return;
             }
-            const sha256 = await hashFile(item.filePath, "sha256");
+            const sha256 = existsSync(item.filePath) ? await hashFile(item.filePath, "sha256") : item.uploadedHash!;
             if (item.pendingUploadHash === sha256) {
-                const upload = await uploadVirusTotalFile(apiKey, item.filePath);
+                const analysisId = await virusTotalFileAnalysis.upload(apiKey, item.filePath, async () =>
+                    settings.virusTotalCloudEnabled === true && await loadVirusTotalApiKey() === apiKey);
                 await addHistory({
                     type: "virustotal-shield-upload",
                     target: item.filePath,
@@ -8495,20 +8482,42 @@ async function startServer() {
                     threatsFound: 0,
                     scannedFiles: 1,
                     duration: 1,
-                    actionTaken: upload.analysisId ? `Uploaded for analysis ${upload.analysisId}` : "Uploaded for analysis"
+                    actionTaken: `Uploaded for analysis ${analysisId}`
                 }).catch(() => {});
                 virusTotalShieldQueue.set(normalizedPath, {
                     ...item,
                     queuedAt: Date.now(),
                     notBefore: Date.now() + 2 * 60 * 1000,
                     uploadedHash: sha256,
+                    analysisId,
                     pendingUploadHash: ""
                 });
                 virusTotalShieldLastMessage = `VirusTotal analysis queued: ${item.filePath}`;
+                virusTotalShieldWaitReason = "";
                 virusTotalShieldNextAllowedAt = Date.now() + virusTotalPublicApiLimits.perLookupMs;
                 return;
             }
-            const report = await fetchVirusTotalFileReport(apiKey, sha256);
+            let report: any;
+            if (item.uploadedHash === sha256 && item.analysisId) {
+                let payload: any;
+                try { payload = await virusTotalFileAnalysis.analysis(apiKey, item.analysisId, sha256); }
+                catch (error: any) {
+                    if (!error.analysisMissing) throw error;
+                    // Keep an expired submission actionable in Results; never discard or re-upload it silently.
+                    await addScanResult({ source: "shield", originalPath: item.filePath,
+                        threatName: "VirusTotal analysis requires review", engine: "VirusTotal", sha256,
+                        virusTotalRefinement: { ...buildVirusTotalRefinement(createVirusTotalNoReport(sha256)),
+                            message: "The earlier analysis expired. Recheck the hash in Results; if no report exists, choose Upload for analysis or quarantine the file." },
+                        virusTotalChecks: { resultsUploadedUnknownHash: sha256, resultsUploadAnalysisId: item.analysisId, resultsAnalysisExpired: true } });
+                    return;
+                }
+                if (!payload) {
+                    virusTotalShieldQueue.set(normalizedPath, { ...item, notBefore: Date.now() + 60_000 });
+                    virusTotalShieldLastMessage = `Awaiting VirusTotal analysis; automatic follow-up scheduled: ${item.filePath}`;
+                    return;
+                }
+                report = summarizeVirusTotalFileReport(sha256, payload);
+            } else report = await fetchVirusTotalFileReport(apiKey, sha256);
             const detections = getVirusTotalDetectionCount(report);
             if (detections > 0) {
                 const actionTaken = await handleVirusTotalShieldDetection(item.filePath, report);
@@ -8545,12 +8554,13 @@ async function startServer() {
                     });
                     virusTotalShieldLastMessage = `VirusTotal upload queued: ${item.filePath}`;
                 } else {
-                    virusTotalShieldLastMessage = uploadSkipMessage || `VirusTotal unknown: ${item.filePath}`;
+                    virusTotalShieldLastMessage = uploadSkipMessage || `Hash checked: no report. Enable file uploads in Settings to request analysis: ${item.filePath}`;
                 }
             } else {
                 virusTotalShieldLastMessage = `VirusTotal clean: ${item.filePath}`;
             }
             virusTotalShieldNextAllowedAt = Date.now() + virusTotalPublicApiLimits.perLookupMs;
+            virusTotalShieldWaitReason = "";
         } catch (e: any) {
             const status = Number(e?.status || e?.response?.status || 0);
             const localDelayMs = Math.max(1000, Number(e?.nextAllowedAt || 0) - Date.now());
@@ -8558,13 +8568,24 @@ async function startServer() {
                 ? localDelayMs
                 : status === 429 ? 15 * 60 * 1000 : 60 * 1000;
             virusTotalShieldLastMessage = e?.message || String(e);
+            virusTotalShieldWaitReason = virusTotalShieldLastMessage;
             virusTotalShieldNextAllowedAt = Date.now() + backoffMs;
-            if (status === 429 || status === 0) {
+            if (!e?.fileError) {
                 virusTotalShieldQueue.set(normalizedPath, item);
+            } else {
+                await addScanResult({ source: "shield", originalPath: item.filePath,
+                    threatName: "VirusTotal check requires review", engine: "VirusTotal",
+                    sha256: item.uploadedHash || item.pendingUploadHash || "",
+                    virusTotalRefinement: { status: "blocked", label: "Action required", severity: "neutral",
+                        checkedAt: Date.now(), report: createVirusTotalNoReport(item.uploadedHash || item.pendingUploadHash || ""),
+                        message: virusTotalShieldLastMessage + " Review the file in Results; restore access and retry, adjust upload Settings, or quarantine it." },
+                    virusTotalChecks: { resultsUploadedUnknownHash: item.uploadedHash || "", resultsUploadAnalysisId: item.analysisId || "", resultsBlockedReason: "file" }
+                });
             }
             console.warn("VirusTotal Shield check paused:", virusTotalShieldLastMessage);
         } finally {
             virusTotalShieldRunning = false;
+            virusTotalShieldActiveItem = null;
             if (virusTotalShieldQueue.size > 0) scheduleShieldVirusTotalCheck(Math.max(0, virusTotalShieldNextAllowedAt - Date.now()));
         }
     };
@@ -8573,7 +8594,7 @@ async function startServer() {
         if (virusTotalShieldTimer) clearTimeout(virusTotalShieldTimer);
         if (virusTotalShieldQueue.size === 0) return;
         if (settings.virusTotalCloudEnabled !== true) return;
-        if (settings.virusTotalShieldBackgroundCheckEnabled !== true && !Array.from(virusTotalShieldQueue.values()).some(item => item.forceCloudCheck)) return;
+        if (settings.virusTotalShieldBackgroundCheckEnabled !== true && !Array.from(virusTotalShieldQueue.values()).some(item => item.forceCloudCheck || item.uploadedHash)) return;
         const delay = Math.max(0, Math.min(Number(delayMs || 0), 15 * 60 * 1000));
         virusTotalShieldTimer = setTimeout(() => {
             virusTotalShieldTimer = null;
@@ -8600,11 +8621,6 @@ async function startServer() {
     let virusTotalScanTimer: NodeJS.Timeout | null = null;
     let virusTotalScanRunning = false;
     let virusTotalScanNextAllowedAt = 0;
-    const virusTotalFileAnalysis = new VirusTotalFileAnalysis({
-        reserveSlot: async wait => { if (wait) await waitForVirusTotalLookupSlot(); else reserveVirusTotalLookupSlot(); },
-        checkQuota: assertVirusTotalQuotaAvailable,
-        recordRequest: recordVirusTotalLookupSafely
-    });
     const scheduleVirusTotalScan = (delayMs = 0) => {
         if (virusTotalScanRunning) return;
         if (virusTotalScanTimer) clearTimeout(virusTotalScanTimer);
@@ -8630,6 +8646,7 @@ async function startServer() {
             const apiKey = await loadVirusTotalApiKey();
             if (!apiKey) { continueQueue = false; return; }
             if (virusTotalNextLookupAllowedAt > Date.now()) return;
+            virusTotalActiveScanId = Number(queuedItem.id);
             await virusTotalScanQueue.processNext({
                 keyId: createHash("sha256").update(apiKey).digest("hex"),
                 fingerprint: getFileFingerprint,
@@ -8663,6 +8680,7 @@ async function startServer() {
             virusTotalScanQueue.message(queuedItem.job_id, e?.message || "Cloud check failed; waiting to retry.");
         } finally {
             virusTotalScanRunning = false;
+            virusTotalActiveScanId = 0;
             const wakeAt = virusTotalScanQueue.nextWakeAt();
             virusTotalScanNextAllowedAt = wakeAt || 0;
             if (continueQueue && wakeAt !== null) scheduleVirusTotalScan(Math.max(0, Math.max(wakeAt, virusTotalNextLookupAllowedAt) - Date.now()));
@@ -9597,12 +9615,11 @@ async function startServer() {
 
     const getVirusTotalRefinementQueueItems = async () => {
         if (settings.virusTotalCloudEnabled !== true) return [];
-        if (settings.virusTotalAutoRefineEnabled !== true && settings.virusTotalShieldBackgroundCheckEnabled !== true) return [];
         if (!await loadVirusTotalApiKey()) return [];
         const results = await getScanResults();
         return results.filter((result: any) =>
-            isVirusTotalAutoRefinementCandidate(result, settings) &&
-            (!getVirusTotalRefinementStatus(result) || getVirusTotalResultUploadFollowupAt(result) > 0)
+            (isVirusTotalAutoRefinementCandidate(result, settings) && !getVirusTotalRefinementStatus(result)) ||
+            getVirusTotalResultUploadFollowupAt(result) > 0
         );
     };
 
@@ -9622,7 +9639,6 @@ async function startServer() {
     const processNextVirusTotalRefinement = async () => {
         if (virusTotalRefinementRunning) return;
         if (settings.virusTotalCloudEnabled !== true) return;
-        if (settings.virusTotalAutoRefineEnabled !== true && settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
         const apiKey = await loadVirusTotalApiKey();
         if (!apiKey) {
             virusTotalRefinementLastMessage = "VirusTotal API key is not configured.";
@@ -9639,18 +9655,14 @@ async function startServer() {
         let activeResult: any = null;
         try {
             activeResults = await getScanResults();
-            activeResult = activeResults.find((item: any) => {
-                if (!isVirusTotalAutoRefinementCandidate(item, settings)) return false;
-                return !getVirusTotalRefinementStatus(item) || isVirusTotalResultUploadFollowupDue(item);
-            });
+            activeResult = activeResults.find(isVirusTotalResultUploadFollowupDue) || activeResults.find((item: any) =>
+                isVirusTotalAutoRefinementCandidate(item, settings) && !getVirusTotalRefinementStatus(item));
             if (!activeResult) {
                 const nextFollowupAt = Math.min(...activeResults
-                    .filter((item: any) => isVirusTotalAutoRefinementCandidate(item, settings))
                     .map(getVirusTotalResultUploadFollowupAt)
                     .filter((value: number) => value > Date.now()));
                 if (Number.isFinite(nextFollowupAt)) {
                     virusTotalRefinementLastMessage = "Waiting for VirusTotal analysis results.";
-                    virusTotalRefinementNextAllowedAt = nextFollowupAt;
                     scheduleVirusTotalRefinement(Math.max(1000, nextFollowupAt - Date.now()));
                 } else {
                     virusTotalRefinementLastMessage = "No VirusTotal refinement items queued.";
@@ -9658,8 +9670,10 @@ async function startServer() {
                 return;
             }
 
-            const cloudCheck = await runVirusTotalResultCloudCheck(activeResults, activeResult, settings, apiKey);
-            await saveScanResults(activeResults);
+            virusTotalActiveResultsId = String(activeResult.id);
+            virusTotalResultsWaitReason = "";
+            virusTotalActiveResultsPhase = "pending";
+            const cloudCheck = await runVirusTotalResultCloudCheck(activeResults, activeResult, settings, apiKey, phase => { virusTotalActiveResultsPhase = phase; });
             await addHistory({
                 type: cloudCheck.uploaded ? "virustotal-results-upload" : "virustotal-auto-refine",
                 target: activeResult.originalPath || cloudCheck.sha256,
@@ -9680,6 +9694,7 @@ async function startServer() {
                 ? localDelayMs
                 : status === 429 ? 15 * 60 * 1000 : 60 * 1000;
             virusTotalRefinementLastMessage = e?.message || String(e);
+            virusTotalResultsWaitReason = virusTotalRefinementLastMessage;
             virusTotalRefinementNextAllowedAt = Date.now() + backoffMs;
             if (activeResult && status !== 429 && status !== 401 && status !== 403) {
                 activeResult.virusTotalRefinement = {
@@ -9689,13 +9704,15 @@ async function startServer() {
                     checkedAt: Date.now(),
                     hash: String(activeResult.sha256 || ""),
                     stats: null,
-                    message: virusTotalRefinementLastMessage
+                    message: `${virusTotalRefinementLastMessage} Retry the check after restoring file access, or remove the finding if the file is gone.`
                 };
-                await saveScanResults(activeResults).catch(() => {});
+                await persistVirusTotalResult(activeResult).catch(() => {});
             }
             console.warn("VirusTotal refinement paused:", virusTotalRefinementLastMessage);
         } finally {
             virusTotalRefinementRunning = false;
+            virusTotalActiveResultsId = "";
+            virusTotalActiveResultsPhase = "pending";
         }
 
         const queued = await getVirusTotalRefinementQueueItems().catch(() => []);
@@ -9705,7 +9722,6 @@ async function startServer() {
     scheduleVirusTotalRefinement = (delayMs = 0) => {
         if (virusTotalRefinementTimer) clearTimeout(virusTotalRefinementTimer);
         if (settings.virusTotalCloudEnabled !== true) return;
-        if (settings.virusTotalAutoRefineEnabled !== true && settings.virusTotalShieldBackgroundCheckEnabled !== true) return;
         const delay = Math.max(0, Math.min(Number(delayMs || 0), 15 * 60 * 1000));
         virusTotalRefinementTimer = setTimeout(() => {
             virusTotalRefinementTimer = null;
@@ -10114,6 +10130,12 @@ async function startServer() {
         } catch (e: any) {
             res.status(500).json({ success: false, error: e?.message || String(e) });
         }
+    });
+
+    app.get("/api/virustotal/queue", async (req, res) => {
+        try {
+            res.json(virusTotalQueueViewHandler!(req.query, Boolean(await loadVirusTotalApiKey())));
+        } catch (e: any) { res.status(500).json({ error: "Could not load the VirusTotal queue." }); }
     });
 
     app.get("/api/virustotal-refinement/status", async (_req, res) => {
@@ -12250,6 +12272,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 const results = await getScanResults();
                 res.json(results.map((result: any) => ({
                     ...result,
+                    virusTotalQueued: settings.virusTotalCloudEnabled === true && isVirusTotalAutoRefinementCandidate(result, settings) && !getVirusTotalRefinementStatus(result),
                     available: Boolean(result.originalPath && existsSync(result.originalPath))
                 })));
                 return;
@@ -12281,6 +12304,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
             res.json({
                 items: paged.items.map((result: any) => ({
                     ...result,
+                    virusTotalQueued: settings.virusTotalCloudEnabled === true && isVirusTotalAutoRefinementCandidate(result, settings) && !getVirusTotalRefinementStatus(result),
                     available: Boolean(result.originalPath && existsSync(result.originalPath))
                 })),
                 total: paged.total,
@@ -12349,10 +12373,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 result.virusTotalRefinement = null;
                 const checks = getVirusTotalResultChecks(result);
                 delete checks.cloud;
-                delete checks.resultsUploadedUnknownHash;
-                delete checks.resultsUploadAnalysisId;
-                delete checks.resultsUploadCheckAfter;
-                delete checks.resultsUploadFollowupCount;
+                checks.resultsWorkflowRetryAt = 1;
+                checks.resultsUploadCheckAfter = 1;
                 result.virusTotalChecks = checks;
                 queuedCount++;
             }
@@ -12436,7 +12458,7 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
     });
 
-    app.get("/api/results/:id/virustotal-cloud", async (req, res) => {
+    const checkResultWithVirusTotal = async (req: express.Request, res: express.Response) => {
         try {
             if (settings.virusTotalCloudEnabled !== true) {
                 throw new Error("VirusTotal Cloud Check is disabled. Add your API key in Settings first.");
@@ -12448,8 +12470,8 @@ if ($dialog.ShowDialog() -eq 'OK') {
             const results = await getScanResults();
             const result = results.find((item: any) => item.id === req.params.id);
             if (!result) throw new Error("Result not found.");
-            const cloudCheck = await runVirusTotalResultCloudCheck(results, result, settings, apiKey);
-            await saveScanResults(results);
+            const cloudCheck = await runVirusTotalResultCloudCheck(results, result, settings, apiKey, undefined, req.method === "POST");
+            scheduleVirusTotalRefinement();
             await addHistory({
                 type: cloudCheck.uploaded ? "virustotal-results-upload" : "virustotal-cloud-check",
                 target: result.originalPath || cloudCheck.sha256,
@@ -12466,16 +12488,15 @@ if ($dialog.ShowDialog() -eq 'OK') {
                 uploaded: cloudCheck.uploaded,
                 report: cloudCheck.report,
                 refinement: cloudCheck.refinement,
-                message: cloudCheck.uploaded
-                    ? "VirusTotal analysis queued."
-                    : cloudCheck.report.found
-                    ? "VirusTotal Cloud Check completed."
-                    : String((cloudCheck.report as any).message || "VirusTotal has no report for this item.")
+                checks: result.virusTotalChecks,
+                message: cloudCheck.report.found ? "VirusTotal Cloud Check completed." : cloudCheck.refinement.message
             });
         } catch (e: any) {
             res.status(400).json({ success: false, error: e?.message || String(e) });
         }
-    });
+    };
+    app.get("/api/results/:id/virustotal-cloud", checkResultWithVirusTotal);
+    app.post("/api/results/:id/virustotal-submit", checkResultWithVirusTotal);
 
     app.get("/api/results/:id/virustotal-upload", async (req, res) => {
         try {
@@ -12665,6 +12686,25 @@ if ($dialog.ShowDialog() -eq 'OK') {
         }
         await saveResultsReminderState(state);
         res.json({ success: true, openResults: action === "open" });
+    });
+
+    app.post("/api/results/:id/dismiss", async (req, res) => {
+        try {
+            await ensureAppStateReady();
+            const db = getAppStateDb();
+            let removed = false;
+            runAppStateTransaction(db, () => {
+                const row = db.prepare("SELECT original_path FROM scan_results WHERE id = ?").get(req.params.id);
+                if (!row) return;
+                db.prepare("DELETE FROM scan_results WHERE id = ?").run(req.params.id);
+                insertHistoryRow(db, { id: `${Date.now()}-${randomBytes(3).toString("hex")}`, date: new Date().toISOString(),
+                    type: "results-dismiss", target: row.original_path, result: 0, threatsFound: 0, scannedFiles: 0, duration: 0,
+                    actionTaken: "Removed finding from Results. File kept; no exception added." });
+                removed = true;
+            });
+            if (scanResultsChangedHandler) Promise.resolve(scanResultsChangedHandler()).catch(e => console.warn("Failed to notify dismissed result:", e));
+            res.json({ success: true, removed });
+        } catch (e: any) { res.status(400).json({ success: false, error: e?.message || "Could not remove the finding." }); }
     });
 
     app.post("/api/results/:id/action", async (req, res) => {

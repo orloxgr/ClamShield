@@ -85,7 +85,7 @@ test("invalid upload URLs, oversized files and mismatched analyses cannot be acc
     await assert.rejects(large.client.upload("test-key", large.file, async () => true), (error: any) => error.fileError === true);
     assert.equal(large.calls.length, 0);
     const mismatch = await fixture(t, 5, async () => response({ data: { attributes: { status: "completed", stats: {}, results: {} } }, meta: { file_info: { sha256: "different" } } }));
-    await assert.rejects(mismatch.client.analysis("test-key", "id", "expected"), (error: any) => error.fileError === true);
+    await assert.rejects(mismatch.client.analysis("test-key", "id", "expected"), (error: any) => error.fileError === true && error.fileChanged === true);
     const incomplete = await fixture(t, 5, async () => response({ data: { attributes: { status: "completed" } } }));
     await assert.rejects(incomplete.client.analysis("test-key", "id", "hash"), /incomplete analysis/);
 });

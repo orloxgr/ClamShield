@@ -382,7 +382,7 @@ export default function ShieldSettings() {
             <div className={`space-y-3 p-2 rounded-lg ${settings.virusTotalShieldBackgroundCheckEnabled === true && virusTotalReady ? "hover:bg-slate-800/50" : "opacity-60"}`}>
               <div className="flex items-center justify-between gap-6">
                 <div>
-                  <span className="text-slate-300 block">Upload unknown files to VirusTotal</span>
+                  <span className="text-slate-300 block">Upload files without a VirusTotal report</span>
                   <span className="text-xs text-slate-500">Only after the hash is unknown.</span>
                 </div>
                 <input

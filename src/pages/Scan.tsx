@@ -115,6 +115,14 @@ export default function Scan() {
   return (
     <div className="px-8 max-w-5xl mx-auto space-y-8 pb-20">
       <PageHeader title="On-Demand Scan" description="Manually check files, folders, or your entire system" />
+      {searchParams.get("file") && <div className="space-y-3 rounded-xl border border-sky-500/30 bg-sky-500/5 p-4">
+        <p className="text-sm font-medium text-slate-200">Scan the current file again</p>
+        <p className="break-all font-mono text-xs text-slate-400">{searchParams.get("file")}</p>
+        <p className="text-xs text-slate-400">The previous detection concerns an older file version. This runs a fresh local scan. Review its result before deciding whether to remove the old finding from Results.</p>
+        <button disabled={scanState === "running"} onClick={() => startScan("file", searchParams.get("file")!, { virusTotalAllFiles: false })}
+          className="rounded-lg bg-sky-700 px-4 py-2 text-sm text-white hover:bg-sky-600 disabled:opacity-50">Scan current file</button>
+        {scanState === "running" && <p className="text-xs text-amber-200">A scan is running. Wait for it to finish before starting this file scan.</p>}
+      </div>}
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[

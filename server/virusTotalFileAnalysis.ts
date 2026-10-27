@@ -79,7 +79,7 @@ export class VirusTotalFileAnalysis {
             throw new Error("VirusTotal returned an incomplete analysis response; waiting to retry.");
         }
         if (payload?.meta?.file_info?.sha256 && payload.meta.file_info.sha256 !== hash) {
-            throw Object.assign(new Error("File changed during upload; the VirusTotal analysis belongs to different content."), { fileError: true });
+            throw Object.assign(new Error("File changed during upload; the VirusTotal analysis belongs to different content."), { fileError: true, fileChanged: true });
         }
         return { data: { attributes: {
             last_analysis_stats: attributes.stats, last_analysis_results: attributes.results,

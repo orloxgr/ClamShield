@@ -33,6 +33,7 @@ For development transparency, runtime AI/cloud-service behavior, CI status, bina
 - One-click false-positive reporting helpers for exceptions with provider-specific routing for ClamAV, SecuriteInfo, SaneSecurity, and YARA Forge detections.
 - Tray app with background monitoring and threat popup alerts.
 - One threat decision per file across ClamAV, YARA and VirusTotal, with visible action errors. Closing a decision popup keeps its detections in Results. Notifications stack inside the work area of the monitor under the pointer.
+- Dashboard → VirusTotal Cloud → **View queue** lists unfinished Results, Shield and on-demand tasks with source filters, file search, stages and scheduled retries. Viewing it does not submit files. The count includes unfinished tasks across all three queues; one file can have tasks in multiple scans. Results distinguish a completed hash lookup with no report from an accepted upload awaiting a report, an unchecked finding and a failed check. Opening an upload website is not treated as proof of submission.
 - Clean NSIS installer and uninstaller.
 
 ## Performance Model
@@ -197,19 +198,27 @@ ClamShield follows the public VirusTotal API pacing in the background queue. The
 
 **Auto-fetch every** defaults to **500 requests** and can be changed on the Dashboard. Quotas are also checked when first configured, when a UTC usage period changes before the next lookup, and before an estimated quota would stop work. Repeated fetches share one request and have a 60-second cooldown; failed automatic fetches back off for 15 minutes. Ordinary dashboard polling reads the cached snapshot without contacting VirusTotal. If quota access fails, the last snapshot/local estimate remains visible with an error, rather than showing zero usage. A successful manual fetch with remaining allowance wakes waiting cloud queues.
 
-The separate Results and Shield unknown-file upload size limits are configurable and default to `20 MB`; those settings are capped at `32 MB`, matching the normal VirusTotal file upload endpoint. Files above those configured limits are not uploaded and the Results page shows an `Upload skipped` label with the file size and configured limit. On-demand scans use the complete upload-and-analysis flow described above.
+The separate Results and Shield unknown-file upload size limits are configurable and default to `20 MB`; those settings are capped at `32 MB`, matching the normal VirusTotal file upload endpoint. Files above those configured limits are not uploaded and the Results page shows `Upload required` with the file size, configured limit and directions to adjust Settings or quarantine the file. On-demand scans use the complete upload-and-analysis flow described above.
 
 VirusTotal cloud checks are a second-opinion layer. They do not replace local ClamAV/YARA scanning, and uploads should be enabled only when the user is comfortable submitting unknown files to VirusTotal.
+
+Results separate the local detection from the VirusTotal workflow and verdict. Workflow states are **Not checked with VT**, **Hash check queued**, **Upload required**, **Upload queued**, **Awaiting analysis**, **Waiting to retry**, and **Action required**. A missing hash report is an upload decision, never an "unknown" verdict or evidence that a file is safe. Completed reports produce **Likely false positive**, **Needs review**, **Suspicious**, or **Malicious**; a report with no completed engine verdicts requires review.
+
+Accepted Results submissions retain their analysis IDs and are polled through the analysis endpoint until completed, with shared API pacing and no five-check cutoff. Legacy submissions resume after upgrade. Accepted submissions and explicitly requested uploads continue even if automatic initial hash checks are off; disabling Cloud Check pauses them. Temporary errors show the retry time; invalid keys, unavailable files and upload size limits explain the required action. Rechecking preserves submissions rather than uploading the same file again.
 
 ### Results, second opinions, and false positives
 
 The Results page is the decision queue for detections that were not automatically quarantined. Each result shows the detection name, original file path, engine, source, and date, with actions directly under the file path:
 
-- `Cloud check`: checks the item's SHA-256 with VirusTotal Cloud and applies a verdict label. If Results unknown-file upload is enabled and the file is under the configured size limit, ClamShield uploads the file for analysis and follows up through the background queue.
-- `MD5 check`: opens a VirusTotal report by hash.
-- `File upload check`: opens VirusTotal's upload page and copies the local file path so the user can choose whether to upload the file manually.
+- `Check with VT` / `Recheck VT`: checks the item's SHA-256 with VirusTotal Cloud and applies a verdict label. If Results unknown-file upload is enabled and the file is under the configured size limit, ClamShield uploads the file for analysis and follows up through the background queue.
+- `Open hash report`: opens a VirusTotal report by hash.
+- `Upload for analysis`: submits a file after confirmation and monitors its analysis ID. Opening a web upload page is never treated as proof of submission.
+- Legacy web upload action: opens VirusTotal's upload page and copies the local file path so the user can choose whether to upload the file manually.
 - `Exception`: trusts the item and records detection metadata for later false-positive reporting.
 - `Quarantine`: moves the file into ClamShield quarantine.
+- `Remove from Results`: removes only the finding after confirmation, records the decision in History, keeps the file on disk and leaves future scanning enabled. It never adds an exception or marks the file as safe.
+
+If the submitted analysis belongs to different content, Results shows **File changed** with **Scan current file** and **Remove from Results**. Repeating the mismatched analysis is stopped. The file scan page is prefilled for a fresh local scan; it does not upload the new content merely by opening the page. A new local detection at the same path clears stale hashes and VirusTotal evidence unless its SHA-256 is explicitly confirmed unchanged. Delayed cloud responses cannot restore dismissed findings or overwrite a newer detection.
 
 The page also includes `Recheck all with VT`, which clears existing VirusTotal labels and queues all eligible Results items for background recheck using the configured VirusTotal options and API limits.
 

@@ -675,7 +675,7 @@ export default function SettingsPage() {
             <div className={`space-y-3 border-b border-slate-800 pb-4 ${settings.virusTotalCloudEnabled === true ? "" : "opacity-60"}`}>
               <div className="flex items-start justify-between gap-6">
                 <div>
-                  <span className="text-slate-200 font-medium block">Upload unknown Results files</span>
+                  <span className="text-slate-200 font-medium block">Upload Results files without a VT report</span>
                   <span className="text-slate-500 text-xs">Only after VirusTotal has no report for the hash.</span>
                 </div>
                 <input

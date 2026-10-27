@@ -52,5 +52,8 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: VirusTotal queue interface test
+        run: npm run test:virustotal-ui
+
       - name: Full dependency security gate
         run: npm run audit:security

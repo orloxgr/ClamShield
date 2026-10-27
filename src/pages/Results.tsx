@@ -14,7 +14,11 @@ import DropdownSelect, {
   type DropdownOption,
 } from "../components/DropdownSelect";
 import PageHeader from "../components/PageHeader";
+import Modal from "../components/Modal";
+import { Link } from "react-router-dom";
 import { ListPagination } from "../components/ListControls";
+import VirusTotalQueueDialog from "../components/VirusTotalQueueDialog";
+import { describeVirusTotalResult } from "../../shared/virusTotalState";
 import { formatSystemDateTime } from "../lib/dateFormat";
 
 type VirusTotalAction = "md5" | "upload" | "cloud";
@@ -22,6 +26,9 @@ type PageSize = 50 | 100 | 200 | 500 | "all";
 
 export default function ResultsPage() {
   const [items, setItems] = useState<any[]>([]);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [uploadTarget, setUploadTarget] = useState<any>(null);
+  const [dismissTarget, setDismissTarget] = useState<any>(null);
   const [totalItems, setTotalItems] = useState(0);
   const [loading, setLoading] = useState(true);
   const [pageSize, setPageSize] = useState<PageSize>(50);
@@ -93,6 +100,7 @@ export default function ResultsPage() {
           )
         : [];
       setItems(sorted);
+      if (sorted.some((item: any) => ["awaiting_analysis", "upload_queued", "retry_pending", "queued_hash"].includes(describeVirusTotalResult(item).state))) setVirusTotalPolling(true);
       setTotalItems(
         Array.isArray(data) ? sorted.length : Number(data.total || 0),
       );
@@ -279,15 +287,15 @@ export default function ResultsPage() {
     }
   };
 
-  const clearSelectedUnavailable = async () => {
-    if (selectedMissingCount === 0) return;
+  const clearSelectedUnavailable = async (ids?: string[]) => {
+    if (!ids && selectedMissingCount === 0) return;
     setMessage("");
     setBulkBusy("clear");
     try {
       const res = await fetch("/api/results/clear-selected-unavailable", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selectedItems.map((item) => item.id) }),
+        body: JSON.stringify({ ids: ids || selectedItems.map((item) => item.id) }),
       });
       const data = await res.json();
       if (!res.ok || !data.success)
@@ -354,13 +362,14 @@ export default function ResultsPage() {
     }
   };
 
-  const cloudCheck = async (id: string) => {
+  const cloudCheck = async (id: string, submit = false) => {
     setBusyId(id);
-    setVirusTotalBusy({ id, action: "cloud" });
+    setVirusTotalBusy({ id, action: submit ? "upload" : "cloud" });
     setMessage("");
     try {
       const response = await fetch(
-        `/api/results/${encodeURIComponent(id)}/virustotal-cloud`,
+        `/api/results/${encodeURIComponent(id)}/${submit ? "virustotal-submit" : "virustotal-cloud"}`,
+        submit ? { method: "POST" } : undefined,
       );
       const data = await response.json();
       if (!response.ok || !data.success)
@@ -372,44 +381,35 @@ export default function ResultsPage() {
         setItems((current) =>
           current.map((item) =>
             item.id === id
-              ? { ...item, virusTotalRefinement: data.refinement }
+              ? { ...item, virusTotalRefinement: data.refinement, virusTotalChecks: data.checks || item.virusTotalChecks }
               : item,
           ),
         );
       }
       markVirusTotalChecked(id, "cloud");
+      setVirusTotalPolling(true);
+      setUploadTarget(null);
       setMessage(data.message || "VirusTotal Cloud Check completed.");
     } catch (error: any) {
-      setMessage(error.message || "Could not query VirusTotal Cloud Check.");
+      setMessage((error.message || "Could not query VirusTotal Cloud Check.") + " Open Settings to verify the API key, then retry.");
     } finally {
       setVirusTotalBusy(null);
       setBusyId(null);
     }
   };
 
-  const openUploadCheck = async (id: string) => {
-    setBusyId(id);
-    setVirusTotalBusy({ id, action: "upload" });
-    setMessage("");
+  const dismissFinding = async () => {
+    if (!dismissTarget) return;
+    setBusyId(dismissTarget.id); setMessage("");
     try {
-      const response = await fetch(
-        `/api/results/${encodeURIComponent(id)}/virustotal-upload`,
-      );
+      const response = await fetch(`/api/results/${encodeURIComponent(dismissTarget.id)}/dismiss`, { method: "POST" });
       const data = await response.json();
-      if (!response.ok || !data.success)
-        throw new Error(
-          data.error || "Could not prepare the VirusTotal upload check.",
-        );
-      await navigator.clipboard?.writeText(data.filePath).catch(() => {});
-      window.open(data.url, "_blank", "noopener,noreferrer");
-      markVirusTotalChecked(id, "upload");
-      setMessage("Opened VirusTotal and copied the file path.");
-    } catch (error: any) {
-      setMessage(error.message || "Could not open VirusTotal upload.");
-    } finally {
-      setVirusTotalBusy(null);
-      setBusyId(null);
-    }
+      if (!response.ok || !data.success) throw new Error(data.error || "Could not remove the finding.");
+      setDismissTarget(null);
+      setMessage("Finding removed from Results. The file was kept and no exception was added.");
+      await fetchItems();
+    } catch (error: any) { setMessage(error.message || "Could not remove the finding."); }
+    finally { setBusyId(null); }
   };
 
   const pageCount =
@@ -439,15 +439,11 @@ export default function ResultsPage() {
     return "border-slate-700 bg-slate-950/70 text-slate-300";
   };
   const getVirusTotalReport = (item: any): any =>
-    virusTotalCloudReports[item.id] ||
     item.virusTotalRefinement?.report ||
+    virusTotalCloudReports[item.id] ||
     null;
   const getVirusTotalNotice = (item: any) => {
-    const refinement = item.virusTotalRefinement || {};
-    const label = String(refinement.label || "");
-    const message = String(refinement.message || "");
-    if (!label && !message) return "";
-    return message;
+    return describeVirusTotalResult(item).message;
   };
   const currentPage = Math.min(page, pageCount);
   const rangeStart =
@@ -471,13 +467,16 @@ export default function ResultsPage() {
   ];
   const virusTotalRefinementOptions: DropdownOption[] = [
     { value: "all", label: "All VT labels" },
-    { value: "unrefined", label: "Unrefined" },
+    { value: "unrefined", label: "Not checked / queued hash" },
     { value: "likely_false_positive", label: "Likely false positive" },
     { value: "needs_review", label: "Needs review" },
-    { value: "confirmed_suspicious", label: "Confirmed suspicious" },
-    { value: "confirmed_malicious", label: "Confirmed malicious" },
-    { value: "unknown", label: "Unknown to VirusTotal" },
-    { value: "error", label: "Refinement error" },
+    { value: "confirmed_suspicious", label: "Suspicious" },
+    { value: "confirmed_malicious", label: "Malicious" },
+    { value: "upload_required", label: "Upload required" },
+    { value: "upload_queued", label: "Upload queued" },
+    { value: "awaiting_analysis", label: "Awaiting analysis" },
+    { value: "retry_pending", label: "Waiting to retry" },
+    { value: "blocked", label: "Action required" },
   ];
 
   return (
@@ -512,7 +511,7 @@ export default function ResultsPage() {
                 </span>
               </button>
               <button
-                onClick={clearSelectedUnavailable}
+                onClick={() => clearSelectedUnavailable()}
                 disabled={bulkBusy !== null || selectedMissingCount === 0}
                 title="Remove selected Results entries whose original file is no longer available."
                 className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700"
@@ -647,6 +646,7 @@ export default function ResultsPage() {
             {items.map((item) => {
               const report = getVirusTotalReport(item);
               const notice = getVirusTotalNotice(item);
+              const cloudState = describeVirusTotalResult(item);
               const hasFlaggedVotes =
                 Number(report?.stats?.malicious || 0) > 0 ||
                 Number(report?.stats?.suspicious || 0) > 0;
@@ -678,11 +678,11 @@ export default function ResultsPage() {
                         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                         {item.threatName || "Unknown Threat"}
                       </h3>
-                      {item.virusTotalRefinement?.label && (
+                      {cloudState.label && (
                         <span
                           className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-medium ${virusTotalRefinementClass(item.virusTotalRefinement)}`}
                         >
-                          {item.virusTotalRefinement.label}
+                          {cloudState.label}
                         </span>
                       )}
                     </div>
@@ -714,8 +714,9 @@ export default function ResultsPage() {
                       )}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <button
-                        onClick={() => cloudCheck(item.id)}
+                      {cloudState.action === "rescan" ? <Link to={`/scan?file=${encodeURIComponent(item.originalPath || "")}`}
+                        className="inline-flex items-center gap-1.5 rounded bg-sky-700 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-sky-600">Scan current file</Link> : <button
+                        onClick={() => ["queued_hash", "upload_queued", "retry_pending"].includes(cloudState.state) ? setQueueOpen(true) : cloudCheck(item.id)}
                         disabled={
                           busyId === item.id ||
                           (item.available === false && !item.sha256)
@@ -726,7 +727,7 @@ export default function ResultsPage() {
                             : "Run VirusTotal Cloud Check."
                         }
                         className={`inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors ${
-                          checkedVirusTotal[item.id]?.cloud
+                          cloudState.state === "checked"
                             ? "bg-emerald-600 hover:bg-emerald-500"
                             : "bg-sky-700 hover:bg-sky-600"
                         }`}
@@ -734,7 +735,7 @@ export default function ResultsPage() {
                         {virusTotalBusy?.id === item.id &&
                         virusTotalBusy.action === "cloud" ? (
                           <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                        ) : checkedVirusTotal[item.id]?.cloud ? (
+                        ) : cloudState.state === "checked" ? (
                           <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                         ) : (
                           <Cloud className="w-3.5 h-3.5 shrink-0" />
@@ -742,11 +743,13 @@ export default function ResultsPage() {
                         {virusTotalBusy?.id === item.id &&
                         virusTotalBusy.action === "cloud"
                           ? "Checking..."
-                          : checkedVirusTotal[item.id]?.cloud
-                            ? "Cloud checked"
-                            : "Cloud check"}
-                      </button>
-                      <button
+                          : ["queued_hash", "upload_queued", "retry_pending"].includes(cloudState.state) ? "View queue"
+                            : cloudState.state === "awaiting_analysis" ? "Check analysis"
+                            : cloudState.state === "upload_required" ? "Recheck hash"
+                            : cloudState.state === "blocked" ? "Retry check"
+                            : cloudState.state === "checked" ? "Recheck VT" : "Check with VT"}
+                      </button>}
+                      {cloudState.action !== "rescan" && <button
                         onClick={() => checkMd5(item.id)}
                         disabled={
                           busyId === item.id ||
@@ -775,40 +778,14 @@ export default function ResultsPage() {
                         virusTotalBusy.action === "md5"
                           ? "Opening..."
                           : checkedVirusTotal[item.id]?.md5
-                            ? "MD5 opened"
-                            : "MD5 check"}
-                      </button>
-                      <button
-                        onClick={() => openUploadCheck(item.id)}
-                        disabled={
-                          busyId === item.id || item.available === false
-                        }
-                        title={
-                          checkedVirusTotal[item.id]?.upload
-                            ? "Open VirusTotal's upload page again. The full file path will be copied so you can paste it with Ctrl+V."
-                            : "Opens VirusTotal's upload page. The full file path will be copied so you can paste it with Ctrl+V."
-                        }
-                        className={`inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors ${
-                          checkedVirusTotal[item.id]?.upload
-                            ? "bg-emerald-600 hover:bg-emerald-500"
-                            : "bg-sky-600 hover:bg-sky-500"
-                        }`}
-                      >
-                        {virusTotalBusy?.id === item.id &&
-                        virusTotalBusy.action === "upload" ? (
-                          <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                        ) : checkedVirusTotal[item.id]?.upload ? (
-                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                        ) : (
-                          <UploadCloud className="w-3.5 h-3.5 shrink-0" />
-                        )}
-                        {virusTotalBusy?.id === item.id &&
-                        virusTotalBusy.action === "upload"
-                          ? "Opening..."
-                          : checkedVirusTotal[item.id]?.upload
-                            ? "Upload opened"
-                            : "File upload check"}
-                      </button>
+                            ? "Hash report opened"
+                            : "Open hash report"}
+                      </button>}
+                      {cloudState.action === "upload" && <button
+                        onClick={() => { setMessage(""); setUploadTarget(item); }}
+                        disabled={busyId === item.id || item.available === false}
+                        className="inline-flex items-center gap-1.5 rounded bg-sky-700 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-sky-600 disabled:opacity-50"
+                      ><UploadCloud className="h-3.5 w-3.5" />Upload for analysis</button>}
                       <button
                         onClick={() => handleAction(item.id, "exception")}
                         disabled={busyId === item.id}
@@ -817,13 +794,17 @@ export default function ResultsPage() {
                         <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
                         Exception
                       </button>
-                      <button
-                        onClick={() => handleAction(item.id, "quarantine")}
+                      {item.available !== false && <button
+                        onClick={() => item.available === false ? clearSelectedUnavailable([item.id]) : handleAction(item.id, "quarantine")}
                         disabled={busyId === item.id}
                         className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded text-[11px] font-medium transition-colors"
                       >
                         <Archive className="w-3.5 h-3.5 shrink-0" />
                         Quarantine
+                      </button>}
+                      <button onClick={() => { setMessage(""); setDismissTarget(item); }} disabled={busyId === item.id}
+                        className="inline-flex items-center gap-1.5 rounded border border-slate-700 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50">
+                        <Trash2 className="h-3.5 w-3.5" />Remove from Results
                       </button>
                     </div>
 
@@ -836,10 +817,10 @@ export default function ResultsPage() {
                             {notice ||
                               (report?.found === false
                                 ? report.message ||
-                                  "VirusTotal has no report for this hash."
+                                  "Hash checked: no report returned."
                                 : "VirusTotal report")}
                           </span>
-                          {report?.url && (
+                          {report?.url && cloudState.state === "checked" && (
                             <a
                               href={report.url}
                               target="_blank"
@@ -849,6 +830,12 @@ export default function ResultsPage() {
                               Open VT
                             </a>
                           )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-400">
+                          {cloudState.checkedAt > 0 && <span>Updated: {formatSystemDateTime(cloudState.checkedAt)}</span>}
+                          {cloudState.nextCheckAt > 0 && <span>Recheck after: {formatSystemDateTime(cloudState.nextCheckAt)}</span>}
+                          <Link to="/settings" className="text-sky-300 hover:text-sky-200">Open Settings</Link>
+                          <button onClick={() => setQueueOpen(true)} className="text-sky-300 hover:text-sky-200">View queue</button>
                         </div>
                         {report && report.found !== false && (
                           <>
@@ -892,6 +879,30 @@ export default function ResultsPage() {
           />
         </div>
       )}
+      {dismissTarget && <Modal title="Remove finding from Results" onClose={() => setDismissTarget(null)} busy={Boolean(busyId)}>
+        <div className="space-y-4 px-6 py-4 text-sm">
+          <p>Remove this finding from Results? The file stays on disk and remains eligible for future scans. This does not add an exception or mark the file as safe.</p>
+          <p className="break-all font-mono text-xs text-slate-400">{dismissTarget.originalPath}</p>
+          {message && <p role="alert" className="text-amber-200">{message}</p>}
+          <div className="flex justify-end gap-2">
+            <button disabled={Boolean(busyId)} onClick={() => setDismissTarget(null)} className="rounded border border-slate-700 px-3 py-2">Cancel</button>
+            <button disabled={Boolean(busyId)} onClick={dismissFinding} className="rounded bg-sky-700 px-3 py-2 disabled:opacity-50">{busyId ? "Removing..." : "Remove finding"}</button>
+          </div>
+        </div>
+      </Modal>}
+      {uploadTarget && <Modal title="Upload file to VirusTotal" onClose={() => setUploadTarget(null)} busy={Boolean(busyId)}>
+        <div className="space-y-4 px-6 py-4 text-sm">
+          <p>Submit this file to VirusTotal for analysis? Uploaded samples may be shared with security partners. Do not submit confidential files.</p>
+          <p className="break-all font-mono text-xs text-slate-400">{uploadTarget.originalPath}</p>
+          <p>ClamShield will monitor the analysis automatically. This permission applies to this file only.</p>
+          {message && <p role="alert" className="rounded bg-amber-500/10 p-3 text-amber-200">{message} <Link to="/settings" onClick={() => setUploadTarget(null)} className="text-sky-300">Open Settings</Link></p>}
+          <div className="flex justify-end gap-2">
+            <button disabled={Boolean(busyId)} onClick={() => setUploadTarget(null)} className="rounded border border-slate-700 px-3 py-2">Cancel</button>
+            <button disabled={Boolean(busyId)} onClick={() => cloudCheck(uploadTarget.id, true)} className="rounded bg-sky-700 px-3 py-2 disabled:opacity-50">{busyId ? "Submitting..." : "Upload for analysis"}</button>
+          </div>
+        </div>
+      </Modal>}
+      {queueOpen && <VirusTotalQueueDialog onClose={() => setQueueOpen(false)} />}
     </div>
   );
 }

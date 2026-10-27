@@ -4,6 +4,7 @@ import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, Downl
 import { formatDistanceToNow } from "date-fns";
 import PageHeader from "../components/PageHeader";
 import UpdateJobProgress from "../components/UpdateJobProgress";
+import VirusTotalQueueDialog from "../components/VirusTotalQueueDialog";
 import { formatSystemDateTime } from "../lib/dateFormat";
 
 export default function Dashboard() {
@@ -21,6 +22,7 @@ export default function Dashboard() {
   const [saneSecurityMessage, setSaneSecurityMessage] = useState("");
   const [saneSecurityJobId, setSaneSecurityJobId] = useState<string | null>(null);
   const [virusTotalDialogOpen, setVirusTotalDialogOpen] = useState(false);
+  const [virusTotalQueueOpen, setVirusTotalQueueOpen] = useState(false);
   const [virusTotalApiKey, setVirusTotalApiKey] = useState("");
   const [virusTotalCloudEnabled, setVirusTotalCloudEnabled] = useState(false);
   const [virusTotalAutoRefineEnabled, setVirusTotalAutoRefineEnabled] = useState(false);
@@ -542,8 +544,11 @@ export default function Dashboard() {
               </span>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50">
-              <span className="text-slate-500">Queued</span>
-              <span className="font-medium text-slate-200">{virusTotalQueuedCount}</span>
+              <span className="text-slate-500">Pending tasks</span>
+              <div className="flex items-center gap-3">
+                <span className="font-medium text-slate-200">{virusTotalQueuedCount}</span>
+                <button onClick={() => setVirusTotalQueueOpen(true)} className="rounded bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700">View queue</button>
+              </div>
             </div>
             <div className="flex justify-between items-center py-2 border-b border-slate-800/50 gap-4">
               <span className="text-slate-500">API today</span>
@@ -605,6 +610,7 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {virusTotalQueueOpen && <VirusTotalQueueDialog onClose={() => setVirusTotalQueueOpen(false)} />}
       {securiteInfoDialogOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl">
@@ -981,7 +987,7 @@ export default function Dashboard() {
                     <span className="space-y-1">
                       <span className="text-sm font-medium text-slate-200 flex items-center gap-2">
                         <UploadCloud className="w-4 h-4 text-cyan-300" />
-                        Upload unknown Results files
+                        Upload Results files without a VT report
                       </span>
                       <span className="block text-xs text-slate-500">Only after VirusTotal has no report for the hash.</span>
                     </span>
