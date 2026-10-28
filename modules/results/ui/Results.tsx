@@ -439,23 +439,23 @@ export default function ResultsPage() {
     return (<div className="px-8 max-w-6xl mx-auto space-y-8 pb-20">
       <PageHeader title={t("results.results")} description={t("results.suspicious_files_waiting_for_your_decision")} actions={items.length > 0 ? (<div className="grid w-[26rem] max-w-full grid-cols-2 gap-2">
               <span className="col-span-2 text-right text-sm text-slate-400 tabular-nums">
-                {localizeText(selectedCount)} selected
+                {selectedCount} {t("results.selected")}
               </span>
               <button onClick={recheckAllWithVirusTotal} disabled={bulkBusy !== null || totalItems === 0} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-sky-700 hover:bg-sky-600 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors">
                 <Cloud className="w-4 h-4 shrink-0"/>
-                <span className="truncate">
+                <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
                   {localizeText(bulkBusy === "vt" ? "Queueing..." : "Recheck all with VT")}
                 </span>
               </button>
               <button onClick={() => runSelectedAction("exception")} disabled={bulkBusy !== null || selectedCount === 0} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700">
                 <ShieldCheck className="w-4 h-4 shrink-0"/>
-                <span className="truncate">
+                <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
                   {localizeText(bulkBusy === "exception" ? "Adding..." : "Add to exceptions")}
                 </span>
               </button>
               <button onClick={() => clearSelectedUnavailable()} disabled={bulkBusy !== null || selectedMissingCount === 0} title={t("results.remove_selected_results_entries_whose_original_file_is_no_longer")} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg font-medium transition-colors border border-slate-700">
                 <Trash2 className="w-4 h-4 shrink-0"/>
-                <span className="truncate">
+                <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
                   {localizeText(bulkBusy === "clear"
                 ? "Removing..."
                 : selectedMissingCount > 0
@@ -465,7 +465,7 @@ export default function ResultsPage() {
               </button>
               <button onClick={() => runSelectedAction("quarantine")} disabled={bulkBusy !== null || selectedCount === 0} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors">
                 <Archive className="w-4 h-4 shrink-0"/>
-                <span className="truncate">
+                <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
                   {localizeText(bulkBusy === "quarantine"
                 ? "Quarantining..."
                 : "Quarantine selected")}

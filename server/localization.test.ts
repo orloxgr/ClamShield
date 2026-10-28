@@ -6,15 +6,16 @@ import path from 'node:path';
 import express from 'express';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { englishPack, englishText, languageLabel, localizeText, setLanguage, t, translate, validateLanguagePack, type LanguagePack } from '../shared/localization/runtime';
+import { englishPack, englishText, languageLabel, languageLengthWarnings, localizeText, setLanguage, t, translate, validateLanguagePack, type LanguagePack } from '../shared/localization/runtime';
 import { LanguageFiles, maxLanguageBytes, readBoundedJson, readLanguagePreference, writeLanguageText } from '../shared/localization/files';
 import { writeShellLanguage } from '../shared/localization/shell';
 import { registerLanguageRoutes } from './core/languages';
 import { apiSessionToken, requireLocalApiSession } from './core/security';
 
 const require = createRequire(import.meta.url);
-const keyFor = (english: string) => Object.keys(englishPack.strings).find(key => englishPack.strings[key].english === english)!;
+const keyFor = (english: string) => Object.keys(englishPack.strings).find(key => englishPack.strings[key].StringInEng === english)!;
 const pack = (strings: Record<string, any> = {}): LanguagePack => ({ schemaVersion: 1, language: { code: 'es', name: 'Español', direction: 'ltr' }, strings });
 const entry = (key: string, translation: string) => ({ ...englishPack.strings[key], translation });
 function temporary() {
@@ -29,7 +30,7 @@ test('the complete volunteer template validates and empty translations fall back
   for (const [key, value] of Object.entries(template.strings)) {
     assert.equal(value.translation, '');
     assert.equal(translate(template, key), englishText(key));
-    assert.ok(Array.from(value.english).length <= value.maxChars, key);
+    assert.equal(Array.from(value.StringInEng).length, value.maxChars, key);
   }
 });
 
@@ -57,12 +58,16 @@ test('bundled languages use base codes, preserve technical literals and distingu
   assert.equal(registry.languages.length, actual.length);
   for (const code of actual) {
     const language = validateLanguagePack(readBoundedJson(path.resolve('languages', code + '.json')));
+    const raw = fs.readFileSync(path.resolve('languages', code + '.json'), 'utf8');
+    assert.equal((raw.match(/^      "StringInEng": /gm) || []).length, Object.keys(language.strings).length);
+    assert.equal((raw.match(/^      "translation": /gm) || []).length, Object.keys(language.strings).length);
+    for (const entry of Object.values(language.strings)) assert.equal(entry.maxChars, Array.from(entry.StringInEng).length);
     assert.ok(Object.keys(language.strings).length > 0, code);
     if (code === 'en') assert.equal(language.language.status, 'source');
     else assert.ok(['auto', 'reviewed'].includes(language.language.status!));
     for (const [key, entry] of Object.entries(language.strings)) {
       for (const literal of ['ClamShield', 'ClamAV', 'VirusTotal', 'SecuriteInfo', 'SaneSecurity', 'YARA', 'infectedsecuriteinfo', 'Byron Iniotakis']) {
-        const expected = entry.english.split(literal).length - 1;
+        const expected = entry.StringInEng.split(literal).length - 1;
         if (expected && entry.translation) assert.equal(entry.translation.split(literal).length - 1, expected, `${code}: ${key}: ${literal}`);
       }
     }
@@ -75,7 +80,7 @@ test('bundled languages use base codes, preserve technical literals and distingu
 
 test('every authored JSX text and literal translation key belongs to the catalog', () => {
   const visitFiles = (directory: string): string[] => fs.readdirSync(directory, { withFileTypes: true }).flatMap(item => item.isDirectory() ? visitFiles(path.join(directory, item.name)) : [path.join(directory, item.name)]);
-  const english = new Set(Object.values(englishPack.strings).map(entry => entry.english));
+  const english = new Set(Object.values(englishPack.strings).map(entry => entry.StringInEng));
   const brands = new Set(['ClamShield', 'SecuriteInfo', 'SaneSecurity', 'Sanesecurity', 'VT']);
   for (const file of ['src', 'modules', 'addons', 'engines', 'server', 'shared'].flatMap(visitFiles).filter(file => /\.tsx?$/.test(file) && !file.endsWith('.test.ts'))) {
     const tree = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
@@ -122,7 +127,7 @@ test('language files cannot redefine identifiers, English, limits, metadata or p
   for (const change of [
     { ...valid, schemaVersion: 2 }, { ...valid, script: 'alert(1)' },
     pack({ '../file': entry(key, 'Panel') }),
-    pack({ [key]: { ...entry(key, 'Panel'), english: 'Different meaning' } }),
+    pack({ [key]: { ...entry(key, 'Panel'), StringInEng: 'Different meaning' } }),
     pack({ [key]: { ...entry(key, 'Panel'), maxChars: 99999 } }),
     pack({ [key]: { ...entry(key, 'Panel'), onclick: 'alert(1)' } }),
     { ...valid, language: { ...valid.language, code: '../../escape' } },
@@ -131,13 +136,58 @@ test('language files cannot redefine identifiers, English, limits, metadata or p
     JSON.parse('{"schemaVersion":1,"language":{"code":"es","name":"Español","direction":"ltr"},"strings":{"__proto__":{}}}')
   ]) assert.throws(() => validateLanguagePack(change));
   assert.equal(({} as any).polluted, undefined);
-  for (const value of ['x'.repeat(englishPack.strings[key].maxChars + 1), 'Text\u202eevil', 'Text\nline', 'Text\0'])
+  for (const value of ['Text\u202eevil', 'Text\nline', 'Text\0'])
     assert.throws(() => validateLanguagePack(pack({ [key]: entry(key, value) })));
 });
 
+test('English length budgets are advisory; long text and plural forms load and render intact', () => {
+  const key = keyFor('Dashboard'), text = 'Una traducción completa que supera claramente el texto inglés';
+  const language = validateLanguagePack(pack({ [key]: entry(key, text) }));
+  assert.equal(translate(language, key), text);
+  assert.deepEqual(languageLengthWarnings(language), [{ key, field: 'translation', translation: text, actual: Array.from(text).length, maxChars: 9 }]);
+  const [pluralKey, definition] = Object.entries(englishPack.strings).find(([, e]) => e.plural && e.optionalParameters?.length)!;
+  const required = [...definition.StringInEng.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]).filter(name => !definition.optionalParameters!.includes(name));
+  const plural = required.map(name => '{{' + name + '}}').join(' ') + ' texto '.repeat(30);
+  const forms = validateLanguagePack(pack({ [pluralKey]: { ...entry(pluralKey, ''), forms: { other: plural } } }));
+  assert.equal(languageLengthWarnings(forms)[0].field, 'forms.other');
+  assert.ok(translate(forms, pluralKey, Object.fromEntries(required.map(name => [name, 2]))).includes(' texto '.repeat(30)));
+  const temp = temporary();
+  try {
+    fs.writeFileSync(path.join(temp.directory, 'es.json'), JSON.stringify(language));
+    const registry = new LanguageFiles([temp.directory]);
+    assert.deepEqual(registry.refresh().errors, []);
+    assert.equal(translate(registry.current('es'), key), text);
+  } finally { temp.clean(); }
+});
+
+test('previous volunteer files keep working with english fields and older length budgets', () => {
+  const key = keyFor('Dashboard'), text = 'Traducción larga conservada';
+  const language = validateLanguagePack(pack({ [key]: { english: 'Dashboard', translation: text, maxChars: 24 } }));
+  assert.equal(language.strings[key].maxChars, 9);
+  assert.equal(language.strings[key].StringInEng, 'Dashboard');
+  assert.equal(translate(language, key), text);
+  assert.equal(languageLengthWarnings(language).length, 1);
+});
+
+test('the translation CLI reports length warnings without failing but still rejects unsafe text', () => {
+  const temp = temporary(), key = keyFor('Dashboard'), filename = path.join(temp.directory, 'es.json');
+  try {
+    const text = 'Traducción larga conservada';
+    fs.writeFileSync(filename, JSON.stringify(pack({ [key]: entry(key, text) })));
+    const run = () => spawnSync(process.execPath, ['--import', 'tsx', 'scripts/check-languages.ts', filename], { encoding: 'utf8', windowsHide: true });
+    const good = run();
+    assert.equal(good.status, 0, good.stderr);
+    assert.match(good.stdout, /1 length warnings \(non-blocking\)/);
+    assert.ok(good.stderr.includes(`${key} [translation]: ${Array.from(text).length} characters; recommended maximum 9`));
+    assert.ok(good.stderr.includes(text));
+    fs.writeFileSync(filename, JSON.stringify(pack({ [key]: entry(key, 'Unsafe\u0000') })));
+    assert.equal(run().status, 1);
+  } finally { temp.clean(); }
+});
+
 test('placeholders stay data and translations may reorder or repeat known placeholders', () => {
-  const [key, definition] = Object.entries(englishPack.strings).find(([, e]) => e.english.includes('{{') && !e.optionalParameters && e.maxChars > 50)!;
-  const names = [...definition.english.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
+  const [key, definition] = Object.entries(englishPack.strings).find(([, e]) => e.StringInEng.includes('{{') && !e.optionalParameters && e.maxChars > 50)!;
+  const names = [...definition.StringInEng.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]);
   const translated = [...names].reverse().map(name => '{{' + name + '}}').join(' ');
   validateLanguagePack(pack({ [key]: entry(key, translated) }));
   assert.throws(() => validateLanguagePack(pack({ [key]: entry(key, 'No parameters') })));
@@ -150,7 +200,7 @@ test('placeholders stay data and translations may reorder or repeat known placeh
 
 test('declarative plural forms use Intl rules with no executable expressions', () => {
   const [key, definition] = Object.entries(englishPack.strings).find(([, e]) => e.plural && e.optionalParameters?.length)!;
-  const required = [...definition.english.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]).filter(name => !definition.optionalParameters!.includes(name));
+  const required = [...definition.StringInEng.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]).filter(name => !definition.optionalParameters!.includes(name));
   const value = required.map(name => '{{' + name + '}}').join(' ');
   validateLanguagePack(pack({ [key]: entry(key, value) }));
   assert.throws(() => validateLanguagePack(pack({ [key]: entry(key, 'No actual values') })));

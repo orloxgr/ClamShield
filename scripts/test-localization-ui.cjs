@@ -27,12 +27,12 @@ const vocabulary = { Dashboard: 'Panel', Shield: 'Escudo', 'Real-Time Shield': '
 runtime.validateLanguagePack(spanish);
 const maximum = structuredClone(english); maximum.language = { code: 'de', name: 'Layout test', direction: 'ltr' };
 for (const entry of Object.values(maximum.strings)) {
-  entry.translation = entry.english.replace(/\{\{\w+\}\}|[aeiou]/g, value => value.startsWith('{{') ? value : ({ a: 'á', e: 'ë', i: 'í', o: 'ó', u: 'ú' })[value]);
+  entry.translation = entry.StringInEng.replace(/\{\{\w+\}\}|[aeiou]/g, value => value.startsWith('{{') ? value : ({ a: 'á', e: 'ë', i: 'í', o: 'ó', u: 'ú' })[value]);
   entry.translation += 'W'.repeat(entry.maxChars - Array.from(entry.translation).length);
 }
 runtime.validateLanguagePack(maximum);
 const evil = structuredClone(spanish);
-const dashboardKey = Object.keys(evil.strings).find(key => evil.strings[key].english === 'Dashboard');
+const dashboardKey = Object.keys(evil.strings).find(key => evil.strings[key].StringInEng === 'Dashboard');
 evil.strings[dashboardKey].translation = '<img src=x onerror=x=1>';
 runtime.validateLanguagePack(evil);
 const settings = { languageCode: 'en', eulaAccepted: true, yaraEnabled: true, shieldEnabled: true, customWatchedFolders: [], watchedFolders: {}, scheduledScanEnabled: false, scheduledScanDirectories: [], scheduledScanWeekdays: [1], scheduledScanMonthDays: [1], scheduledScanTime: '12:00', scheduledScanFrequency: 'weekly' };
@@ -59,6 +59,7 @@ app.whenReady().then(async () => {
         requests.push([req.method, url.pathname]); res.setHeader('Content-Type', 'application/json');
         let body = { items: [], total: 0, profiles: [], adapters: [] };
         if (url.pathname === '/api/status' || url.pathname === '/api/settings') body = status;
+        if (url.pathname === '/api/results') body = { items: [{ id: 'layout-fixture', timestamp: Date.now(), originalPath: 'C:\\fixtures\\sample.zip', threatName: 'Fixture.Detection', source: 'manual', available: true }], total: 1 };
         if (url.pathname === '/api/languages/current') body = selected;
         if (url.pathname === '/api/languages') {
           if (req.method === 'POST') { let raw = ''; for await (const chunk of req) raw += chunk; selected = packs[JSON.parse(raw).code] || english; }
@@ -78,16 +79,33 @@ app.whenReady().then(async () => {
     await win.loadURL(origin + '/settings');
     await until(async () => await win.webContents.executeJavaScript(`Boolean(document.querySelector('#application-language option[value="es"]') && !document.getElementById('application-language').disabled)`), 'settings');
     const labels = await win.webContents.executeJavaScript(`Object.fromEntries([...document.querySelectorAll('#application-language option')].map(node=>[node.value,node.textContent]))`);
+    const orderedCodes = await win.webContents.executeJavaScript(`[...document.querySelectorAll('#application-language option')].map(node=>node.value)`);
+    assert.deepEqual(orderedCodes, Object.values(packs).sort((a,b)=>runtime.languageLabel(a.language).localeCompare(runtime.languageLabel(b.language), 'en')).map(pack=>pack.language.code));
     assert.equal(Object.keys(labels).length, Object.keys(packs).length);
     assert.equal(labels.en, 'English');
     assert.equal(labels.es, runtime.languageLabel(packs.es.language));
     assert.equal(labels.el, runtime.languageLabel(packs.el.language));
-    const settingsKey = Object.keys(english.strings).find(key => english.strings[key].english === 'Settings');
+    const help = await win.webContents.executeJavaScript(`(()=>{const section=document.getElementById('application-language').closest('section');return {links:[...section.querySelectorAll('a')].map(a=>({text:a.textContent,href:a.href})),paragraphs:section.querySelectorAll('p').length}})()`);
+    assert.deepEqual(help.links, [{text:'Help translating ClamShield',href:'https://github.com/orloxgr/ClamShield/tree/codex/modular-localization/languages'}]);
+    assert.equal(help.paragraphs, 0);
+    const settingsKey = Object.keys(english.strings).find(key => english.strings[key].StringInEng === 'Settings');
     for (const pack of Object.values(packs)) {
       await win.webContents.executeJavaScript(`document.getElementById('application-language').value=${JSON.stringify(pack.language.code)};document.getElementById('application-language').dispatchEvent(new Event('change',{bubbles:true}))`);
       await until(async () => await win.webContents.executeJavaScript(`document.documentElement.lang === ${JSON.stringify(pack.language.code)} && !document.getElementById('application-language').disabled`), pack.language.code + ': selected');
       assert.equal(await win.webContents.executeJavaScript('document.documentElement.dir'), pack.language.direction);
       assert.equal(await win.webContents.executeJavaScript('document.querySelector("main h1").textContent'), runtime.translate(pack, settingsKey));
+      await win.webContents.executeJavaScript(`document.querySelector('nav a[href="/results"]').click()`);
+      await until(async () => await win.webContents.executeJavaScript(`document.querySelectorAll('main header button').length === 4`), pack.language.code + ': results actions');
+      const buttons = await win.webContents.executeJavaScript(`([...document.querySelectorAll('main header button')].map(button=>({text:button.textContent,width:button.clientWidth,content:button.scrollWidth,spans:[...button.querySelectorAll('span')].map(span=>({overflow:getComputedStyle(span).textOverflow,whiteSpace:getComputedStyle(span).whiteSpace,width:span.clientWidth,content:span.scrollWidth}))})))`);
+      assert.ok(buttons.every(button=>button.content<=button.width+2 && button.spans.every(span=>span.overflow!=='ellipsis' && span.content<=span.width+2)), pack.language.code + ': action text clipped ' + JSON.stringify(buttons));
+      if (pack.language.code === 'el') assert.equal(buttons[0].text, 'Επανέλεγχος με VT');
+      if (pack.language.code === 'el' && process.env.CLAMSHIELD_I18N_SCREENSHOT_DIR) {
+        await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        fs.mkdirSync(process.env.CLAMSHIELD_I18N_SCREENSHOT_DIR, { recursive: true });
+        fs.writeFileSync(path.join(process.env.CLAMSHIELD_I18N_SCREENSHOT_DIR, 'results-el.png'), (await win.webContents.capturePage()).toPNG());
+      }
+      await win.webContents.executeJavaScript(`document.querySelector('nav a[href="/settings"]').click()`);
+      await until(async () => await win.webContents.executeJavaScript(`Boolean(document.getElementById('application-language') && !document.getElementById('application-language').disabled)`), pack.language.code + ': back to settings');
     }
     await win.webContents.executeJavaScript(`document.getElementById('application-language').value='es';document.getElementById('application-language').dispatchEvent(new Event('change',{bubbles:true}))`);
     await until(async () => await win.webContents.executeJavaScript('document.documentElement.lang === "es"'), 'Spanish selected');
@@ -102,6 +120,7 @@ app.whenReady().then(async () => {
     assert.equal(await win.webContents.executeJavaScript('document.querySelector("nav").textContent.includes("<img src=x onerror=x=1>")'), true);
     assert.equal(await win.webContents.executeJavaScript('document.querySelector("nav img")'), null);
     assert.equal(await win.webContents.executeJavaScript('typeof window.x'), 'undefined');
+    assert.ok(runtime.languageLengthWarnings(evil).some(warning=>warning.key===dashboardKey));
     await win.webContents.executeJavaScript('(async()=>window.fixtureApply(await fetch("/fixture/max").then(r=>r.json())))()');
     for (const [route] of pages) {
       await win.webContents.executeJavaScript(`document.querySelector('nav a[href=${JSON.stringify(route)}]').click()`); await pause(70);
@@ -123,7 +142,7 @@ app.whenReady().then(async () => {
     assert.equal(failures.length, 0, JSON.stringify(failures));
     assert.ok(requests.some(([method, route]) => method === 'POST' && route === '/api/languages'));
     assert.ok(!requests.some(([method, route]) => method === 'POST' && !['/api/languages', '/api/client-log'].includes(route)), 'switching language must not trigger scanning/settings changes');
-    console.log('PASS: all 16 shipped languages and credit labels, all 11 tabs in Spanish, maximum-length sidebar layout, literal malicious text, real Arabic RTL and all 5 native pages.');
+    console.log('PASS: 16 languages in English alphabetical order, compact translation-help link, full Results action labels in every language, long literal text remains active, all 11 tabs in Spanish, sidebar layout, Arabic RTL and all 5 native pages.');
     for (const popup of popups) popup.destroy(); win.destroy(); server.close(); app.exit(0);
   } catch (error) {
     console.error(error); if(win&&!win.isDestroyed()) console.error(await win.webContents.executeJavaScript('JSON.stringify({errors:window.fixtureErrors,route:location.pathname,body:document.body.innerText.slice(0,300)})').catch(()=>'')); for (const popup of popups) if (!popup.isDestroyed()) popup.destroy(); if (win && !win.isDestroyed()) win.destroy(); server?.close(); app.exit(1);

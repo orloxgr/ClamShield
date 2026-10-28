@@ -177,19 +177,19 @@ export default function Quarantine() {
             <span className="col-span-2 text-right text-sm text-slate-400 tabular-nums">{localizeText(selectedCount)}{t("history.selected")}</span>
             <button onClick={restoreSelected} disabled={selectedCount === 0 || bulkBusy !== null} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-300 rounded-lg transition-colors border border-slate-700">
               <RotateCcw className="w-4 h-4 shrink-0"/>
-              <span className="truncate">{localizeText(bulkBusy === "restore" ? "Restoring..." : "Restore selected")}</span>
+              <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{localizeText(bulkBusy === "restore" ? "Restoring..." : "Restore selected")}</span>
             </button>
             <button onClick={deleteSelected} disabled={selectedCount === 0 || bulkBusy !== null} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg transition-colors">
               <Trash2 className="w-4 h-4 shrink-0"/>
-              <span className="truncate">{localizeText(bulkBusy === "delete" ? "Deleting..." : "Delete selected")}</span>
+              <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{localizeText(bulkBusy === "delete" ? "Deleting..." : "Delete selected")}</span>
             </button>
             {localizeText(totalItems > 0 && (<button onClick={emptyQuarantine} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors border border-red-500/20">
                 <Trash2 className="w-4 h-4 shrink-0"/>
-                <span className="truncate">{t("quarantine.empty_quarantine")}</span>
+                <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{t("quarantine.empty_quarantine")}</span>
               </button>))}
             <button onClick={openQuarantine} className="flex min-w-0 items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors border border-slate-700 hover:border-slate-600">
               <FolderOpen className="w-4 h-4 shrink-0"/>
-              <span className="truncate">{t("quarantine.open_folder")}</span>
+              <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{t("quarantine.open_folder")}</span>
             </button>
         </div>)}/>
 

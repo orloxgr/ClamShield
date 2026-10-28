@@ -51,15 +51,13 @@ export default function LanguageSettings() {
       <label className="text-sm font-medium" htmlFor="application-language">{t("settings.language")}</label>
       <div className="flex flex-wrap gap-2">
         <select aria-label={t("settings.language")} id="application-language" value={getLanguage().code} disabled={busy} onChange={event => select(event.target.value)} className="max-w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
-          {data.languages.map((language: any) => <option key={language.code} value={language.code}>{languageLabel(language)}</option>)}
+          {[...data.languages].sort((a, b) => languageLabel(a).localeCompare(languageLabel(b), 'en')).map((language: any) => <option key={language.code} value={language.code}>{languageLabel(language)}</option>)}
         </select>
         <button disabled={busy} onClick={refresh} className="rounded border border-slate-700 px-3 py-2 text-xs disabled:opacity-50">{t("settings.language_refresh")}</button>
       </div>
     </div>
-    <p className="text-xs text-slate-400">{t("settings.language_help")}</p>
-    <a className="inline-block text-xs text-sky-300" href="/api/languages/template" download="es.json">{t("common.language_settings.download_translation_template")}</a>
+    <a className="inline-block text-xs text-sky-300" href="https://github.com/orloxgr/ClamShield/tree/codex/modular-localization/languages" target="_blank" rel="noopener noreferrer">{t("settings.help_translating")}</a>
     {localizeText(error && <p role="alert" className="text-sm text-rose-300 break-words">{localizeText(error)}</p>)}
     {localizeText(data.errors?.map((item: any, index: number) => <p key={index} role="alert" className="text-xs text-amber-300 break-words">{localizeText(item.file)}: {localizeText(item.error)}</p>))}
-    {localizeText(data.directories?.map((directory: string) => <p key={directory} className="break-all text-xs text-slate-500">{localizeText(directory)}</p>))}
   </section>;
 }

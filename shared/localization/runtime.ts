@@ -1,7 +1,7 @@
 import english from "../../languages/en.json";
 export type Parameters = Record<string, string | number | boolean | null | undefined>;
 export type LanguageEntry = {
-    english: string;
+    StringInEng: string;
     translation: string;
     maxChars: number;
     optionalParameters?: string[];
@@ -83,11 +83,17 @@ export function validateLanguagePack(input: unknown): LanguagePack {
                 key: String(key)
             }));
         const definition = canonical.strings[key];
-        if (!object(raw) || Object.keys(raw).some(k => !["english", "translation", "maxChars", "optionalParameters", "plural", "forms"].includes(k)))
+        if (!object(raw) || Object.keys(raw).some(k => !["StringInEng", "english", "translation", "maxChars", "optionalParameters", "plural", "forms"].includes(k)))
             throw new Error(englishText("backend.languages.invalid_entry", {
                 key: String(key)
             }));
-        if (raw.english !== definition.english || raw.maxChars !== definition.maxChars)
+        // Accept the previous field name and its older length budgets when reading
+        // existing volunteer files. Always use the current trusted English budget.
+        const legacy = !own(raw, 'StringInEng') && own(raw, 'english');
+        const source = legacy ? raw.english : raw.StringInEng;
+        if (source !== definition.StringInEng || (!legacy && own(raw, 'english')) ||
+            !Number.isInteger(raw.maxChars) || raw.maxChars < 0 || raw.maxChars > 16384 ||
+            (!legacy && raw.maxChars !== definition.maxChars))
             throw new Error(englishText("backend.languages.english_text_or_maxchars_changed", {
                 key: String(key)
             }));
@@ -96,14 +102,13 @@ export function validateLanguagePack(input: unknown): LanguagePack {
                 key: String(key)
             }));
         const checkText = (text: unknown) => {
-            if (typeof text !== "string" || count(text) > definition.maxChars || control.test(text))
-                throw new Error(englishText("backend.languages.invalid_or_overlong_translation_max_characters", {
+            if (typeof text !== "string" || control.test(text))
+                throw new Error(englishText("backend.languages.invalid_entry", {
                     key: String(key),
-                    maxChars: String(definition.maxChars)
                 }));
             if (!text)
                 return "";
-            const expected = placeholders(definition.english), actual = placeholders(text);
+            const expected = placeholders(definition.StringInEng), actual = placeholders(text);
             // These optional parameters are authored English plural suffixes.
             // Other languages may omit them without dropping any actual values.
             const required = expected.filter(p => !(definition.optionalParameters || []).includes(p));
@@ -138,6 +143,26 @@ export function validateLanguagePack(input: unknown): LanguagePack {
         ...(meta.reviewers !== undefined ? { reviewers: [...meta.reviewers] } : {}) }, strings };
 }
 
+export type LanguageLengthWarning = {
+    key: string;
+    field: string;
+    translation: string;
+    actual: number;
+    maxChars: number;
+};
+// Layout guidance only: these entries remain usable in every renderer.
+export function languageLengthWarnings(pack: LanguagePack): LanguageLengthWarning[] {
+    const warnings: LanguageLengthWarning[] = [];
+    for (const [key, entry] of Object.entries(pack.strings)) {
+        const maxChars = count(canonical.strings[key].StringInEng);
+        for (const [field, text] of [['translation', entry.translation], ...Object.entries(entry.forms || {}).map(([form, text]) => [`forms.${form}`, text])]) {
+            const actual = count(text);
+            if (actual > maxChars) warnings.push({ key, field, translation: text, actual, maxChars });
+        }
+    }
+    return warnings;
+}
+
 export function languageLabel(language: LanguagePack['language']) {
     let englishName = language.englishName;
     if (!englishName) {
@@ -170,7 +195,7 @@ function render(pack: LanguagePack, key: string, params: Parameters) {
     if (!definition)
         return key;
     const translated = pack.strings[key];
-    let text = translated?.translation || definition.english;
+    let text = translated?.translation || definition.StringInEng;
     if (translated?.forms && definition.plural && Number.isFinite(Number(params[definition.plural]))) {
         const form = new Intl.PluralRules(pack.language.code).select(Number(params[definition.plural]));
         text = translated.forms[form] || translated.forms.other || text;
@@ -187,13 +212,13 @@ const patterns: Array<{
     names: string[];
 }> = [];
 for (const [key, entry] of Object.entries(canonical.strings)) {
-    const matches = [...entry.english.matchAll(token)];
+    const matches = [...entry.StringInEng.matchAll(token)];
     if (!matches.length) {
-        if (!exact.has(entry.english))
-            exact.set(entry.english, key);
+        if (!exact.has(entry.StringInEng))
+            exact.set(entry.StringInEng, key);
         continue;
     }
-    const parts = entry.english.split(token).filter((_v, i) => i % 2 === 0);
+    const parts = entry.StringInEng.split(token).filter((_v, i) => i % 2 === 0);
     if (matches.length <= 8 && parts.join("").length >= 12 && parts.slice(1, -1).every(Boolean))
         patterns.push({ key, parts, names: matches.map(m => m[1]) });
 }

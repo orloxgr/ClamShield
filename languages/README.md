@@ -3,22 +3,26 @@
 1. Copy `template.json` to a language-code filename, for example `es.json`.
 2. Open it in Notepad, VS Code, or another text editor. Save as **UTF-8**.
 3. Set `language.code` to the filename's code (`es`), `englishName` to `Spanish`, `name` to the native name (`Español`), and `direction` to `ltr` or `rtl`. Keep `status` as `auto` until the complete file has been reviewed.
-4. Fill in each **`translation`**. Keep its string identifier, `english`, `maxChars`, and any placeholder metadata unchanged.
+4. Fill in each **`translation`**. Keep its string identifier, `StringInEng`, `maxChars`, and any placeholder metadata unchanged.
 5. Put the file in `languages` beside the installed `ClamShield.exe`, or in `%ProgramData%\ClamShield\languages`. Open **Settings → Language → Refresh languages**, then select your language. No application rebuild is needed.
 
-The same complete template can be downloaded from Settings. A volunteer only needs this one JSON file. A partial translation is usable: empty or missing translations use the built-in English text. Removing or breaking a language file also falls back to English and shows the validation error in Settings. English is compiled into the application; editing the external `en.json` cannot replace that trusted fallback.
+Use the existing file for your language, or copy the complete `template.json` for a new language. A volunteer only needs this one JSON file. A partial translation is usable: empty or missing translations use the built-in English text. Malformed JSON and unsafe/invalid fields are reported in Settings; exceeding a recommended length does not invalidate a file or hide a translation. English is compiled into the application; editing the external `en.json` cannot replace that trusted fallback.
 
 An entry looks like this:
 
 ```json
-"settings.language": {
-  "english": "Language",
-  "translation": "Idioma",
-  "maxChars": 24
+"results.recheck_all_with_vt": {
+  "StringInEng": "Recheck all with VT",
+  "translation": "Επανέλεγχος με VT",
+  "maxChars": 19
 }
 ```
 
-`maxChars` counts Unicode characters in the translation, including spaces, punctuation and placeholder tokens. JSON escapes such as `\"` represent one character. Keep the translation within the limit; it is rejected rather than silently cut off. Use concise wording. Long words wrap and small notification windows can scroll to keep actions reachable. Character limits help fit the design, but please also preview your language in the app.
+`StringInEng` and `translation` both have 11 characters in their field names, so the two texts begin in the same column in a monospaced text editor. Keep these adjacent lines and their indentation. The translated text can be shorter than the English text; do not pad it with spaces.
+
+`maxChars` is the **recommended English-length budget**, exactly the number of Unicode code points in `StringInEng`, including spaces, punctuation and placeholder tokens. JSON escapes such as `\"` represent one character. In the example the English text has 19 characters and the Greek translation has 17. Aim to stay within the budget using clear, concise wording rather than a literal word-for-word translation. Preserve the action and its scope; do not remove a warning, a negation or an important distinction to save characters.
+
+**Exceeding `maxChars` is a non-blocking warning, not a cutoff.** The full translation and plural forms remain active. Nothing is shortened, rejected, switched to English or marked unreviewed solely because it is longer. The app does not show translation-length warnings during normal use. The command-line checker reports the string identifier, field, actual character count and recommended maximum. Action labels wrap when necessary instead of hiding their meaning behind an ellipsis. Equal character counts do not guarantee equal pixel widths, particularly across writing systems; preview the actual screens as well.
 
 Preserve every required `{{placeholder}}` exactly, including capitalization. You may move or repeat it. For example, `Found {{count}} files` can become `Se encontraron {{count}} archivos`. Tokens listed in `optionalParameters` represent English plural suffixes and can be omitted. All actual values remain required. Paths, hashes, detection names, versions, engine output and protocol identifiers are data, not text for volunteers to rewrite. Keep product names, literal filenames, URLs and report passwords such as `infectedsecuriteinfo` unchanged.
 
@@ -32,9 +36,9 @@ Contributors with the development environment can run:
 npm run languages:check -- languages/es.json
 ```
 
-This reports the precise invalid entry or translation coverage. The installed app performs the same validation, so translators do not need Node.js. Files are limited to 2 MiB each, 16 MiB combined, and 64 language files. Filenames must match their language codes; duplicate languages and symbolic links are rejected.
+This reports coverage and each length warning for the selected file, and exits successfully when there are only length warnings. To list individual warnings across all languages, run `npm run languages:check -- --details`. Default checking of all files prints one summary per file. Invalid JSON, unknown fields, changed source text/metadata, unsafe controls and broken placeholders still fail validation; these are separate from layout guidance. The installed app applies the same data safety checks, so translators do not need Node.js. Files are limited to 2 MiB each, 16 MiB combined, and 64 language files. Filenames must match their language codes; duplicate languages and symbolic links are rejected. Older files using the `english` field and earlier length budgets are still readable; use the current file format when submitting changes.
 
-For a new app string, developers add an English entry and a suitable character limit to `en.json`, use its key at the presentation point, and run `npm run languages:template` to refresh the volunteer template. Existing translations may omit newly added keys and continue to use English for those messages.
+For a new app string, developers add a `StringInEng` entry to `en.json` with `maxChars` equal to its Unicode code point count, use its key at the presentation point, and run `npm run languages:template` to refresh the volunteer template. Existing translations may omit newly added keys and continue to use English for those messages.
 
 ## Included languages and credits
 
@@ -59,7 +63,7 @@ The repository includes English and automatic starting translations for Arabic, 
 | Turkish | Türkçe | [tr.json](tr.json) |
 | Urdu | اردو | [ur.json](ur.json) |
 
-The dropdown displays English and native names, for example `Greek — Ελληνικά (auto)` or `Spanish — Español (auto)`. English is the original source and displays simply `English`.
+The dropdown sorts alphabetically by English name and displays English first within each label, followed by the native name, for example `Greek — Ελληνικά (auto)` or `Spanish — Español (auto)`. English is the original source and displays simply `English`, in its alphabetical position.
 
 All initial translations are machine-generated drafts, **not volunteer-reviewed translations**. They were seeded during development using Google Translate, with checks for placeholders, protected technical terms and character budgets, plus concise wording corrections. ClamShield does not contact a translation service at runtime. Please check wording and security terminology in context, particularly distinctions between not checked, pending, not detected, false positive, exceptions, removal and quarantine.
 
