@@ -1,6 +1,7 @@
 import { localizeText } from "../../../src/lib/i18n";
 import { useEffect, useState } from "react";
 import { applyLanguage, getLanguage, t, useLanguage } from "../../../src/lib/i18n";
+import { languageLabel } from '../../../shared/localization/runtime';
 export default function LanguageSettings() {
     useLanguage();
     const [data, setData] = useState<any>({ languages: [{ code: "en", name: "English" }], errors: [], directories: [] });
@@ -50,7 +51,7 @@ export default function LanguageSettings() {
       <label className="text-sm font-medium" htmlFor="application-language">{t("settings.language")}</label>
       <div className="flex flex-wrap gap-2">
         <select aria-label={t("settings.language")} id="application-language" value={getLanguage().code} disabled={busy} onChange={event => select(event.target.value)} className="max-w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
-          {localizeText(data.languages.map((language: any) => <option key={language.code} value={language.code}>{localizeText(language.name)}</option>))}
+          {data.languages.map((language: any) => <option key={language.code} value={language.code}>{languageLabel(language)}</option>)}
         </select>
         <button disabled={busy} onClick={refresh} className="rounded border border-slate-700 px-3 py-2 text-xs disabled:opacity-50">{t("settings.language_refresh")}</button>
       </div>

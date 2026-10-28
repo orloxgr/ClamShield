@@ -2,8 +2,11 @@
   "schemaVersion": 1,
   "language": {
     "code": "es",
+    "englishName": "Spanish",
     "name": "Español",
-    "direction": "ltr"
+    "direction": "ltr",
+    "status": "auto",
+    "reviewers": []
   },
   "strings": {
     "backend.bootstrap.ts.a_requested_interface_resource_was_not_found": {
@@ -903,7 +906,8 @@
       "maxChars": 101,
       "optionalParameters": [
         "value2"
-      ]
+      ],
+      "plural": "value1"
     },
     "backend.on_demand.files_remaining": {
       "english": "Files remaining: {{value1}}",
@@ -941,7 +945,8 @@
       "maxChars": 95,
       "optionalParameters": [
         "value2"
-      ]
+      ],
+      "plural": "value1"
     },
     "backend.on_demand.intensity_100_worker_priority_file_effective_batch_window_files_p": {
       "english": "Intensity: {{label}} ({{intensity}}/100), {{workerCount}} worker{{value4}}, {{priorityClass}} priority, {{value6}}-file effective batch window, {{value7}} files per worker{{value8}}.",
@@ -1127,7 +1132,8 @@
       "maxChars": 152,
       "optionalParameters": [
         "value2"
-      ]
+      ],
+      "plural": "value1"
     },
     "backend.on_demand.scan_completed": {
       "english": "Scan completed.",
@@ -3007,12 +3013,12 @@
     "common.exception_report_dialog.attach_or_upload_the_sample_yourself_only_if_you_agree_to_share_i": {
       "english": "Attach or upload the sample yourself only if you agree to share it. ",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 113
     },
     "common.exception_report_dialog.clamshield_cannot_verify_submission_complete_the_report_with_the": {
       "english": "ClamShield cannot verify submission. Complete the report with the provider, then mark it as sent.",
       "translation": "",
-      "maxChars": 97
+      "maxChars": 161
     },
     "common.exception_report_dialog.close": {
       "english": "Close",
@@ -3087,7 +3093,7 @@
     "common.exception_report_dialog.if_sharing_a_sample_use_a_password_protected_zip_with_password_in": {
       "english": "If sharing a sample, use a password-protected ZIP with password infectedsecuriteinfo. ",
       "translation": "",
-      "maxChars": 86
+      "maxChars": 142
     },
     "common.exception_report_dialog.mark_as_sent": {
       "english": "Mark as sent",
@@ -3177,7 +3183,7 @@
     "common.exception_report_dialog.you_confirmed_sending_this_report_provider_receipt_acceptance_and": {
       "english": "You confirmed sending this report. Provider receipt, acceptance and signature correction are not verified.",
       "translation": "",
-      "maxChars": 106
+      "maxChars": 175
     },
     "common.language_settings.could_not_change_the_language": {
       "english": "Could not change the language.",
@@ -3557,12 +3563,12 @@
     "common.virus_total_limit_warning.checking_files_is_estimated_to_take_about_because_of_virustotal_a": {
       "english": "Checking {{value1}} files is estimated to take about {{duration}} because of VirusTotal API limits.",
       "translation": "",
-      "maxChars": 99
+      "maxChars": 164
     },
     "common.virus_total_limit_warning.checking_files_will_have_to_wait_because_of_virustotal_api_limits": {
       "english": "Checking {{value1}} files will have to wait {{duration}} because of VirusTotal API limits.",
       "translation": "",
-      "maxChars": 90
+      "maxChars": 149
     },
     "common.virus_total_limit_warning.continue_with_virustotal": {
       "english": "Continue with VirusTotal",
@@ -3582,7 +3588,7 @@
     "common.virus_total_limit_warning.uploads_and_analysis_can_add_time_local_scanning_continues_either": {
       "english": "Uploads and analysis can add time. Local scanning continues either way.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 118
     },
     "common.virus_total_limit_warning.virustotal_scan_estimate": {
       "english": "VirusTotal scan estimate",
@@ -3597,7 +3603,7 @@
     "common.virus_total_queue_dialog.cloud_checks_are_disabled_open_settings_to_enable_them_or_review": {
       "english": "Cloud checks are disabled. Open Settings to enable them, or review the files in Results.",
       "translation": "",
-      "maxChars": 88
+      "maxChars": 146
     },
     "common.virus_total_queue_dialog.could_not_load_the_virustotal_queue": {
       "english": "Could not load the VirusTotal queue.",
@@ -3628,7 +3634,7 @@
     "common.virus_total_queue_dialog.no_api_key_is_configured_open_settings_to_add_a_key_or_review_the": {
       "english": "No API key is configured. Open Settings to add a key, or review the files in Results.",
       "translation": "",
-      "maxChars": 85
+      "maxChars": 141
     },
     "common.virus_total_queue_dialog.no_pending_tasks_match_these_filters": {
       "english": "No pending tasks match these filters.",
@@ -3638,7 +3644,7 @@
     "common.virus_total_queue_dialog.no_pending_virustotal_tasks_findings_that_need_a_decision_remain": {
       "english": "No pending VirusTotal tasks. Findings that need a decision remain in Results.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 128
     },
     "common.virus_total_queue_dialog.on_demand_scans": {
       "english": "On-demand scans",
@@ -3648,7 +3654,7 @@
     "common.virus_total_queue_dialog.pending_hash_checks_file_uploads_and_report_follow_ups_a_hash_loo": {
       "english": "Pending hash checks, file uploads and report follow-ups. A hash lookup does not upload the file.",
       "translation": "",
-      "maxChars": 96
+      "maxChars": 159
     },
     "common.virus_total_queue_dialog.queue_source": {
       "english": "Queue source",
@@ -3688,7 +3694,7 @@
     "common.virus_total_queue_dialog.unfinished_task_s_across_all_queues_a_file_can_appear_in_more_tha": {
       "english": " unfinished task(s) across all queues. A file can appear in more than one scan or queue. Updates every 3 seconds.",
       "translation": "",
-      "maxChars": 113
+      "maxChars": 187
     },
     "common.virus_total_queue_dialog.virustotal_queue": {
       "english": "VirusTotal queue",
@@ -3743,7 +3749,7 @@
     "dashboard.both_urls_contain_the_same_private_account_token_paste_either_one": {
       "english": "Both URLs contain the same private account token. Paste either one and ClamShield adds the correct database URLs automatically. Do not share it publicly.",
       "translation": "",
-      "maxChars": 153
+      "maxChars": 253
     },
     "dashboard.caution": {
       "english": "Caution:",
@@ -3758,7 +3764,7 @@
     "dashboard.clamav_engine_is_missing_we_can_download_and_configure_it_for_you": {
       "english": "ClamAV engine is missing. We can download and configure it for you automatically.",
       "translation": "",
-      "maxChars": 81
+      "maxChars": 134
     },
     "dashboard.clamav_signatures": {
       "english": "ClamAV signatures",
@@ -3773,7 +3779,7 @@
     "dashboard.clamshield_downloads_the_databases_from_sanesecurity_s_public_rsy": {
       "english": "ClamShield downloads the databases from SaneSecurity's public rsync mirrors and verifies every file with SaneSecurity's official GPG key before ClamAV is allowed to load it.",
       "translation": "",
-      "maxChars": 173
+      "maxChars": 286
     },
     "dashboard.close_sanesecurity": {
       "english": "Close SaneSecurity",
@@ -3863,7 +3869,7 @@
     "dashboard.databasecustomurl_https_www_securiteinfo_com_get_signatures_secur": {
       "english": "DatabaseCustomURL https://www.securiteinfo.com/get/signatures/…/securiteinfo.ign2",
       "translation": "",
-      "maxChars": 81
+      "maxChars": 134
     },
     "dashboard.databases_installed": {
       "english": " databases installed",
@@ -3878,7 +3884,7 @@
     "dashboard.detects_potentially_unwanted_applications_and_vulnerable_componen": {
       "english": "detects potentially unwanted applications and vulnerable components. It may generate many false positives.",
       "translation": "",
-      "maxChars": 106
+      "maxChars": 175
     },
     "dashboard.disable_virustotal_cloud_check_and_remove_the_saved_api_key": {
       "english": "Disable VirusTotal Cloud Check and remove the saved API key?",
@@ -3913,7 +3919,7 @@
     "dashboard.downloading_and_installing_official_clamav_64_bit_engine_automati": {
       "english": "Downloading and installing official ClamAV 64-bit engine automatically...",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 121
     },
     "dashboard.downloads": {
       "english": "Downloads",
@@ -3923,7 +3929,7 @@
     "dashboard.downloads_supported_paid_databases_including_0_hour_signatures_pu": {
       "english": "Downloads supported paid databases, including 0-hour signatures. PUA signatures are optional; mailserver spam-domain signatures are disabled.",
       "translation": "",
-      "maxChars": 141
+      "maxChars": 233
     },
     "dashboard.enable_virustotal_cloud_check": {
       "english": "Enable VirusTotal Cloud Check",
@@ -3978,7 +3984,7 @@
     "dashboard.first_time_setup_downloads_an_official_signed_cygwin_helper_of_ap": {
       "english": "First-time setup downloads an official signed Cygwin helper of approximately 185 MB for rsync and GnuPG. The helper is stored inside ClamShield data, creates no shortcuts, and requires outbound TCP port 873.",
       "translation": "",
-      "maxChars": 207
+      "maxChars": 342
     },
     "dashboard.include_pua_and_vulnerability_signatures": {
       "english": "Include PUA and vulnerability signatures",
@@ -4018,12 +4024,12 @@
     "dashboard.installs_20_databases_adding_spam_scam_url_attachment_image_and_s": {
       "english": "Installs 20 databases, adding spam, scam, URL, attachment, image, and spear-phishing signatures.",
       "translation": "",
-      "maxChars": 96
+      "maxChars": 159
     },
     "dashboard.installs_9_malware_phishing_macro_hash_whitelist_and_exploit_focu": {
       "english": "Installs 9 malware, phishing, macro, hash, whitelist, and exploit-focused databases.",
       "translation": "",
-      "maxChars": 84
+      "maxChars": 139
     },
     "dashboard.last_scan": {
       "english": " Last Scan",
@@ -4108,7 +4114,7 @@
     "dashboard.public_third_party_signatures_for_clamav_no_account_is_required": {
       "english": "Public third-party signatures for ClamAV. No account is required.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 108
     },
     "dashboard.quarantined_items": {
       "english": " Quarantined Items",
@@ -4189,12 +4195,12 @@
     "dashboard.securiteinfo_is_an_optional_third_party_clamav_signature_source_a": {
       "english": "SecuriteInfo is an optional third-party ClamAV signature source. A free account is required.",
       "translation": "",
-      "maxChars": 92
+      "maxChars": 152
     },
     "dashboard.securiteinfo_reports_over_90_and_up_to_99_zero_day_detection_in_i": {
       "english": "SecuriteInfo reports over 90% and up to 99% zero-day detection in its published measurements. This is a provider claim, not a guarantee by ClamShield.",
       "translation": "",
-      "maxChars": 150
+      "maxChars": 248
     },
     "dashboard.set_up_virustotal_cloud": {
       "english": "Set up VirusTotal Cloud",
@@ -4249,7 +4255,7 @@
     "dashboard.third_party_signatures_can_improve_detection_but_may_also_increas": {
       "english": "Third-party signatures can improve detection but may also increase false positives. ClamShield does not guarantee SaneSecurity's availability or detection results.",
       "translation": "",
-      "maxChars": 163
+      "maxChars": 269
     },
     "dashboard.trigger_test_threat_modal": {
       "english": "Trigger Test Threat Modal",
@@ -4274,7 +4280,7 @@
     "dashboard.virustotal_cloud_check_adds_cloud_verdicts_to_results_and_real_ti": {
       "english": "VirusTotal Cloud Check adds cloud verdicts to Results and Real-Time Shield when enabled.",
       "translation": "",
-      "maxChars": 88
+      "maxChars": 146
     },
     "dashboard.virustotal_cloud_check_saved": {
       "english": "VirusTotal Cloud Check saved.",
@@ -4299,7 +4305,7 @@
     "dashboard.your_private_token_is_encrypted_by_windows_and_is_never_returned": {
       "english": "Your private token is encrypted by Windows and is never returned by the ClamShield API.",
       "translation": "",
-      "maxChars": 87
+      "maxChars": 144
     },
     "desktop.alert.add_exception": {
       "english": "Add exception",
@@ -4697,7 +4703,8 @@
       "maxChars": 175,
       "optionalParameters": [
         "value2"
-      ]
+      ],
+      "plural": "minutesUntilStart"
     },
     "desktop.electron_main.no_diagnostic_record_is_available": {
       "english": "No diagnostic record is available.",
@@ -4935,7 +4942,8 @@
       "maxChars": 146,
       "optionalParameters": [
         "value2"
-      ]
+      ],
+      "plural": "remainingMinutes"
     },
     "desktop.electron_main.waiting_for_the_current_on_demand_or_scheduled_scan_to_finish": {
       "english": "Waiting for the current on-demand or scheduled scan to finish.",
@@ -5097,12 +5105,13 @@
       "maxChars": 106,
       "optionalParameters": [
         "value2"
-      ]
+      ],
+      "plural": "value1"
     },
     "dns.all_profiles_below_are_public_and_require_no_account_or_registrat": {
       "english": "All profiles below are public and require no account or registration.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 114
     },
     "dns.automatic_unavailable": {
       "english": "Automatic / unavailable",
@@ -5112,7 +5121,7 @@
     "dns.block_malicious_or_unwanted_domains_before_the_connection_reaches": {
       "english": "Block malicious or unwanted domains before the connection reaches your browser.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 131
     },
     "dns.choose_a_filtering_profile": {
       "english": "Choose a filtering profile",
@@ -5122,7 +5131,7 @@
     "dns.clamshield_applies_both_ipv4_and_ipv6_resolvers_to_each_active_ad": {
       "english": "ClamShield applies both IPv4 and IPv6 resolvers to each active adapter to avoid an IPv6 filtering bypass.",
       "translation": "",
-      "maxChars": 105
+      "maxChars": 174
     },
     "dns.could_not_apply_dns_protection": {
       "english": "Could not apply DNS protection.",
@@ -5147,7 +5156,7 @@
     "dns.dns_filtering_does_not_inspect_files_and_cannot_replace_clamav_ya": {
       "english": "DNS filtering does not inspect files and cannot replace ClamAV, YARA, browser security, or safe browsing habits. VPNs, browsers with their own Secure DNS setting, and captive portals may bypass or temporarily conflict with Windows DNS settings.",
       "translation": "",
-      "maxChars": 244
+      "maxChars": 403
     },
     "dns.dns_protection": {
       "english": "DNS Protection",
@@ -5197,7 +5206,7 @@
     "dns.no_active_adapter_with_an_internet_gateway_was_found_connect_to_a": {
       "english": "No active adapter with an internet gateway was found. Connect to a network and refresh before enabling DNS protection.",
       "translation": "",
-      "maxChars": 118
+      "maxChars": 195
     },
     "dns.of_active_internet_adapters_report_this_dns_profile_vpns_virtual": {
       "english": "{{value1}} of {{value2}} active internet adapters report this DNS profile. VPNs, virtual adapters, IPv6 policy, or router-managed DNS can report differently.",
@@ -5262,7 +5271,7 @@
     "dns.this_computer_is_joined_to_an_organization_domain_changing_dns_ca": {
       "english": "This computer is joined to an organization domain. Changing DNS can break company resources or be overwritten by policy.",
       "translation": "",
-      "maxChars": 120
+      "maxChars": 198
     },
     "dns.windows_did_not_apply_the_dns_profile": {
       "english": "Windows did not apply the DNS profile.",
@@ -5413,7 +5422,7 @@
     "exceptions.files_and_folders_excluded_from_manual_scans_and_real_time_protec": {
       "english": "Files and folders excluded from manual scans and real-time protection",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 114
     },
     "exceptions.folder": {
       "english": "folder",
@@ -5478,7 +5487,7 @@
     "exceptions.no_exceptions_match_these_filters_change_or_clear_the_filters_abo": {
       "english": "No exceptions match these filters. Change or clear the filters above.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 114
     },
     "exceptions.oldest": {
       "english": "oldest",
@@ -5600,7 +5609,7 @@
     "exceptions.these_files_and_folders_will_no_longer_be_excluded_from_scans_no": {
       "english": "These files and folders will no longer be excluded from scans. No files will be deleted. This does not start a new scan automatically.",
       "translation": "",
-      "maxChars": 134
+      "maxChars": 222
     },
     "exceptions.to": {
       "english": "To",
@@ -5745,7 +5754,7 @@
     "navigation.by_clicking_i_agree_you_confirm_that_you_have_read_and_accepted_t": {
       "english": "By clicking \"I Agree\", you confirm that you have read and accepted this notice.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 131
     },
     "navigation.clamav_engine_installation_finished_but_the_required_executables": {
       "english": "ClamAV engine installation finished, but the required executables were not found.",
@@ -5760,17 +5769,17 @@
     "navigation.clamav_is_provided_by_cisco_and_licensed_under_gpl_2_0_yara_is_a": {
       "english": "ClamAV is provided by Cisco and licensed under GPL-2.0. YARA is a third-party pattern-matching tool. Their names and trademarks belong to their respective owners. ClamShield is not endorsed by or affiliated with those projects or their owners.",
       "translation": "",
-      "maxChars": 243
+      "maxChars": 401
     },
     "navigation.clamshield_is_a_windows_user_interface_and_orchestration_layer_fo": {
       "english": "ClamShield is a Windows user interface and orchestration layer for third-party malware detection tools.",
       "translation": "",
-      "maxChars": 103
+      "maxChars": 170
     },
     "navigation.clamshield_is_provided_as_is_and_without_warranties_to_the_maximu": {
       "english": "ClamShield is provided \"as is\" and without warranties, to the maximum extent permitted by applicable law. Liability is limited to the maximum extent permitted by applicable law. Nothing in this notice excludes rights or liabilities that cannot legally be excluded.",
       "translation": "",
-      "maxChars": 264
+      "maxChars": 436
     },
     "navigation.content_type": {
       "english": "Content-Type",
@@ -5835,7 +5844,7 @@
     "navigation.if_enabled_in_settings_clamshield_may_attempt_to_pause_or_manage": {
       "english": "If enabled in Settings, ClamShield may attempt to pause or manage Microsoft Defender. Reducing or disabling another security product may reduce overall protection. You are responsible for reviewing this setting and maintaining appropriate security controls and backups.",
       "translation": "",
-      "maxChars": 269
+      "maxChars": 444
     },
     "navigation.initial_protection_status_unavailable": {
       "english": "Initial protection status unavailable",
@@ -5845,7 +5854,7 @@
     "navigation.it_manages_and_invokes_clamav_for_signature_based_scanning_and_ya": {
       "english": " It manages and invokes ClamAV for signature-based scanning and YARA for rule-based pattern matching. ClamShield is not an independent antivirus engine or a complete endpoint security suite.",
       "translation": "",
-      "maxChars": 190
+      "maxChars": 314
     },
     "navigation.let_s_get_your_antivirus_engine_ready": {
       "english": "Let's get your antivirus engine ready.",
@@ -5865,7 +5874,7 @@
     "navigation.no_security_product_can_detect_block_or_remove_every_threat_false": {
       "english": "No security product can detect, block, or remove every threat. False negatives, false positives, outdated signatures, unavailable engines, configuration choices, encrypted content, unsupported formats, and malware designed to evade analysis may affect results.",
       "translation": "",
-      "maxChars": 260
+      "maxChars": 429
     },
     "navigation.please_read_the_terms_below": {
       "english": "Please read the terms below.",
@@ -5950,7 +5959,7 @@
     "navigation.yara_detection_is_enabled_by_default_download_the_yara_engine_and": {
       "english": "YARA detection is enabled by default. Download the YARA engine and Core rules before first use.",
       "translation": "",
-      "maxChars": 95
+      "maxChars": 157
     },
     "navigation.yara_setup_did_not_return_a_job_id": {
       "english": "YARA setup did not return a job id.",
@@ -5965,7 +5974,7 @@
     "navigation.you_have_the_engine_but_no_virus_definitions_yet_download_the_lat": {
       "english": "You have the engine, but no virus definitions yet. Download the latest signatures.",
       "translation": "",
-      "maxChars": 82
+      "maxChars": 136
     },
     "quarantine.actions": {
       "english": "Actions",
@@ -6022,7 +6031,7 @@
     "quarantine.no_threats_have_been_quarantined_yet_your_system_looks_clean": {
       "english": "No threats have been quarantined yet. Your system looks clean.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 103
     },
     "quarantine.open_folder": {
       "english": "Open Folder",
@@ -6153,7 +6162,7 @@
     "results.clamshield_will_monitor_the_analysis_automatically_this_permissio": {
       "english": "ClamShield will monitor the analysis automatically. This permission applies to this file only.",
       "translation": "",
-      "maxChars": 94
+      "maxChars": 156
     },
     "results.cleanup_failed": {
       "english": "Cleanup failed.",
@@ -6265,7 +6274,7 @@
     "results.manual_scan_detections_and_silent_shield_detections_will_appear_h": {
       "english": "Manual scan detections and silent shield detections will appear here for review.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 132
     },
     "results.needs_review": {
       "english": "Needs review",
@@ -6335,7 +6344,7 @@
     "results.pick_another_filter_or_clear_filters_to_see_all_undecided_results": {
       "english": "Pick another filter or clear filters to see all undecided results.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 109
     },
     "results.quarantine": {
       "english": "Quarantine",
@@ -6417,12 +6426,12 @@
     "results.remove_selected_results_entries_whose_original_file_is_no_longer": {
       "english": "Remove selected Results entries whose original file is no longer available.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 124
     },
     "results.remove_this_finding_from_results_the_file_stays_on_disk_and_remai": {
       "english": "Remove this finding from Results? The file stays on disk and remains eligible for future scans. This does not add an exception or mark the file as safe.",
       "translation": "",
-      "maxChars": 152
+      "maxChars": 251
     },
     "results.removed_missing_selected_result_item_s": {
       "english": "Removed {{removedCount}} missing selected result item(s).",
@@ -6499,7 +6508,7 @@
     "results.submit_this_file_to_virustotal_for_analysis_uploaded_samples_may": {
       "english": "Submit this file to VirusTotal for analysis? Uploaded samples may be shared with security partners. Do not submit confidential files.",
       "translation": "",
-      "maxChars": 133
+      "maxChars": 220
     },
     "results.submitting": {
       "english": "Submitting...",
@@ -6599,7 +6608,7 @@
     "scan.a_scan_is_running_wait_for_it_to_finish_before_starting_this_file": {
       "english": "A scan is running. Wait for it to finish before starting this file scan.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 119
     },
     "scan.active": {
       "english": "active",
@@ -6644,12 +6653,12 @@
     "scan.checks_every_file_even_when_clamav_and_yara_find_nothing_files_ne": {
       "english": "Checks every file, even when ClamAV and YARA find nothing. Files needing analysis are uploaded automatically.",
       "translation": "",
-      "maxChars": 109
+      "maxChars": 180
     },
     "scan.cloud_checks_are_waiting_for_virustotal_to_be_enabled_and_configu": {
       "english": "Cloud checks are waiting for VirusTotal to be enabled and configured in Settings.",
       "translation": "",
-      "maxChars": 81
+      "maxChars": 134
     },
     "scan.collecting_files": {
       "english": "Collecting files",
@@ -6694,7 +6703,7 @@
     "scan.every_eligible_file_is_queued_cloud_checks_follow_api_limits_and": {
       "english": "Every eligible file is queued. Cloud checks follow API limits and can continue after the local scan finishes.",
       "translation": "",
-      "maxChars": 109
+      "maxChars": 180
     },
     "scan.file": {
       "english": "file",
@@ -6864,7 +6873,7 @@
     "scan.the_previous_detection_concerns_an_older_file_version_this_runs_a": {
       "english": "The previous detection concerns an older file version. This runs a fresh local scan. Review its result before deciding whether to remove the old finding from Results.",
       "translation": "",
-      "maxChars": 166
+      "maxChars": 274
     },
     "scan.virustotal_checks": {
       "english": "VirusTotal checks · ",
@@ -6874,7 +6883,7 @@
     "scan.virustotal_checks_for_every_file_are_enabled_for_this_interrupted": {
       "english": "VirusTotal checks for every file are enabled for this interrupted scan.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 118
     },
     "scan.virustotal_scan_queue": {
       "english": "VirusTotal scan queue",
@@ -6889,7 +6898,7 @@
     "scheduler.clamshield_must_remain_running_but_the_main_window_may_be_hidden": {
       "english": "ClamShield must remain running, but the main window may be hidden in the tray.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 129
     },
     "scheduler.could_not_load_the_scheduled_scanner": {
       "english": "Could not load the scheduled scanner.",
@@ -6949,7 +6958,7 @@
     "scheduler.inactivity_monitoring_starts_15_minutes_before_the_scheduled_time": {
       "english": "Inactivity monitoring starts 15 minutes before the scheduled time and continues only while waiting for or running the scan.",
       "translation": "",
-      "maxChars": 123
+      "maxChars": 203
     },
     "scheduler.last_run": {
       "english": "Last run:",
@@ -6994,12 +7003,12 @@
     "scheduler.retained_for_later_but_not_scanned_separately_while_full_disk_sca": {
       "english": "Retained for later, but not scanned separately while Full disk scan is selected.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 132
     },
     "scheduler.run_saved_scans_automatically_while_clamshield_is_running_in_the": {
       "english": "Run saved scans automatically while ClamShield is running in the tray.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 116
     },
     "scheduler.running_process_memory": {
       "english": "Running process memory",
@@ -7024,12 +7033,12 @@
     "scheduler.scan_all_local_files_saved_directories_are_skipped_to_avoid_scann": {
       "english": "Scan all local files. Saved directories are skipped to avoid scanning them twice.",
       "translation": "",
-      "maxChars": 81
+      "maxChars": 134
     },
     "scheduler.scan_executable_images_loaded_by_running_processes_without_a_sepa": {
       "english": "Scan executable images loaded by running processes, without a separate file target.",
       "translation": "",
-      "maxChars": 83
+      "maxChars": 137
     },
     "scheduler.scan_only_if_the_computer_is_not_being_used": {
       "english": "Scan only if the computer is not being used",
@@ -7079,7 +7088,7 @@
     "scheduler.these_choices_are_saved_so_folders_only_need_to_be_selected_once": {
       "english": "These choices are saved, so folders only need to be selected once.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 109
     },
     "scheduler.thu": {
       "english": "Thu",
@@ -7104,7 +7113,7 @@
     "scheduler.wait_for_15_minutes_of_windows_keyboard_and_mouse_inactivity_if_a": {
       "english": "Wait for 15 minutes of Windows keyboard and mouse inactivity. If activity resumes during the scan, ClamShield stops it.",
       "translation": "",
-      "maxChars": 119
+      "maxChars": 197
     },
     "scheduler.waiting_for_scheduler_status": {
       "english": "Waiting for scheduler status.",
@@ -7189,7 +7198,7 @@
     "settings.actions_and_final_warning_popup_for_on_demand_and_scheduled_scans": {
       "english": "Actions and final warning popup for on-demand and scheduled scans.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 109
     },
     "settings.active": {
       "english": "Active",
@@ -7199,7 +7208,7 @@
     "settings.adds_clamshield_scan_and_exception_actions_to_file_explorer_right": {
       "english": "Adds ClamShield scan and exception actions to File Explorer right-click menus.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 129
     },
     "settings.api_key_not_configured": {
       "english": "API key not configured.",
@@ -7214,7 +7223,7 @@
     "settings.ask_before_checking_more_than_4_files_and_show_the_estimated_time": {
       "english": "Ask before checking more than 4 files and show the estimated time.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 109
     },
     "settings.automatic_sample_submission": {
       "english": "Automatic sample submission",
@@ -7229,12 +7238,12 @@
     "settings.automatically_labels_new_results_findings_with_a_virustotal_verdi": {
       "english": "Automatically labels new Results findings with a VirusTotal verdict.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 113
     },
     "settings.automatically_launch_clamshield_background_service_when_you_sign": {
       "english": "Automatically launch ClamShield background service when you sign into Windows.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 129
     },
     "settings.buy_me_a_beer_10": {
       "english": "Buy me a beer (€10)",
@@ -7294,7 +7303,7 @@
     "settings.clamshield_runs_alongside_microsoft_defender_by_default_clamshiel": {
       "english": "ClamShield runs alongside Microsoft Defender by default. ClamShield is a user interface for ClamAV and YARA, so it does not claim to be an independent antivirus provider or register itself as one in Windows Security. You may optionally request that Defender real-time protection be paused to reduce duplicate scanning.",
       "translation": "",
-      "maxChars": 318
+      "maxChars": 525
     },
     "settings.cloud_delivered_protection": {
       "english": "Cloud-delivered protection",
@@ -7344,7 +7353,7 @@
     "settings.default_is_7_days_logs_are_stored_under_c_programdata_clamshield": {
       "english": "Default is 7 days. Logs are stored under C:\\ProgramData\\ClamShield\\logs.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 119
     },
     "settings.defender_paused": {
       "english": "Defender paused",
@@ -7389,7 +7398,7 @@
     "settings.enjoying_clamshield_consider_supporting_the_development_of_this_a": {
       "english": "Enjoying ClamShield? Consider supporting the development of this application. Your donations help keep it maintained and free!",
       "translation": "",
-      "maxChars": 126
+      "maxChars": 208
     },
     "settings.exclude_clamshield_yara_and_quarantine_from_defender": {
       "english": "Exclude ClamShield YARA and quarantine from Defender",
@@ -7429,7 +7438,7 @@
     "settings.helps_prevent_duplicate_handling_of_rule_files_and_quarantined_it": {
       "english": "Helps prevent duplicate handling of rule files and quarantined items.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 114
     },
     "settings.language": {
       "english": "Language",
@@ -7469,7 +7478,7 @@
     "settings.main_app_popup_renderer_and_service_errors_are_written_to_the_log": {
       "english": "Main app, popup, renderer, and service errors are written to the logs folder. Turn on debug log only while investigating a problem.",
       "translation": "",
-      "maxChars": 131
+      "maxChars": 217
     },
     "settings.max_file_size_mb": {
       "english": "Max File Size (MB)",
@@ -7524,7 +7533,7 @@
     "settings.open_clamshield_as_a_tray_icon_without_showing_the_main_window": {
       "english": "Open ClamShield as a tray icon without showing the main window.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 104
     },
     "settings.open_defender_settings": {
       "english": "Open Defender Settings",
@@ -7549,7 +7558,7 @@
     "settings.optional_only_works_when_windows_permits_the_change_and_tamper_pr": {
       "english": "Optional. Only works when Windows permits the change and Tamper Protection is off.",
       "translation": "",
-      "maxChars": 82
+      "maxChars": 136
     },
     "settings.paste_your_virustotal_api_key": {
       "english": "Paste your VirusTotal API key",
@@ -7624,7 +7633,7 @@
     "settings.runtime_limits_used_when_the_scanner_evaluates_files_with_local_y": {
       "english": "Runtime limits used when the scanner evaluates files with local YARA rules.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 124
     },
     "settings.save_config": {
       "english": "Save Config",
@@ -7654,7 +7663,7 @@
     "settings.securiteinfo_offers_hourly_clamav_signature_updates_through_a_sub": {
       "english": "SecuriteInfo offers hourly ClamAV signature updates through a subscription service for improved zero-day detection coverage.",
       "translation": "",
-      "maxChars": 124
+      "maxChars": 205
     },
     "settings.send_scanned_items_to": {
       "english": "Send scanned items to",
@@ -7679,7 +7688,7 @@
     "settings.shows_a_summary_popup_after_a_scan_finishes_with_detections_and_w": {
       "english": "Shows a summary popup after a scan finishes with detections, and when a scheduled scan stops.",
       "translation": "",
-      "maxChars": 93
+      "maxChars": 154
     },
     "settings.side_by_side": {
       "english": "Side-by-side",
@@ -7714,7 +7723,7 @@
     "settings.tamper_protection_blocks_apps_from_changing_protected_microsoft_d": {
       "english": "Tamper Protection blocks apps from changing protected Microsoft Defender settings. Keeping Defender and ClamShield in side-by-side mode is supported and avoids leaving the computer without Defender protection.",
       "translation": "",
-      "maxChars": 209
+      "maxChars": 345
     },
     "settings.tamper_protection_is_off_you_can_now_try_pause_defender": {
       "english": "Tamper Protection is off. You can now try Pause Defender.",
@@ -7744,7 +7753,7 @@
     "settings.use_local_yara_rules_during_manual_scheduled_and_shield_scans": {
       "english": "Use local YARA rules during manual, scheduled, and Shield scans.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 106
     },
     "settings.virustotal_api_key": {
       "english": "VirusTotal API key",
@@ -7784,7 +7793,7 @@
     "settings.who_provides_excellent_third_party_signatures_for_clamav_to_detec": {
       "english": ", who provides excellent third-party signatures for ClamAV to detect the newest threats.",
       "translation": "",
-      "maxChars": 88
+      "maxChars": 146
     },
     "settings.windows_blocked_the_defender_change_check_tamper_protection_admin": {
       "english": "Windows blocked the Defender change. Check Tamper Protection, administrator access, or device policy.",
@@ -7839,7 +7848,7 @@
     "settings.writes_extra_startup_popup_and_service_details_error_and_crash_lo": {
       "english": "Writes extra startup, popup, and service details. Error and crash logs are always kept so white screens can be diagnosed.",
       "translation": "",
-      "maxChars": 121
+      "maxChars": 200
     },
     "settings.yara_scanning": {
       "english": "YARA scanning",
@@ -7959,7 +7968,7 @@
     "shield.choose_the_real_time_shield_action_and_whether_it_notifies_you": {
       "english": "Choose the real-time Shield action and whether it notifies you.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 104
     },
     "shield.cloud_checks": {
       "english": "Cloud Checks",
@@ -8034,7 +8043,7 @@
     "shield.how_long_a_file_must_stop_changing_before_shield_scans_it_higher": {
       "english": "How long a file must stop changing before Shield scans it. Higher values are better for many simultaneous downloads and large files.",
       "translation": "",
-      "maxChars": 132
+      "maxChars": 218
     },
     "shield.how_many_levels_below_watched_folders_the_shield_monitors": {
       "english": "How many levels below watched folders the shield monitors",
@@ -8044,7 +8053,7 @@
     "shield.how_often_clamshield_checks_whether_a_changing_file_has_become_st": {
       "english": "How often ClamShield checks whether a changing file has become stable. Lower values react sooner but wake the disk/CPU more often.",
       "translation": "",
-      "maxChars": 130
+      "maxChars": 215
     },
     "shield.installed_browser_location_detected": {
       "english": "{{length}} installed browser location{{value2}} detected",
@@ -8113,7 +8122,7 @@
     "shield.play_a_short_bundled_alert_sound_when_shield_opens_a_decision_or": {
       "english": "Play a short bundled alert sound when Shield opens a decision or notification popup.",
       "translation": "",
-      "maxChars": 84
+      "maxChars": 139
     },
     "shield.play_sound_on_shield_notification": {
       "english": "Play sound on Shield notification",
@@ -11290,7 +11299,7 @@
     "shield.clears_only_the_shield_cache_of_already_scanned_file_fingerprints": {
       "english": "Clears only the Shield cache of already-scanned file fingerprints. It does not delete Results, Quarantine, Exceptions, or History.",
       "translation": "",
-      "maxChars": 130
+      "maxChars": 215
     },
     "backend.updates.update_popup_not_found": {
       "english": "Update popup not found",
@@ -11450,7 +11459,7 @@
     "updates.update_signatures_and_rules_clamshield_and_scanning_engines": {
       "english": "Update signatures and rules, ClamShield, and scanning engines.",
       "translation": "",
-      "maxChars": 80
+      "maxChars": 103
     },
     "updates.update_clamav": {
       "english": "Update ClamAV",
@@ -11835,12 +11844,37 @@
     "dashboard.paid_plan_details": {
       "english": ". Paid plans add the remaining supported databases, including 0-hour signatures. PUA signatures are off by default; mailserver spam-domain signatures are not used for Windows scans.",
       "translation": "",
-      "maxChars": 272
+      "maxChars": 299
     },
     "updates.pua_false_positive_note": {
       "english": ". It may generate many false positives.",
       "translation": "",
       "maxChars": 59
+    },
+    "languages.invalid_english_name": {
+      "english": "Invalid English language name.",
+      "translation": "",
+      "maxChars": 60
+    },
+    "languages.invalid_review_status": {
+      "english": "Invalid translation review status.",
+      "translation": "",
+      "maxChars": 60
+    },
+    "languages.invalid_reviewers": {
+      "english": "Invalid translator names.",
+      "translation": "",
+      "maxChars": 60
+    },
+    "languages.review_requires_name": {
+      "english": "Reviewed translations require a reviewer name.",
+      "translation": "",
+      "maxChars": 74
+    },
+    "languages.review_requires_complete_translation": {
+      "english": "Complete every translation before marking the language as reviewed.",
+      "translation": "",
+      "maxChars": 111
     }
   }
 }

@@ -14,6 +14,9 @@ export type LanguagePack = {
         code: string;
         name: string;
         direction: "ltr" | "rtl";
+        englishName?: string;
+        status?: "source" | "auto" | "reviewed";
+        reviewers?: string[];
     };
     strings: Record<string, LanguageEntry>;
 };
@@ -60,8 +63,17 @@ export function validateLanguagePack(input: unknown): LanguagePack {
     }
     if (typeof meta.name !== "string" || !meta.name.trim() || count(meta.name) > 60 || control.test(meta.name))
         throw new Error(englishText("backend.languages.invalid_language_name"));
-    if (!["ltr", "rtl"].includes(meta.direction) || Object.keys(meta).some(k => !["code", "name", "direction"].includes(k)))
+    if (!["ltr", "rtl"].includes(meta.direction) || Object.keys(meta).some(k => !["code", "name", "direction", "englishName", "status", "reviewers"].includes(k)))
         throw new Error(englishText("backend.languages.invalid_language_metadata"));
+    if (meta.englishName !== undefined && (typeof meta.englishName !== 'string' || !meta.englishName.trim() || count(meta.englishName) > 60 || control.test(meta.englishName)))
+        throw new Error(englishText('languages.invalid_english_name'));
+    const status = meta.status ?? (meta.code === 'en' ? 'source' : 'auto');
+    if (!['source', 'auto', 'reviewed'].includes(status) || (status === 'source' && meta.code !== 'en') || (meta.code === 'en' && status !== 'source'))
+        throw new Error(englishText('languages.invalid_review_status'));
+    if (meta.reviewers !== undefined && (!Array.isArray(meta.reviewers) || meta.reviewers.length > 8 || meta.reviewers.some((name: unknown) => typeof name !== 'string' || !name.trim() || count(name) > 60 || control.test(name))))
+        throw new Error(englishText('languages.invalid_reviewers'));
+    if (status === 'reviewed' && !meta.reviewers?.length)
+        throw new Error(englishText('languages.review_requires_name'));
     if (Object.keys(input.strings).length > 8192)
         throw new Error(englishText("backend.languages.too_many_language_strings"));
     const strings: Record<string, LanguageEntry> = Object.create(null);
@@ -83,7 +95,7 @@ export function validateLanguagePack(input: unknown): LanguagePack {
             throw new Error(englishText("backend.languages.placeholder_metadata_changed", {
                 key: String(key)
             }));
-        const checkText = (text: unknown, form = false) => {
+        const checkText = (text: unknown) => {
             if (typeof text !== "string" || count(text) > definition.maxChars || control.test(text))
                 throw new Error(englishText("backend.languages.invalid_or_overlong_translation_max_characters", {
                     key: String(key),
@@ -92,7 +104,9 @@ export function validateLanguagePack(input: unknown): LanguagePack {
             if (!text)
                 return "";
             const expected = placeholders(definition.english), actual = placeholders(text);
-            const required = form ? expected.filter(p => !(definition.optionalParameters || []).includes(p)) : expected;
+            // These optional parameters are authored English plural suffixes.
+            // Other languages may omit them without dropping any actual values.
+            const required = expected.filter(p => !(definition.optionalParameters || []).includes(p));
             if (actual.some(p => !expected.includes(p)) || required.some(p => !actual.includes(p)))
                 throw new Error(englishText("backend.languages.placeholders_must_be_preserved", {
                     key: String(key)
@@ -112,12 +126,28 @@ export function validateLanguagePack(input: unknown): LanguagePack {
                     throw new Error(englishText("backend.languages.invalid_plural_form", {
                         key: String(key)
                     }));
-                forms[form] = checkText(text, true);
+                forms[form] = checkText(text);
             }
         }
         strings[key] = { ...definition, translation, ...(forms ? { forms } : {}) };
     }
-    return { schemaVersion: 1, language: { code: meta.code, name: meta.name, direction: meta.direction }, strings };
+    if (status === 'reviewed' && (Object.keys(strings).length !== Object.keys(canonical.strings).length || Object.values(strings).some(entry => !entry.translation && !entry.forms?.other)))
+        throw new Error(englishText('languages.review_requires_complete_translation'));
+    return { schemaVersion: 1, language: { code: meta.code, name: meta.name, direction: meta.direction,
+        ...(meta.englishName !== undefined ? { englishName: meta.englishName } : {}), status,
+        ...(meta.reviewers !== undefined ? { reviewers: [...meta.reviewers] } : {}) }, strings };
+}
+
+export function languageLabel(language: LanguagePack['language']) {
+    let englishName = language.englishName;
+    if (!englishName) {
+        try { englishName = new Intl.DisplayNames(['en'], { type: 'language' }).of(language.code); } catch { /* Display metadata only. */ }
+    }
+    const english = englishName || language.code;
+    const name = english === language.name ? english : `${english} — ${language.name}`;
+    if (language.code === 'en') return name;
+    const credit = language.status === 'reviewed' && language.reviewers?.length ? language.reviewers.join(', ') : 'auto';
+    return `${name} (${credit})`;
 }
 export const englishPack = canonical;
 let active: LanguagePack = canonical;

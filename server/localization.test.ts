@@ -7,7 +7,7 @@ import express from 'express';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { createRequire } from 'node:module';
-import { englishPack, englishText, localizeText, setLanguage, t, translate, validateLanguagePack, type LanguagePack } from '../shared/localization/runtime';
+import { englishPack, englishText, languageLabel, localizeText, setLanguage, t, translate, validateLanguagePack, type LanguagePack } from '../shared/localization/runtime';
 import { LanguageFiles, maxLanguageBytes, readBoundedJson, readLanguagePreference, writeLanguageText } from '../shared/localization/files';
 import { writeShellLanguage } from '../shared/localization/shell';
 import { registerLanguageRoutes } from './core/languages';
@@ -30,6 +30,46 @@ test('the complete volunteer template validates and empty translations fall back
     assert.equal(value.translation, '');
     assert.equal(translate(template, key), englishText(key));
     assert.ok(Array.from(value.english).length <= value.maxChars, key);
+  }
+});
+
+test('language labels include native names and distinguish automatic drafts from complete volunteer reviews', () => {
+  assert.equal(languageLabel(validateLanguagePack(englishPack).language), 'English');
+  const draft = pack(); draft.language = { ...draft.language, englishName: 'Spanish', status: 'auto', reviewers: ['Partial helper'] };
+  assert.equal(languageLabel(validateLanguagePack(draft).language), 'Spanish — Español (auto)');
+  const reviewed = structuredClone(englishPack); reviewed.language = { code: 'es', englishName: 'Spanish', name: 'Español', direction: 'ltr', status: 'reviewed', reviewers: ['Juan Pérez', 'Ana'] };
+  assert.equal(languageLabel(validateLanguagePack(reviewed).language), 'Spanish — Español (Juan Pérez, Ana)');
+  assert.throws(() => validateLanguagePack({ ...reviewed, language: { ...reviewed.language, reviewers: [] } }));
+  assert.throws(() => validateLanguagePack({ ...reviewed, strings: {} }));
+  assert.throws(() => validateLanguagePack({ ...draft, language: { ...draft.language, status: 'verified' } }));
+  assert.throws(() => validateLanguagePack({ ...draft, language: { ...draft.language, status: 'source' } }));
+  assert.throws(() => validateLanguagePack({ ...draft, language: { ...draft.language, reviewers: [{ toString: 'unsafe' }] } }));
+  assert.throws(() => validateLanguagePack({ ...draft, language: { ...draft.language, englishName: 'x'.repeat(61) } }));
+});
+
+test('bundled languages use base codes, preserve technical literals and distinguish draft and review credits', () => {
+  const codes = ['en', 'zh', 'hi', 'es', 'ar', 'fr', 'bn', 'pt', 'id', 'ur', 'ru', 'de', 'el', 'it', 'tr', 'ja'].sort();
+  const actual = fs.readdirSync('languages').filter(name => name.endsWith('.json') && name !== 'template.json').map(name => name.slice(0, -5)).sort();
+  for (const code of codes) assert.ok(actual.includes(code), `Missing bundled language: ${code}`);
+  assert.ok(actual.every(code => /^[a-z]{2,3}$/.test(code)));
+  const registry = new LanguageFiles([path.resolve('languages')]).refresh();
+  assert.deepEqual(registry.errors, []);
+  assert.equal(registry.languages.length, actual.length);
+  for (const code of actual) {
+    const language = validateLanguagePack(readBoundedJson(path.resolve('languages', code + '.json')));
+    assert.ok(Object.keys(language.strings).length > 0, code);
+    if (code === 'en') assert.equal(language.language.status, 'source');
+    else assert.ok(['auto', 'reviewed'].includes(language.language.status!));
+    for (const [key, entry] of Object.entries(language.strings)) {
+      for (const literal of ['ClamShield', 'ClamAV', 'VirusTotal', 'SecuriteInfo', 'SaneSecurity', 'YARA', 'infectedsecuriteinfo', 'Byron Iniotakis']) {
+        const expected = entry.english.split(literal).length - 1;
+        if (expected && entry.translation) assert.equal(entry.translation.split(literal).length - 1, expected, `${code}: ${key}: ${literal}`);
+      }
+    }
+    if (codes.includes(code)) assert.equal(language.language.direction, ['ar', 'ur'].includes(code) ? 'rtl' : 'ltr');
+    assert.ok(language.language.englishName);
+    if (language.language.status === 'auto') assert.ok(languageLabel(language.language).endsWith('(auto)'));
+    if (language.language.status === 'reviewed') assert.ok(languageLabel(language.language).endsWith(`(${language.language.reviewers!.join(', ')})`));
   }
 });
 
@@ -112,6 +152,9 @@ test('declarative plural forms use Intl rules with no executable expressions', (
   const [key, definition] = Object.entries(englishPack.strings).find(([, e]) => e.plural && e.optionalParameters?.length)!;
   const required = [...definition.english.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]).filter(name => !definition.optionalParameters!.includes(name));
   const value = required.map(name => '{{' + name + '}}').join(' ');
+  validateLanguagePack(pack({ [key]: entry(key, value) }));
+  assert.throws(() => validateLanguagePack(pack({ [key]: entry(key, 'No actual values') })));
+  assert.throws(() => validateLanguagePack(pack({ [key]: entry(key, value + '{{unknown}}') })));
   const plural = { ...entry(key, ''), forms: { one: value + ' uno', other: value + ' varios' } };
   const language = validateLanguagePack(pack({ [key]: plural }));
   const args = Object.fromEntries(required.map(name => [name, 1]));

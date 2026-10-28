@@ -50,7 +50,7 @@ export function registerLanguageRoutes(app: any, context: Pick<ApplicationContex
         }
     });
     app.get("/api/languages/template", (_req: any, res: any) => {
-        const template = { ...englishPack, language: { code: "es", name: "Español", direction: "ltr" },
+        const template = { ...englishPack, language: { code: "es", englishName: 'Spanish', name: "Español", direction: "ltr", status: 'auto', reviewers: [] },
             strings: Object.fromEntries(Object.entries(englishPack.strings).map(([key, entry]) => [key, { ...entry, translation: "" }])) };
         res.type("application/json").attachment("es.json").send(JSON.stringify(template, null, 2));
     });

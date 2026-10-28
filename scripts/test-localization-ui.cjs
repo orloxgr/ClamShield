@@ -18,9 +18,12 @@ const ts = require('typescript');
 const { buildSync } = require('esbuild');
 const runtime = require('../public/localization-runtime.cjs');
 const english = runtime.englishPack;
-const spanish = structuredClone(english); spanish.language = { code: 'es', name: 'Español', direction: 'ltr' };
+const packs = Object.fromEntries(fs.readdirSync(path.join(root, 'languages')).filter(name => name.endsWith('.json') && name !== 'template.json').map(name => {
+  const pack = runtime.validateLanguagePack(JSON.parse(fs.readFileSync(path.join(root, 'languages', name), 'utf8')));
+  return [pack.language.code, pack];
+}));
+const spanish = packs.es;
 const vocabulary = { Dashboard: 'Panel', Shield: 'Escudo', 'Real-Time Shield': 'Escudo en tiempo real', 'On-Demand Scan': 'Análisis manual', 'Scheduled Scanner': 'Análisis programado', Results: 'Resultados', Exceptions: 'Excepciones', Quarantine: 'Cuarentena', 'DNS Protection': 'Protección DNS', Updates: 'Actualizaciones', History: 'Historial', Settings: 'Ajustes', Language: 'Idioma', 'Add file': 'Añadir archivo', 'Add folder': 'Añadir carpeta', 'Report false positive': 'Informar falso positivo' };
-for (const entry of Object.values(spanish.strings)) entry.translation = vocabulary[entry.english] || '';
 runtime.validateLanguagePack(spanish);
 const maximum = structuredClone(english); maximum.language = { code: 'de', name: 'Layout test', direction: 'ltr' };
 for (const entry of Object.values(maximum.strings)) {
@@ -58,8 +61,8 @@ app.whenReady().then(async () => {
         if (url.pathname === '/api/status' || url.pathname === '/api/settings') body = status;
         if (url.pathname === '/api/languages/current') body = selected;
         if (url.pathname === '/api/languages') {
-          if (req.method === 'POST') { let raw = ''; for await (const chunk of req) raw += chunk; selected = JSON.parse(raw).code === 'es' ? spanish : english; }
-          body = { languages: [english.language, spanish.language], language: selected, selected: selected.language.code, errors: [], directories: [] };
+          if (req.method === 'POST') { let raw = ''; for await (const chunk of req) raw += chunk; selected = packs[JSON.parse(raw).code] || english; }
+          body = { languages: Object.values(packs).map(pack => pack.language), language: selected, selected: selected.language.code, errors: [], directories: [] };
         }
         if (url.pathname === '/api/scheduled-scan') body = { settings, runtime: {} };
         return res.end(JSON.stringify(body));
@@ -74,6 +77,18 @@ app.whenReady().then(async () => {
     ipcMain.handle('clamshield-language', () => selected);
     await win.loadURL(origin + '/settings');
     await until(async () => await win.webContents.executeJavaScript(`Boolean(document.querySelector('#application-language option[value="es"]') && !document.getElementById('application-language').disabled)`), 'settings');
+    const labels = await win.webContents.executeJavaScript(`Object.fromEntries([...document.querySelectorAll('#application-language option')].map(node=>[node.value,node.textContent]))`);
+    assert.equal(Object.keys(labels).length, Object.keys(packs).length);
+    assert.equal(labels.en, 'English');
+    assert.equal(labels.es, runtime.languageLabel(packs.es.language));
+    assert.equal(labels.el, runtime.languageLabel(packs.el.language));
+    const settingsKey = Object.keys(english.strings).find(key => english.strings[key].english === 'Settings');
+    for (const pack of Object.values(packs)) {
+      await win.webContents.executeJavaScript(`document.getElementById('application-language').value=${JSON.stringify(pack.language.code)};document.getElementById('application-language').dispatchEvent(new Event('change',{bubbles:true}))`);
+      await until(async () => await win.webContents.executeJavaScript(`document.documentElement.lang === ${JSON.stringify(pack.language.code)} && !document.getElementById('application-language').disabled`), pack.language.code + ': selected');
+      assert.equal(await win.webContents.executeJavaScript('document.documentElement.dir'), pack.language.direction);
+      assert.equal(await win.webContents.executeJavaScript('document.querySelector("main h1").textContent'), runtime.translate(pack, settingsKey));
+    }
     await win.webContents.executeJavaScript(`document.getElementById('application-language').value='es';document.getElementById('application-language').dispatchEvent(new Event('change',{bubbles:true}))`);
     await until(async () => await win.webContents.executeJavaScript('document.documentElement.lang === "es"'), 'Spanish selected');
     assert.equal(selected.language.code, 'es');
@@ -94,7 +109,7 @@ app.whenReady().then(async () => {
       assert.ok(geometry.document <= geometry.width + 2, route + ': document overflow');
       assert.ok(geometry.nav.every(n => n.content <= n.width + 2), route + ': sidebar overflow ' + JSON.stringify(geometry));
     }
-    const rtl = structuredClone(spanish); rtl.language = { code: 'ar', name: 'العربية', direction: 'rtl' }; selected = rtl;
+    selected = packs.ar;
     // Native pages receive data over the real sandboxed preload bridge.
     for (const page of ['startup.html', 'alert.html', 'results-reminder.html', 'scan-summary.html', 'update-available.html']) {
       const popup = new BrowserWindow({ show: false, width: 460, height: 320, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(root, 'public/language-preload.cjs') } }); popups.push(popup);
@@ -108,7 +123,7 @@ app.whenReady().then(async () => {
     assert.equal(failures.length, 0, JSON.stringify(failures));
     assert.ok(requests.some(([method, route]) => method === 'POST' && route === '/api/languages'));
     assert.ok(!requests.some(([method, route]) => method === 'POST' && !['/api/languages', '/api/client-log'].includes(route)), 'switching language must not trigger scanning/settings changes');
-    console.log('PASS: all 11 tabs in Spanish, language selector, maximum-length sidebar layout, literal malicious text, RTL and all 5 native pages.');
+    console.log('PASS: all 16 shipped languages and credit labels, all 11 tabs in Spanish, maximum-length sidebar layout, literal malicious text, real Arabic RTL and all 5 native pages.');
     for (const popup of popups) popup.destroy(); win.destroy(); server.close(); app.exit(0);
   } catch (error) {
     console.error(error); if(win&&!win.isDestroyed()) console.error(await win.webContents.executeJavaScript('JSON.stringify({errors:window.fixtureErrors,route:location.pathname,body:document.body.innerText.slice(0,300)})').catch(()=>'')); for (const popup of popups) if (!popup.isDestroyed()) popup.destroy(); if (win && !win.isDestroyed()) win.destroy(); server?.close(); app.exit(1);
