@@ -156,7 +156,16 @@
       background: #d97706;
       border-color: #f59e0b;
     }
+  /* Long translations wrap; actions remain reachable in a small notification. */
+    body { overflow-y: auto; overflow-x: hidden; }
+    .wrap { min-height: 100%; height: auto; }
+    .actions { flex-wrap: wrap; }
+    button { max-width: 100%; overflow-wrap: anywhere; }
+    .header > div { min-width: 0; }
+    h1, .sub, .details { overflow-wrap: anywhere; }
   </style>
+<script src="localization-browser.js"></script>
+<script src="localize-page.js"></script>
 </head>
 <body>
   <main class="wrap">
@@ -171,8 +180,8 @@
     </section>
 
     <section class="details">
-      <div id="threatName" class="name"></div>
-      <div id="threatPath" class="path"></div>
+      <div data-no-localize id="threatName" class="name"></div>
+      <div data-no-localize id="threatPath" class="path"></div>
       <div id="providers" class="providers" hidden></div>
       <p id="actionError" class="action-error" role="alert" hidden></p>
     </section>
@@ -185,120 +194,125 @@
   </main>
 
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const threatId = params.get("id") || "";
-    const port = params.get("port") || window.location.port;
-    const name = params.get("name") || "Unknown threat";
-    const filePath = params.get("path") || "Unknown path";
-    const mode = params.get("mode") || "decision";
-    const title = params.get("title") || (mode === "notice" ? "Threat handled" : "Threat Detected");
-    const subtitle = params.get("subtitle") || (mode === "notice" ? "ClamShield handled a suspicious file" : "ClamShield found a suspicious file");
-    const playSound = params.get("playSound") !== "false";
-    const bridge = window.clamshieldAlert;
-
-    function logPopupError(message, details) {
-      if (bridge && typeof bridge.log === "function") {
-        bridge.log({ level: "error", message, details }).catch(() => {});
+const params = new URLSearchParams(window.location.search);
+const threatId = params.get("id") || "";
+const port = params.get("port") || window.location.port;
+const name = params.get("name") || englishText("desktop.alert.html.unknown_threat");
+const filePath = params.get("path") || englishText("desktop.alert.html.unknown_path");
+const mode = params.get("mode") || "decision";
+const title = params.get("title") || (mode === "notice" ? englishText("desktop.alert.html.threat_handled") : englishText("desktop.alert.threat_detected"));
+const subtitle = params.get("subtitle") || (mode === "notice" ? englishText("desktop.alert.html.clamshield_handled_a_suspicious_file") : englishText("desktop.alert.clamshield_found_a_suspicious_file"));
+const playSound = params.get("playSound") !== "false";
+const bridge = window.clamshieldAlert;
+function logPopupError(message, details) {
+    if (bridge && typeof bridge.log === "function") {
+        bridge.log({ level: "error", message, details }).catch(() => { });
         return;
-      }
-      fetch(`http://127.0.0.1:${port}/api/client-log`, {
+    }
+    fetch(`http://127.0.0.1:${port}/api/client-log`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "error", message, details }),
         keepalive: true
-      }).catch(() => {});
-    }
-
-    window.addEventListener("error", event => {
-      logPopupError("Threat popup renderer error", {
+    }).catch(() => { });
+}
+window.addEventListener("error", event => {
+    logPopupError(englishText("desktop.alert.html.threat_popup_renderer_error"), {
         message: event.message,
         filename: event.filename,
         lineno: event.lineno,
         colno: event.colno,
         stack: event.error && event.error.stack
-      });
     });
-
-    window.addEventListener("unhandledrejection", event => {
-      const reason = event.reason || {};
-      logPopupError("Threat popup promise rejection", {
+});
+window.addEventListener("unhandledrejection", event => {
+    const reason = event.reason || {};
+    logPopupError(englishText("desktop.alert.html.threat_popup_promise_rejection"), {
         message: reason.message || String(reason),
         stack: reason.stack
-      });
     });
-
-    document.querySelector("h1").textContent = title;
-    document.querySelector(".sub").textContent = subtitle;
-    document.getElementById("threatName").textContent = name;
-    document.getElementById("threatPath").textContent = filePath;
-    if (bridge && typeof bridge.onUpdate === "function") {
-      bridge.onUpdate(threat => {
+});
+document.querySelector("h1").textContent = title;
+document.querySelector(".sub").textContent = subtitle;
+document.getElementById("threatName").textContent = name;
+document.getElementById("threatPath").textContent = filePath;
+if (bridge && typeof bridge.onUpdate === "function") {
+    bridge.onUpdate(threat => {
         document.getElementById("threatName").textContent = threat.threatName || name;
         const providers = [...new Set((threat.detections || []).map(detection => detection.engine))].filter(Boolean);
         const label = document.getElementById("providers");
-        label.textContent = providers.length > 1 ? `Detected by ${providers.join(" + ")}` : "";
+        label.textContent = providers.length > 1 ? englishText("desktop.alert.html.detected_by", {
+            value1: String(providers.join(" + "))
+        }) : "";
         label.hidden = !label.textContent;
-      });
-    }
-    const dismiss = () => mode === "notice" ? window.close() : sendAction("results");
-    if (mode !== "notice") document.getElementById("closeBtn").title = "Decide later";
-    document.getElementById("closeBtn").addEventListener("click", dismiss);
-    window.addEventListener("keydown", event => {
-      if (event.key === "Escape") dismiss();
     });
-
-    if (mode === "notice") {
-      const actions = document.querySelector(".actions");
-      actions.innerHTML = '<button id="noticeCloseBtn" class="secondary" type="button">Close</button>';
-      document.getElementById("noticeCloseBtn").addEventListener("click", () => window.close());
-    }
-
-    if (playSound) {
-      const audio = document.getElementById("alertSound");
-      audio.volume = 0.55;
-      audio.play().catch(() => {});
-    }
-
-    let actionInProgress = false;
-    async function sendAction(action) {
-      if (actionInProgress) return;
-      actionInProgress = true;
-      const buttons = document.querySelectorAll("button");
-      const errorMessage = document.getElementById("actionError");
-      errorMessage.hidden = true;
-      buttons.forEach(button => button.disabled = true);
-      try {
+}
+const dismiss = () => mode === "notice" ? window.close() : sendAction("results");
+if (mode !== "notice")
+    document.getElementById("closeBtn").title = englishText("desktop.alert.decide_later");
+document.getElementById("closeBtn").addEventListener("click", dismiss);
+window.addEventListener("keydown", event => {
+    if (event.key === "Escape")
+        dismiss();
+});
+if (mode === "notice") {
+    const actions = document.querySelector(".actions");
+    actions.replaceChildren();
+    const close = document.createElement('button');
+    close.id = 'noticeCloseBtn'; close.className = 'secondary'; close.type = 'button'; close.textContent = 'Close';
+    actions.appendChild(close);
+    document.getElementById("noticeCloseBtn").addEventListener("click", () => window.close());
+}
+if (playSound) {
+    const audio = document.getElementById("alertSound");
+    audio.volume = 0.55;
+    audio.play().catch(() => { });
+}
+let actionInProgress = false;
+async function sendAction(action) {
+    if (actionInProgress)
+        return;
+    actionInProgress = true;
+    const buttons = document.querySelectorAll("button");
+    const errorMessage = document.getElementById("actionError");
+    errorMessage.hidden = true;
+    buttons.forEach(button => button.disabled = true);
+    try {
         if (bridge && typeof bridge.sendAction === "function") {
-          const result = await bridge.sendAction({ id: threatId, action });
-          if (result && result.success === false) throw new Error(result.error || "Action failed");
-        } else {
-          const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok || result.success === false) throw new Error(result.error || "Action failed");
+            const result = await bridge.sendAction({ id: threatId, action });
+            if (result && result.success === false)
+                throw new Error(result.error || englishText("desktop.alert.html.action_failed"));
+        }
+        else {
+            const response = await fetch(`http://127.0.0.1:${port}/api/pending-threats/${encodeURIComponent(threatId)}/action`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false)
+                throw new Error(result.error || englishText("desktop.alert.html.action_failed"));
         }
         window.close();
-      } catch (error) {
-        logPopupError("Threat popup action failed", {
-          action,
-          threatId,
-          message: error && error.message ? error.message : String(error)
+    }
+    catch (error) {
+        logPopupError(englishText("desktop.alert.html.threat_popup_action_failed"), {
+            action,
+            threatId,
+            message: error && error.message ? error.message : String(error)
         });
-        errorMessage.textContent = error && error.message ? error.message : "The action failed. Try again or choose Decide later.";
+        errorMessage.textContent = error && error.message ? error.message : englishText("desktop.alert.html.the_action_failed_try_again_or_choose_decide_later");
         errorMessage.hidden = false;
         actionInProgress = false;
         buttons.forEach(button => button.disabled = false);
-      }
     }
+}
+if (mode !== "notice") {
+    document.getElementById("exceptionBtn").addEventListener("click", () => sendAction("exception"));
+    document.getElementById("laterBtn").addEventListener("click", () => sendAction("results"));
+    document.getElementById("quarantineBtn").addEventListener("click", () => sendAction("quarantine"));
+}
 
-    if (mode !== "notice") {
-      document.getElementById("exceptionBtn").addEventListener("click", () => sendAction("exception"));
-      document.getElementById("laterBtn").addEventListener("click", () => sendAction("results"));
-      document.getElementById("quarantineBtn").addEventListener("click", () => sendAction("quarantine"));
-    }
-  </script>
+</script>
 </body>
 </html>

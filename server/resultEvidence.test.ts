@@ -1,10 +1,11 @@
+import { readBackendSource, serverTestContext } from "./testSupport";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import { DatabaseSync } from "node:sqlite";
-import { freshScanEvidence } from "./resultEvidence";
+import { freshScanEvidence } from "../modules/results/server/evidence";
 
 test("a fresh detection cannot inherit a previous file version's hashes, submission or verdict", () => {
   const previous = { sha256: "a".repeat(64), md5: "old-md5", virusTotalChecks: { resultsUploadAnalysisId: "old-id" }, virusTotalRefinement: { status: "blocked" } };
@@ -15,7 +16,7 @@ test("a fresh detection cannot inherit a previous file version's hashes, submiss
   assert.deepEqual(freshScanEvidence({ virusTotalRefinement: { status: "needs_review" } }, previous), {});
 });
 
-const source = fs.readFileSync("server.ts", "utf8");
+const source = readBackendSource();
 const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
 function productionFunction(name: string) {
   const node = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
@@ -30,7 +31,7 @@ test("removal deletes only the selected finding, preserves exclusions and record
     db.prepare("INSERT INTO scan_results VALUES (?, ?)").run("other", "C:\\keep.exe");
     db.prepare("INSERT INTO exceptions VALUES (?)").run("C:\\existing-exception.exe");
     let handler: any, notified = 0;
-    const context = vm.createContext({ app: { post: (_route: string, callback: any) => { handler = callback; } },
+    const context = serverTestContext({ app: { post: (_route: string, callback: any) => { handler = callback; } },
       ensureAppStateReady: async () => {}, getAppStateDb: () => db,
       scanResultsChangedHandler: () => { notified++; }, console,
       randomBytes: () => ({ toString: () => "test" }),
@@ -61,7 +62,7 @@ test("removal deletes only the selected finding, preserves exclusions and record
 
 test("a delayed VirusTotal response cannot overwrite a newer detection or restore a dismissed finding", async () => {
   let row: any = { timestamp: 2 }, writes = 0;
-  const context = vm.createContext({ ensureAppStateReady: async () => {}, scanResultSelectSql: () => "SELECT * FROM scan_results",
+  const context = serverTestContext({ ensureAppStateReady: async () => {}, scanResultSelectSql: () => "SELECT * FROM scan_results",
     getAppStateDb: () => ({ prepare: () => ({ get: () => row }) }), mapScanResultRow: (value: any) => value,
     insertScanResultRow: () => { writes++; } });
   vm.runInContext(ts.transpile(productionFunction("persistVirusTotalResult")), context);

@@ -13,3 +13,8 @@ shell/*.dll
 *.log
 .env*
 !.env.example
+
+# Generated from trusted localization sources during development/build/CI.
+public/localization-runtime.cjs
+public/desktop-localization.cjs
+public/localization-browser.js

@@ -30,7 +30,7 @@ app.whenReady().then(async () => {
   let win, server;
   try {
     const bundle = buildSync({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {BrowserRouter} from 'react-router-dom';
-      import Dashboard from './src/pages/Dashboard'; import Results from './src/pages/Results';
+      import Dashboard from './modules/dashboard/ui/Dashboard'; import Results from './modules/results/ui/Results';
       createRoot(document.getElementById('root')).render(<BrowserRouter>{location.pathname === '/results' ? <Results/> : <Dashboard/>}</BrowserRouter>);`,
       resolveDir: root, loader: 'tsx' }, bundle: true, write: false, format: 'iife', define: { 'process.env.NODE_ENV': '"production"' } }).outputFiles[0].text;
     const cssName = fs.readdirSync(path.join(root, 'dist/assets')).find(name => name.endsWith('.css'));

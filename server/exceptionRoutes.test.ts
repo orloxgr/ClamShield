@@ -1,11 +1,12 @@
+import { readBackendSource, serverTestContext } from "./testSupport";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
 import { DatabaseSync } from "node:sqlite";
 import ts from "typescript";
-import { reportStatus, updateReportStatus } from "./exceptionReporting";
-const source = fs.readFileSync("server.ts", "utf8");
+import { reportStatus, updateReportStatus } from "../modules/exceptions/server/reporting";
+const source = readBackendSource();
 const tree = ts.createSourceFile(
   "server.ts",
   source,
@@ -28,7 +29,7 @@ function fixture() {
     "c:\\test.exe",
     "C:\\test.exe",
   );
-  const context = vm.createContext({
+  const context = serverTestContext({
     app: {
       post: (route: string, handler: any) => {
         handlers[route] = handler;

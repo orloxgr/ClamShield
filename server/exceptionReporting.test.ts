@@ -5,7 +5,7 @@ import {
   exceptionQuery,
   reportStatus,
   updateReportStatus,
-} from "./exceptionReporting";
+} from "../modules/exceptions/server/reporting";
 
 test("legacy opened reports are unconfirmed; reset, confirmation and reopening preserve honest status", () => {
   const original = {

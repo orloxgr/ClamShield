@@ -98,7 +98,16 @@
       background: #d97706;
       border-color: #f59e0b;
     }
+  /* Long translations wrap; actions remain reachable in a small notification. */
+    body { overflow-y: auto; overflow-x: hidden; }
+    .wrap { min-height: 100%; height: auto; }
+    .actions { flex-wrap: wrap; }
+    button { max-width: 100%; overflow-wrap: anywhere; }
+    .header > div { min-width: 0; }
+    h1, .sub, .details { overflow-wrap: anywhere; }
   </style>
+<script src="localization-browser.js"></script>
+<script src="localize-page.js"></script>
 </head>
 <body>
   <main class="wrap">
@@ -123,73 +132,76 @@
   </main>
 
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const port = params.get("port") || window.location.port;
-    const count = params.get("count") || "0";
-    const bridge = window.clamshieldResultsReminder;
-
-    function logPopupError(message, details) {
-      fetch(`http://127.0.0.1:${port}/api/client-log`, {
+const params = new URLSearchParams(window.location.search);
+const port = params.get("port") || window.location.port;
+const count = params.get("count") || "0";
+const bridge = window.clamshieldResultsReminder;
+function logPopupError(message, details) {
+    fetch(`http://127.0.0.1:${port}/api/client-log`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "error", message, details }),
         keepalive: true
-      }).catch(() => {});
-    }
-
-    window.addEventListener("error", event => {
-      logPopupError("Results reminder popup renderer error", {
+    }).catch(() => { });
+}
+window.addEventListener("error", event => {
+    logPopupError(englishText("desktop.results_reminder.html.results_reminder_popup_renderer_error"), {
         message: event.message,
         filename: event.filename,
         lineno: event.lineno,
         colno: event.colno,
         stack: event.error && event.error.stack
-      });
     });
-
-    window.addEventListener("unhandledrejection", event => {
-      const reason = event.reason || {};
-      logPopupError("Results reminder popup promise rejection", {
+});
+window.addEventListener("unhandledrejection", event => {
+    const reason = event.reason || {};
+    logPopupError(englishText("desktop.results_reminder.html.results_reminder_popup_promise_rejection"), {
         message: reason.message || String(reason),
         stack: reason.stack
-      });
     });
-
-    document.getElementById("count").textContent = `${count} item${count === "1" ? "" : "s"} waiting`;
-
-    async function sendAction(action, closeAfter = true) {
-      const buttons = document.querySelectorAll("button");
-      buttons.forEach(button => button.disabled = true);
-      try {
+});
+document.getElementById("count").textContent = englishText("desktop.results_reminder.html.item_waiting", {
+    count: String(count),
+    value2: String(count === "1" ? "" : "s")
+});
+async function sendAction(action, closeAfter = true) {
+    const buttons = document.querySelectorAll("button");
+    buttons.forEach(button => button.disabled = true);
+    try {
         if (bridge && typeof bridge.sendAction === "function") {
-          const result = await bridge.sendAction({ action });
-          if (result && result.success === false) throw new Error(result.error || "Action failed");
-        } else {
-          const response = await fetch(`http://127.0.0.1:${port}/api/results-reminder/action`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok || result.success === false) throw new Error(result.error || "Action failed");
+            const result = await bridge.sendAction({ action });
+            if (result && result.success === false)
+                throw new Error(result.error || englishText("desktop.alert.html.action_failed"));
         }
-        if (closeAfter) window.close();
-      } catch (error) {
-        logPopupError("Results reminder action failed", {
-          action,
-          message: error && error.message ? error.message : String(error)
+        else {
+            const response = await fetch(`http://127.0.0.1:${port}/api/results-reminder/action`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false)
+                throw new Error(result.error || englishText("desktop.alert.html.action_failed"));
+        }
+        if (closeAfter)
+            window.close();
+    }
+    catch (error) {
+        logPopupError(englishText("desktop.results_reminder.html.results_reminder_action_failed"), {
+            action,
+            message: error && error.message ? error.message : String(error)
         });
         buttons.forEach(button => button.disabled = false);
-      }
     }
+}
+document.getElementById("remind10").addEventListener("click", () => sendAction("remind-10"));
+document.getElementById("remind60").addEventListener("click", () => sendAction("remind-60"));
+document.getElementById("forget").addEventListener("click", () => sendAction("forget"));
+document.getElementById("open").addEventListener("click", async () => {
+    await sendAction("open", false);
+    window.location.href = `http://127.0.0.1:${port}/results`;
+});
 
-    document.getElementById("remind10").addEventListener("click", () => sendAction("remind-10"));
-    document.getElementById("remind60").addEventListener("click", () => sendAction("remind-60"));
-    document.getElementById("forget").addEventListener("click", () => sendAction("forget"));
-    document.getElementById("open").addEventListener("click", async () => {
-      await sendAction("open", false);
-      window.location.href = `http://127.0.0.1:${port}/results`;
-    });
-  </script>
+</script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { VirusTotalUsage } from "./virusTotalUsage";
+import { VirusTotalUsage } from "../addons/virustotal/server/virusTotalUsage";
 
 const summary = (used = 10, allowed = 500) => ({ data: {
     api_requests_daily: { user: { used, allowed } },

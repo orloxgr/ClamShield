@@ -40,10 +40,10 @@ app.whenReady().then(async () => {
   const windows = [], actions = [];
   try {
     const activeAlerts = new Map();
-    const context = new Function('__dirname', 'BrowserWindow', 'path', 'activeAlerts', 'dismissedAlerts', 'readAppSettings', 'getPublicAssetPath', 'trackNotification', 'attachWindowLogging',
+    const context = new Function('englishText', 't', '__dirname', 'BrowserWindow', 'path', 'activeAlerts', 'dismissedAlerts', 'readAppSettings', 'getPublicAssetPath', 'trackNotification', 'attachWindowLogging',
       `${['handleThreatEvent', 'handleApiEvent', 'createAlertWindow'].map(functionSource).join('\n')}
        return { handleThreatEvent, handleApiEvent };`)(
-      root, BrowserWindow, path, activeAlerts, new Set(), () => ({ playSoundOnAlert: false }), file => path.join(root, 'public', file),
+      require("../public/desktop-localization.cjs").englishText, require("../public/desktop-localization.cjs").t, root, BrowserWindow, path, activeAlerts, new Set(), () => ({ playSoundOnAlert: false }), file => path.join(root, 'public', file),
       win => windows.push(win), () => {});
     let failAction = true, holdAction = false, release;
     ipcMain.handle('clamshield-alert-action', async (_event, payload) => {

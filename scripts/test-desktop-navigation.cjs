@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
     win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(root, 'public/desktop-preload.cjs') } });
     // Native Electron objects must remain in their original JavaScript realm.
     const context = new Function('mainWindow', 'currentApiPort', 'URL', 'require', 'windowDiagnostics', 'debugLoggingEnabled', 'getPublicAssetPath', 'writeMainLog', 'showWindowFailure',
-      `${functions}\nreturn { markWindowUiReady, verifyWindowStartup, attachWindowLogging };`)(
+      `const {englishText,t,localizeText}=require(require('node:path').resolve('public/desktop-localization.cjs'));\n${functions}\nreturn { markWindowUiReady, verifyWindowStartup, attachWindowLogging };`)(
       win, port, URL, require, new WeakMap(), true, file => path.join(root, 'public', file),
       (...args) => logs.push(args), (_win, failure) => failures.push(failure));
     let acknowledgements = 0;

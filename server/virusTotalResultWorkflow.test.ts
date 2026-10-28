@@ -1,7 +1,8 @@
+import { readBackendSource, serverTestContext } from "./testSupport";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { advanceVirusTotalResult, nextVirusTotalResultAttempt } from "./virusTotalResultWorkflow";
-import { describeVirusTotalResult } from "../shared/virusTotalState";
+import { advanceVirusTotalResult, nextVirusTotalResultAttempt } from "../addons/virustotal/server/virusTotalResultWorkflow";
+import { describeVirusTotalResult } from "../addons/virustotal/shared/state";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
@@ -131,11 +132,11 @@ test("rechecking a completed submission refreshes the hash report instead of rep
 });
 
 test("production verdicts require a report and completed engines, with no terminal unknown verdict", () => {
-  const source = fs.readFileSync("server.ts", "utf8");
+  const source = readBackendSource();
   const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
   const node = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "classifyVirusTotalRefinement");
   assert.ok(node);
-  const context = vm.createContext({});
+  const context = serverTestContext({});
   vm.runInContext(ts.transpile(node.getText(tree)), context);
   const classify = context.classifyVirusTotalRefinement;
   assert.equal(classify({ found: false }).status, "upload_required");

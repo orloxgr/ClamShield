@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { VirusTotalFileAnalysis } from "./virusTotalFileAnalysis";
+import { VirusTotalFileAnalysis } from "../addons/virustotal/server/virusTotalFileAnalysis";
 
 const response = (body: any, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
 async function fixture(t: any, size = 5, fetcher?: typeof fetch) {

@@ -8,6 +8,13 @@ body {
   @apply bg-slate-950 text-slate-200 antialiased h-screen overflow-hidden;
 }
 
+/* Language packs have character limits; wrapping also handles long single words. */
+html:not([lang="en"]) button {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  min-width: 0;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

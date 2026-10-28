@@ -1,9 +1,12 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
-import App from './App.tsx';
-import UiErrorBoundary from './components/UiErrorBoundary';
-import { reportUiFailure } from './lib/uiDiagnostics';
-import './index.css';
+import App from "./App";
+import UiErrorBoundary from "./components/UiErrorBoundary";
+import { reportUiFailure } from "./lib/uiDiagnostics";
+import "./index.css";
+import { initializeLanguage } from './lib/i18n';
+
+void initializeLanguage();
 
 window.addEventListener('error', event => {
   if (event.message) reportUiFailure({ stage: 'Running interface', code: 'JAVASCRIPT_ERROR', message: event.message, details: event.error?.stack });

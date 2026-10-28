@@ -1,3 +1,4 @@
+import { readBackendSource, serverTestContext } from "./testSupport";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -6,7 +7,7 @@ import { EventEmitter } from "node:events";
 import ts from "typescript";
 
 function fixture() {
-    const source = fs.readFileSync("server.ts", "utf8");
+    const source = readBackendSource();
     const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
     const declaration = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "runFreshclamWithConfig");
     assert.ok(declaration);
@@ -15,7 +16,7 @@ function fixture() {
     let ready!: () => void;
     const started = new Promise<void>(resolve => { ready = resolve; });
     const lines: string[] = [];
-    const context = vm.createContext({
+    const context = serverTestContext({
         freshclamRunTimeoutMs: 15, pathExists: async () => true, setTimeout, clearTimeout,
         spawn: (_exe: string, passedArgs: string[]) => { args = passedArgs; return child; }
     });

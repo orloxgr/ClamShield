@@ -1,3 +1,4 @@
+import {englishText, t, localizeText} from "../shared/localization/runtime";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -25,7 +26,7 @@ function pollingFixture() {
         webContents: { getURL: () => window.url },
         loadURL: async (url: string) => { navigations.push(url); window.url = url; }
     });
-    const context = vm.createContext({
+    const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
         Date: { now: () => now },
         showWindowFailure: (_window: any, error: any) => failures.push(error),
         isQuiting: false, apiHeaders: () => ({ "X-ClamShield-Session": "test-session" }),
@@ -98,7 +99,7 @@ test("the main window uses a dark background and paints its bundled local page b
             loadFile(file: string) { events.push(file); return fileLoaded; }
             isDestroyed() { return false; }
         }
-        const context = vm.createContext({
+        const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
             BrowserWindow: Window, path, __dirname: "/app", mainWindow: null,
             attachWindowLogging: () => {}, getPublicAssetPath: (file: string) => `/app/public/${file}`,
             waitForWindowBackend: () => events.push("backend-probe"), console
@@ -127,7 +128,7 @@ test("the actual ready handler waits for the startup paint before loading backen
     let paint!: () => void;
     const painted = new Promise<void>(resolve => { paint = resolve; });
     const events: string[] = [];
-    const context = vm.createContext({
+    const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
         gotSingleInstanceLock: true, getFreePort: async () => 1234, currentApiPort: null, readAppSettings: () => ({}),
         process: { argv: ["ClamShield.exe", "--minimized"] }, app: { getVersion: () => "test" }, debugLoggingEnabled: false,
         writeMainLog: () => {}, console: { log: () => {} }, setApiSessionCookie: async () => {}, createTray: () => {},

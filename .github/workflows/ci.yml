@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build trusted localization runtimes
+        run: npm run build:localization
+
+      - name: Language validation and security tests
+        run: npm run languages:check && node --import tsx --test server/localization.test.ts
+
       - name: TypeScript check
         run: npm run lint
 
@@ -54,6 +60,9 @@ jobs:
 
       - name: VirusTotal queue interface test
         run: npm run test:virustotal-ui
+
+      - name: Localization interface tests
+        run: npm run test:localization-ui
 
       - name: Full dependency security gate
         run: npm run audit:security

@@ -1,3 +1,4 @@
+import {englishText, t, localizeText} from "../shared/localization/runtime";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -72,7 +73,7 @@ function loggingFixture() {
     }),
     isDestroyed: () => false,
   });
-  const context = vm.createContext({
+  const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
     mainWindow: win,
     currentApiPort: 1234,
     debugLoggingEnabled: false,
@@ -211,7 +212,7 @@ test("failure page display stops pending retries, logs once and preserves a read
       urls.push(url);
     },
   };
-  const context = vm.createContext({
+  const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
     isQuiting: false,
     windowDiagnostics: records,
     app: { getVersion: () => "test" },
@@ -245,7 +246,7 @@ test("the preload captures missing scripts before React and does not recurse on 
   const run = (protocol: string) => {
     const events: Record<string, any> = {},
       calls: any[] = [];
-    const context = vm.createContext({
+    const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
       location: { protocol },
       window: {
         addEventListener: (name: string, handler: any) => {
@@ -286,7 +287,7 @@ test("desktop diagnostics IPC rejects other frames and unsafe external protocols
       getURL: () => "http://127.0.0.1:1234/exceptions",
     };
   const win = { isDestroyed: () => false, webContents: sender };
-  const context = vm.createContext({
+  const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
     URL,
     require,
     mainWindow: win,
@@ -338,7 +339,7 @@ test("copy diagnostics waits for the asynchronous Electron clipboard and reports
   let release!: () => void;
   const pending = new Promise<void>(resolve => release = resolve);
   const clipboard = { writeText: async (_text: string) => pending };
-  const context = vm.createContext({
+  const context = vm.createContext({ englishText, t, localizeText, getDesktopLanguage: () => {},
     URL, require, mainWindow: win, currentApiPort: 1234, windowDiagnostics: diagnostics,
     getPublicAssetPath: () => "/app/public/startup.html", clipboard,
     ipcMain: { handle: (name: string, callback: any) => handlers[name] = callback }

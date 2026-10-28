@@ -3,7 +3,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
-import { VirusTotalScanQueue } from "./virusTotalScanQueue";
+import { VirusTotalScanQueue } from "../addons/virustotal/server/virusTotalScanQueue";
 
 const record = (name: string) => ({ filePath: path.resolve(name), size: 10, mtimeMs: 1 });
 const report = (hash: string, malicious = 0) => ({ hash, found: true, stats: { malicious, suspicious: 0 } });

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { VirusTotalScanQueue } from "./virusTotalScanQueue";
-import { describeQueueItem, getVirusTotalQueuePage } from "./virusTotalQueueView";
-import { describeVirusTotalResult } from "../shared/virusTotalState";
+import { VirusTotalScanQueue } from "../addons/virustotal/server/virusTotalScanQueue";
+import { describeQueueItem, getVirusTotalQueuePage } from "../addons/virustotal/server/virusTotalQueueView";
+import { describeVirusTotalResult } from "../addons/virustotal/shared/state";
 
 const settings = { virusTotalAutoRefineEnabled: true, virusTotalShieldBackgroundCheckEnabled: true };
 const runtime = { enabled: true, configured: true, now: 100 };

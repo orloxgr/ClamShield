@@ -18,18 +18,9 @@ ClamShield can open external provider websites when the user asks for a second o
 
 ## Backend Structure
 
-Most backend logic currently lives in `server.ts`. This is intentional for the public beta while behavior is still moving quickly, but it is not the desired long-term shape.
+The backend is organized into feature modules matching the sidebar, shared engine and bundled addon services, infrastructure, scan policies and Windows integration. The small `server.ts` entry point calls `server/bootstrap.ts` to compose authenticated routes and workers. See [the architecture and localization boundary](docs/modules-and-localization.md).
 
-The planned split is:
-
-- update/install services for ClamAV, YARA, SaneSecurity, and app updates
-- scan orchestration and job logging
-- settings validation and persistence
-- quarantine/results/history storage
-- Windows integration helpers
-- API route registration
-
-Until that split happens, security-sensitive changes should be reviewed carefully because a large single file makes audit boundaries harder to see.
+External language files are bounded UTF-8 JSON data. They cannot redefine trusted English strings or limits, add executable modules, run expressions, supply commands or load referenced files. Translations render as escaped text, with English fallback for missing or invalid data. The same validation protects the UI and native windows.
 
 ## CI and Tests
 

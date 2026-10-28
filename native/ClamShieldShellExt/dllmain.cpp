@@ -119,6 +119,26 @@ static const wchar_t* ActionId(CommandAction action) {
     }
 }
 
+// Read only fixed label files, with a byte limit and strict UTF-8 decoding.
+// No language JSON is parsed or executed by Explorer.
+static std::wstring LocalizedActionTitle(CommandAction action) {
+    if (action == CommandAction::Root) return ActionTitle(action);
+    const std::wstring relative = std::wstring(L"language-labels\\") + ActionId(action) + L".txt";
+    HANDLE file = CreateFileW(ProgramDataPath(relative.c_str()).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return ActionTitle(action);
+    LARGE_INTEGER size = {};
+    char bytes[1025] = {}; DWORD read = 0;
+    const bool valid = GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= 1024 && ReadFile(file, bytes, 1025, &read, nullptr) && read == size.QuadPart;
+    CloseHandle(file);
+    if (!valid) return ActionTitle(action);
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, read, nullptr, 0);
+    if (length <= 0 || length > 256) return ActionTitle(action);
+    std::wstring text(length, L'\0');
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, read, &text[0], length)) return ActionTitle(action);
+    for (wchar_t ch : text) if (ch < 0x20 || ch == 0x7f || (ch >= 0x202a && ch <= 0x202e) || (ch >= 0x2066 && ch <= 0x2069)) return ActionTitle(action);
+    return text;
+}
+
 static std::wstring JsonEscape(const std::wstring& value) {
     std::wstring result;
     result.reserve(value.size() + 8);
@@ -311,7 +331,7 @@ public:
 
     IFACEMETHODIMP GetTitle(IShellItemArray*, LPWSTR* ppszName) override {
         if (!ppszName) return E_POINTER;
-        *ppszName = AllocShellString(ActionTitle(action_));
+        *ppszName = AllocShellString(LocalizedActionTitle(action_).c_str());
         return *ppszName ? S_OK : E_OUTOFMEMORY;
     }
 

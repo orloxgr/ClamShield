@@ -1,3 +1,4 @@
+import { readBackendSource, serverTestContext } from "./testSupport";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -5,7 +6,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
-import { PendingThreats } from "./pendingThreats";
+import { PendingThreats } from "../modules/shield/server/pendingThreats";
 const require = createRequire(import.meta.url);
 const { notificationLayout } = require("../public/notification-layout.cjs");
 const fingerprint = { size: 308, mtimeMs: 100 };
@@ -94,7 +95,7 @@ test("native notification controller selects the active monitor, reflows after c
         getCursorScreenPoint: () => ({ x: -400, y: 400 }),
         getDisplayNearestPoint: () => secondary
     });
-    const context = vm.createContext({ require: () => ({ screen }), notificationWindows: new Map(), notificationScreenListeners: false, notificationLayout });
+    const context = serverTestContext({ require: () => ({ screen }), notificationWindows: new Map(), notificationScreenListeners: false, notificationLayout });
     vm.runInContext(code, context);
     function window() {
         let bounds: any = { width: 460, height: 240 }, visible = false;
@@ -119,7 +120,7 @@ test("native notification controller selects the active monitor, reflows after c
 
 // Exercise the production action route without starting scanners or touching user data.
 function actionFixture() {
-    const source = fs.readFileSync("server.ts", "utf8");
+    const source = readBackendSource();
     const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
     let route = "";
     function visit(node: ts.Node) {
@@ -131,7 +132,7 @@ function actionFixture() {
     const store = new PendingThreats(); store.register(clam, fingerprint); store.register(vt, fingerprint);
     const saved: any[] = [], events: any[] = [], quarantines: any[] = [];
     let handler: any, error: any, block: Promise<void> | null = null;
-    const context = vm.createContext({
+    const context = serverTestContext({
         app: { post: (_path: string, callback: any) => handler = callback },
         pendingThreatStore: store, pendingThreats: store.items, pendingThreatActions: new Map(),
         settings: { quarantineDir: "isolated", yaraRuleset: "core" },

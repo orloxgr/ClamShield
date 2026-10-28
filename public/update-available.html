@@ -117,7 +117,16 @@
       background: #0891b2;
       border-color: #22d3ee;
     }
+  /* Long translations wrap; actions remain reachable in a small notification. */
+    body { overflow-y: auto; overflow-x: hidden; }
+    .wrap { min-height: 100%; height: auto; }
+    .actions { flex-wrap: wrap; }
+    button { max-width: 100%; overflow-wrap: anywhere; }
+    .header > div { min-width: 0; }
+    h1, .sub, .details { overflow-wrap: anywhere; }
   </style>
+<script src="localization-browser.js"></script>
+<script src="localize-page.js"></script>
 </head>
 <body>
   <main class="wrap">
@@ -142,79 +151,85 @@
   </main>
 
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const port = params.get("port") || window.location.port;
-    const label = params.get("label") || "Update";
-    const currentVersion = params.get("current") || "Unknown";
-    const latestVersion = params.get("latest") || "Unknown";
-    const installPath = params.get("installPath") || "";
-    const skipPath = params.get("skipPath") || "";
-    const remindPath = params.get("remindPath") || "";
-    const mode = params.get("mode") || "available";
-
-    if (mode === "failed") {
-      document.getElementById("title").textContent = `${label} update check failed`;
-      document.getElementById("subtitle").textContent = "Check Updates";
-      document.getElementById("message").textContent = `Could not check ${label} updates.`;
-      document.getElementById("current").textContent = currentVersion;
-      document.getElementById("install").textContent = "Open Updates";
-      document.getElementById("skip").style.display = "none";
-      document.getElementById("remind").style.display = "none";
-    } else {
-      document.getElementById("title").textContent = `${label} update available`;
-      document.getElementById("subtitle").textContent = latestVersion;
-      document.getElementById("message").textContent = `${label} ${latestVersion} is available.`;
-      document.getElementById("current").textContent = `Installed: ${currentVersion}`;
-    }
-
-    function disableButtons() {
-      document.querySelectorAll("button").forEach(button => button.disabled = true);
-    }
-
-    async function postJson(path, body = {}) {
-      const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+const params = new URLSearchParams(window.location.search);
+const port = params.get("port") || window.location.port;
+const label = params.get("label") || "Update";
+const currentVersion = params.get("current") || "Unknown";
+const latestVersion = params.get("latest") || "Unknown";
+const installPath = params.get("installPath") || "";
+const skipPath = params.get("skipPath") || "";
+const remindPath = params.get("remindPath") || "";
+const mode = params.get("mode") || "available";
+if (mode === "failed") {
+    document.getElementById("title").textContent = `${label} update check failed`;
+    document.getElementById("subtitle").textContent = englishText("desktop.update_available.html.check_updates");
+    document.getElementById("message").textContent = englishText("desktop.update_available.html.could_not_check_updates", {
+        label: String(label)
+    });
+    document.getElementById("current").textContent = currentVersion;
+    document.getElementById("install").textContent = englishText("desktop.update_available.html.open_updates");
+    document.getElementById("skip").style.display = "none";
+    document.getElementById("remind").style.display = "none";
+}
+else {
+    document.getElementById("title").textContent = `${label} update available`;
+    document.getElementById("subtitle").textContent = latestVersion;
+    document.getElementById("message").textContent = englishText("desktop.update_available.html.is_available", {
+        label: String(label),
+        latestVersion: String(latestVersion)
+    });
+    document.getElementById("current").textContent = englishText("updates.installed", {
+        currentVersion: String(currentVersion)
+    });
+}
+function disableButtons() {
+    document.querySelectorAll("button").forEach(button => button.disabled = true);
+}
+async function postJson(path, body = {}) {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
-      });
-      if (!response.ok) {
+    });
+    if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || "Action failed");
-      }
-      return response.json().catch(() => ({}));
+        throw new Error(data.error || englishText("desktop.alert.html.action_failed"));
     }
-
-    document.getElementById("install").addEventListener("click", async () => {
-      disableButtons();
-      if (mode === "failed") {
+    return response.json().catch(() => ({}));
+}
+document.getElementById("install").addEventListener("click", async () => {
+    disableButtons();
+    if (mode === "failed") {
         window.location.href = `http://127.0.0.1:${port}/updates`;
         return;
-      }
-      try {
+    }
+    try {
         await postJson(installPath);
         window.location.href = `http://127.0.0.1:${port}/updates`;
-      } catch {
+    }
+    catch {
         window.close();
-      }
-    });
-
-    document.getElementById("skip").addEventListener("click", async () => {
-      disableButtons();
-      try {
+    }
+});
+document.getElementById("skip").addEventListener("click", async () => {
+    disableButtons();
+    try {
         await postJson(skipPath, { version: latestVersion });
-      } finally {
+    }
+    finally {
         window.close();
-      }
-    });
-
-    document.getElementById("remind").addEventListener("click", async () => {
-      disableButtons();
-      try {
+    }
+});
+document.getElementById("remind").addEventListener("click", async () => {
+    disableButtons();
+    try {
         await postJson(remindPath, { remindAfter: Date.now() + 24 * 60 * 60 * 1000 });
-      } finally {
+    }
+    finally {
         window.close();
-      }
-    });
-  </script>
+    }
+});
+
+</script>
 </body>
 </html>

@@ -1,9 +1,10 @@
+import { readBackendSource, serverTestContext } from "./testSupport";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
-import { estimateVirusTotalScan, virusTotalLimitWarningsEnabled } from "./virusTotalLimitWarning";
+import { estimateVirusTotalScan, virusTotalLimitWarningsEnabled } from "../addons/virustotal/server/virusTotalLimitWarning";
 
 const now = Date.UTC(2026, 9, 15, 12);
 const usage = {
@@ -19,7 +20,7 @@ test("missing, empty and checked warning values are on; explicit unchecked is of
 });
 
 test("the actual settings route saves only this preference and preserves existing installation choices", async () => {
-    const source = fs.readFileSync("server.ts", "utf8");
+    const source = readBackendSource();
     const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
     let normalizer = "", handler = "";
     const visit = (node: ts.Node) => {
@@ -32,7 +33,7 @@ test("the actual settings route saves only this preference and preserves existin
     for (const value of [undefined, null, "", true, false]) {
         const original = { startMinimized: false, startOnBoot: true, defenderCompatibilityExclusionsEnabled: false, virusTotalCloudEnabled: true };
         let persisted: any = {}, scheduled = 0;
-        const context = vm.createContext({
+        const context = serverTestContext({
             settings: { ...original }, virusTotalLimitWarningsEnabled,
             asRecord: (value: any) => value || {}, readOnlySettingKeys: new Set(),
             userWritableSettingKeys: new Set(["virusTotalShowLimitWarnings"]), pathSettingKeys: new Set(), pathListSettingKeys: new Set(),

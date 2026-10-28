@@ -1,0 +1,680 @@
+import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Database, DownloadCloud, FileWarning, KeyRound, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
+import { Link } from "react-router-dom";
+import PageHeader from "../../../src/components/PageHeader";
+import { formatSystemDateTime } from "../../../src/lib/dateFormat";
+const MAX_TERMINAL_LINES = 800;
+type DetailsPanel = "clamav" | "securiteinfo" | "sanesecurity" | "yara" | "clamavEngine" | "yaraEngine" | "app";
+type EngineUpdateKind = "clamavEngine" | "yaraEngine";
+type UpdateCheckState = "idle" | "checking" | "available" | "none" | "running" | "done";
+function appendOutput(previous: string[], next: string[]) {
+    return [...previous, ...next].slice(-MAX_TERMINAL_LINES);
+}
+export default function Updates() {
+    useLanguage();
+    const [updateState, setUpdateState] = useState<"idle" | "running" | "done">("idle");
+    const [output, setOutput] = useState<string[]>([]);
+    const [jobId, setJobId] = useState<string | null>(null);
+    const [isSimulated, setIsSimulated] = useState(false);
+    const [signatureTarget, setSignatureTarget] = useState<"clamav" | "securiteinfo">("clamav");
+    const [saneUpdateState, setSaneUpdateState] = useState<"idle" | "running" | "done">("idle");
+    const [saneOutput, setSaneOutput] = useState<string[]>([]);
+    const [saneJobId, setSaneJobId] = useState<string | null>(null);
+    const [yaraUpdateState, setYaraUpdateState] = useState<"idle" | "running" | "done">("idle");
+    const [yaraOutput, setYaraOutput] = useState<string[]>([]);
+    const [yaraJobId, setYaraJobId] = useState<string | null>(null);
+    const [clamavEngineState, setClamavEngineState] = useState<UpdateCheckState>("idle");
+    const [clamavEngineInfo, setClamavEngineInfo] = useState<any>(null);
+    const [clamavEngineOutput, setClamavEngineOutput] = useState<string[]>([]);
+    const [clamavEngineJobId, setClamavEngineJobId] = useState<string | null>(null);
+    const [yaraEngineState, setYaraEngineState] = useState<UpdateCheckState>("idle");
+    const [yaraEngineInfo, setYaraEngineInfo] = useState<any>(null);
+    const [yaraEngineOutput, setYaraEngineOutput] = useState<string[]>([]);
+    const [yaraEngineJobId, setYaraEngineJobId] = useState<string | null>(null);
+    const [appUpdateState, setAppUpdateState] = useState<UpdateCheckState>("idle");
+    const [appUpdateInfo, setAppUpdateInfo] = useState<any>(null);
+    const [appOutput, setAppOutput] = useState<string[]>([]);
+    const [appJobId, setAppJobId] = useState<string | null>(null);
+    const [status, setStatus] = useState<any>(null);
+    const [openPanel, setOpenPanel] = useState<DetailsPanel | null>(null);
+    const updateEventSourceRef = useRef<EventSource | null>(null);
+    const saneEventSourceRef = useRef<EventSource | null>(null);
+    const yaraEventSourceRef = useRef<EventSource | null>(null);
+    const clamavEngineEventSourceRef = useRef<EventSource | null>(null);
+    const yaraEngineEventSourceRef = useRef<EventSource | null>(null);
+    const appEventSourceRef = useRef<EventSource | null>(null);
+    const closeJobStream = (ref: {
+        current: EventSource | null;
+    }) => {
+        if (ref.current) {
+            ref.current.close();
+            ref.current = null;
+        }
+    };
+    const refreshStatus = async () => {
+        try {
+            const res = await fetch("/api/status");
+            const data = await res.json();
+            setStatus(data);
+        }
+        catch {
+            setStatus(null);
+        }
+    };
+    useEffect(() => {
+        refreshStatus();
+        const interval = window.setInterval(refreshStatus, 3000);
+        return () => window.clearInterval(interval);
+    }, []);
+    const saveUpdateSettings = async (patch: any) => {
+        const nextSettings = { ...(status?.settings || {}), ...patch };
+        setStatus((current: any) => current ? { ...current, settings: nextSettings } : current);
+        await fetch("/api/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch)
+        });
+        refreshStatus();
+    };
+    const updateNumberSetting = (key: string, rawValue: string, fallback: number, min: number, max: number) => {
+        const parsed = Number(rawValue);
+        const value = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+        saveUpdateSettings({ [key]: value });
+    };
+    const runUpdate = async (target: "clamav" | "securiteinfo" = "clamav") => {
+        closeJobStream(updateEventSourceRef);
+        setSignatureTarget(target);
+        setUpdateState("running");
+        setOutput([target === "securiteinfo" ? "Triggering SecuriteInfo update..." : "Triggering ClamAV FreshClam update..."]);
+        try {
+            const res = await fetch("/api/update", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ target })
+            });
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || "Failed to start update.");
+            setJobId(data.jobId);
+            setIsSimulated(!!data.simulated);
+            if (data.simulated) {
+                setOutput(prev => appendOutput(prev, ["Running in simulation mode...", "Checking for database updates..."]));
+                setTimeout(() => {
+                    setOutput(prev => appendOutput(prev, ["Database updated successfully."]));
+                    setUpdateState("done");
+                    setJobId(null);
+                }, 2500);
+            }
+        }
+        catch (e: any) {
+            setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            setUpdateState("done");
+            setJobId(null);
+        }
+    };
+    const runYaraUpdate = async () => {
+        closeJobStream(yaraEventSourceRef);
+        setYaraUpdateState("running");
+        setYaraOutput(["Checking YARA engine, then updating YARA Forge rules..."]);
+        try {
+            const res = await fetch("/api/update-yara", { method: "POST" });
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || "Failed to start YARA update.");
+            setYaraJobId(data.jobId);
+        }
+        catch (e: any) {
+            setYaraOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            setYaraUpdateState("done");
+            setYaraJobId(null);
+        }
+    };
+    const runSaneUpdate = async () => {
+        closeJobStream(saneEventSourceRef);
+        setSaneUpdateState("running");
+        setSaneOutput(["Starting SaneSecurity signature update..."]);
+        try {
+            const res = await fetch("/api/update-sanesecurity", { method: "POST" });
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || "Failed to start the SaneSecurity update.");
+            setSaneJobId(data.jobId);
+        }
+        catch (e: any) {
+            setSaneOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            setSaneUpdateState("done");
+            setSaneJobId(null);
+        }
+    };
+    const checkAppUpdate = async () => {
+        setAppUpdateState("checking");
+        setAppOutput(["Checking GitHub releases for a newer ClamShield version..."]);
+        try {
+            const res = await fetch("/api/app-update");
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || "Failed to check ClamShield updates.");
+            setAppUpdateInfo(data);
+            setAppOutput(prev => appendOutput(prev, [
+                `Installed: ${data.currentVersion}`,
+                `Latest: ${data.latestVersion}`,
+                data.newerVersionAvailable
+                    ? data.skipped
+                        ? `Skipped ClamShield ${data.latestVersion}. You can still install it manually.`
+                        : `Update available: ${data.assetName || data.releaseUrl}`
+                    : "ClamShield is up to date."
+            ]));
+            setAppUpdateState(data.newerVersionAvailable ? "available" : "none");
+        }
+        catch (e: any) {
+            setAppOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            setAppUpdateState("done");
+        }
+    };
+    const installAppUpdate = async () => {
+        closeJobStream(appEventSourceRef);
+        setAppUpdateState("running");
+        setAppOutput(prev => appendOutput(prev, ["Downloading and launching the ClamShield installer..."]));
+        try {
+            const res = await fetch("/api/app-update/install", { method: "POST" });
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || "Failed to start ClamShield update.");
+            setAppJobId(data.jobId);
+        }
+        catch (e: any) {
+            setAppOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            setAppUpdateState("done");
+            setAppJobId(null);
+        }
+    };
+    const skipAppVersion = async () => {
+        if (!appUpdateInfo?.latestVersion)
+            return;
+        await fetch("/api/app-update/skip", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version: appUpdateInfo.latestVersion })
+        });
+        setAppOutput(prev => appendOutput(prev, [`Skipped ClamShield ${appUpdateInfo.latestVersion}.`]));
+        setAppUpdateState("available");
+    };
+    const remindAppTomorrow = async () => {
+        if (!appUpdateInfo?.latestVersion)
+            return;
+        await fetch("/api/app-update/remind", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ remindAfter: Date.now() + 24 * 60 * 60 * 1000 })
+        });
+        setAppOutput(prev => appendOutput(prev, [`Will remind you tomorrow about ClamShield ${appUpdateInfo.latestVersion}.`]));
+        setAppUpdateState("available");
+    };
+    const engineConfig = {
+        clamavEngine: {
+            label: "ClamAV Engine",
+            checkPath: "/api/clamav-engine-update",
+            installPath: "/api/clamav-engine-update/install",
+            skipPath: "/api/clamav-engine-update/skip",
+            remindPath: "/api/clamav-engine-update/remind",
+            setState: setClamavEngineState,
+            setInfo: setClamavEngineInfo,
+            setOutput: setClamavEngineOutput,
+            setJobId: setClamavEngineJobId,
+            ref: clamavEngineEventSourceRef
+        },
+        yaraEngine: {
+            label: "YARA Engine",
+            checkPath: "/api/yara-engine-update",
+            installPath: "/api/yara-engine-update/install",
+            skipPath: "/api/yara-engine-update/skip",
+            remindPath: "/api/yara-engine-update/remind",
+            setState: setYaraEngineState,
+            setInfo: setYaraEngineInfo,
+            setOutput: setYaraEngineOutput,
+            setJobId: setYaraEngineJobId,
+            ref: yaraEngineEventSourceRef
+        }
+    };
+    const checkEngineUpdate = async (kind: EngineUpdateKind) => {
+        const config = engineConfig[kind];
+        config.setState("checking");
+        config.setOutput([`Checking ${config.label} releases...`]);
+        try {
+            const res = await fetch(config.checkPath);
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || `Failed to check ${config.label} updates.`);
+            config.setInfo(data);
+            config.setOutput(prev => appendOutput(prev, [
+                `Installed: ${data.currentVersion || data.currentLabel || "Unknown"}`,
+                `Latest: ${data.latestVersion || "Unknown"}`,
+                data.newerVersionAvailable
+                    ? data.skipped
+                        ? `Skipped ${config.label} ${data.latestVersion}. You can still install it manually.`
+                        : `Update available: ${data.assetName || data.releaseUrl}`
+                    : `${config.label} is up to date.`
+            ]));
+            config.setState(data.newerVersionAvailable ? "available" : "none");
+        }
+        catch (e: any) {
+            config.setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            config.setState("done");
+        }
+    };
+    const installEngineUpdate = async (kind: EngineUpdateKind) => {
+        const config = engineConfig[kind];
+        closeJobStream(config.ref);
+        config.setState("running");
+        config.setOutput(prev => appendOutput(prev, [`Installing ${config.label} update...`]));
+        try {
+            const res = await fetch(config.installPath, { method: "POST" });
+            const data = await res.json();
+            if (!res.ok)
+                throw new Error(data.error || `Failed to start ${config.label} update.`);
+            config.setJobId(data.jobId);
+        }
+        catch (e: any) {
+            config.setOutput(prev => appendOutput(prev, [`Error: ${e.message}`]));
+            config.setState("done");
+            config.setJobId(null);
+        }
+    };
+    const skipEngineVersion = async (kind: EngineUpdateKind, info: any) => {
+        if (!info?.latestVersion)
+            return;
+        const config = engineConfig[kind];
+        await fetch(config.skipPath, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version: info.latestVersion })
+        });
+        config.setOutput(prev => appendOutput(prev, [`Skipped ${config.label} ${info.latestVersion}.`]));
+        config.setState("none");
+    };
+    const remindEngineTomorrow = async (kind: EngineUpdateKind, info: any) => {
+        if (!info?.latestVersion)
+            return;
+        const config = engineConfig[kind];
+        await fetch(config.remindPath, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ remindAfter: Date.now() + 24 * 60 * 60 * 1000 })
+        });
+        config.setOutput(prev => appendOutput(prev, [`Will remind you tomorrow about ${config.label} ${info.latestVersion}.`]));
+        config.setState("none");
+    };
+    const bindJobStream = (active: boolean, activeJobId: string | null, ref: {
+        current: EventSource | null;
+    }, onLogs: (logs: string[]) => void, onDone: () => void, label: string) => {
+        if (!active || !activeJobId)
+            return undefined;
+        const source = new EventSource(`/api/scan/${encodeURIComponent(activeJobId)}/events`);
+        ref.current = source;
+        const handleJobEvent = (event: MessageEvent) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.logs?.length)
+                    onLogs(data.logs);
+                if (data.status === "done" || data.status === "missing") {
+                    onDone();
+                    refreshStatus();
+                    closeJobStream(ref);
+                }
+            }
+            catch (e) {
+                console.error(`Failed to process ${label} event:`, e);
+            }
+        };
+        source.addEventListener("job", handleJobEvent);
+        source.onerror = () => console.error(`${label} event stream disconnected; waiting for reconnect.`);
+        return () => closeJobStream(ref);
+    };
+    useEffect(() => bindJobStream(updateState === "running" && !isSimulated, jobId, updateEventSourceRef, logs => setOutput(prev => appendOutput(prev, logs)), () => { setUpdateState("done"); setJobId(null); }, "FreshClam"), [updateState, jobId, isSimulated]);
+    useEffect(() => bindJobStream(saneUpdateState === "running", saneJobId, saneEventSourceRef, logs => setSaneOutput(prev => appendOutput(prev, logs)), () => { setSaneUpdateState("done"); setSaneJobId(null); }, "SaneSecurity"), [saneUpdateState, saneJobId]);
+    useEffect(() => bindJobStream(yaraUpdateState === "running", yaraJobId, yaraEventSourceRef, logs => setYaraOutput(prev => appendOutput(prev, logs)), () => { setYaraUpdateState("done"); setYaraJobId(null); }, "YARA"), [yaraUpdateState, yaraJobId]);
+    useEffect(() => bindJobStream(clamavEngineState === "running", clamavEngineJobId, clamavEngineEventSourceRef, logs => setClamavEngineOutput(prev => appendOutput(prev, logs)), () => { setClamavEngineState("done"); setClamavEngineJobId(null); }, "ClamAV Engine update"), [clamavEngineState, clamavEngineJobId]);
+    useEffect(() => bindJobStream(yaraEngineState === "running", yaraEngineJobId, yaraEngineEventSourceRef, logs => setYaraEngineOutput(prev => appendOutput(prev, logs)), () => { setYaraEngineState("done"); setYaraEngineJobId(null); }, "YARA Engine update"), [yaraEngineState, yaraEngineJobId]);
+    useEffect(() => bindJobStream(appUpdateState === "running", appJobId, appEventSourceRef, logs => setAppOutput(prev => appendOutput(prev, logs)), () => { setAppUpdateState("done"); setAppJobId(null); }, "ClamShield update"), [appUpdateState, appJobId]);
+    const updateSettings = status?.settings || {};
+    const signatureUpdateActive = updateState === "running" || status?.isSignatureUpdateRunning;
+    const saneUpdateActive = saneUpdateState === "running" || status?.isSaneSecurityUpdateRunning;
+    const yaraUpdateActive = yaraUpdateState === "running";
+    const clamavEngineActive = clamavEngineState === "checking" || clamavEngineState === "running";
+    const yaraEngineActive = yaraEngineState === "checking" || yaraEngineState === "running";
+    const appUpdateActive = appUpdateState === "checking" || appUpdateState === "running";
+    const signatureUpdateFailed = updateState === "done" && output.some(line => /error|failed/i.test(line));
+    const saneUpdateFailed = saneUpdateState === "done" && saneOutput.some(line => /error|failed/i.test(line));
+    const yaraUpdateFailed = yaraUpdateState === "done" && yaraOutput.some(line => /error|failed/i.test(line));
+    const clamavEngineFailed = clamavEngineState === "done" && clamavEngineOutput.some(line => /error|failed/i.test(line));
+    const yaraEngineFailed = yaraEngineState === "done" && yaraEngineOutput.some(line => /error|failed/i.test(line));
+    const appUpdateFailed = appUpdateState === "done" && appOutput.some(line => /error|failed/i.test(line));
+    const formatExact = (value?: string | null) => formatSystemDateTime(value);
+    const formatAge = (value?: string | null) => {
+        if (!value)
+            return "not updated yet";
+        const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+        if (seconds < 60)
+            return "just now";
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60)
+            return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 48)
+            return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+        const days = Math.floor(hours / 24);
+        return `${days} day${days === 1 ? "" : "s"} ago`;
+    };
+    const statusLine = (value?: string | null, result?: string) => `${formatExact(value)} (${formatAge(value)})${result ? ` - ${result}` : ""}`;
+    const progressValue = (state: "idle" | "running" | "done", active: boolean, lines: string[], donePercent = 100) => {
+        if (state === "done")
+            return donePercent;
+        if (!active)
+            return 0;
+        return Math.min(94, Math.max(12, 20 + lines.length * 4));
+    };
+    const signatureProgress = progressValue(updateState, signatureUpdateActive, output);
+    const saneProgress = progressValue(saneUpdateState, saneUpdateActive, saneOutput);
+    const yaraProgress = progressValue(yaraUpdateState, yaraUpdateActive, yaraOutput);
+    const clamavEngineProgress = clamavEngineActive ? Math.min(94, Math.max(12, 20 + clamavEngineOutput.length * 4)) : clamavEngineState !== "idle" ? 100 : 0;
+    const yaraEngineProgress = yaraEngineActive ? Math.min(94, Math.max(12, 20 + yaraEngineOutput.length * 4)) : yaraEngineState !== "idle" ? 100 : 0;
+    const appProgress = appUpdateActive
+        ? Math.min(94, Math.max(12, 20 + appOutput.length * 4))
+        : appUpdateState !== "idle" ? 100 : 0;
+    const signatureOutputTitle = signatureTarget === "securiteinfo" ? "SecuriteInfo Output" : "FreshClam Output";
+    const signatureProgressLabel = output.at(-1) || (signatureTarget === "securiteinfo" ? "SecuriteInfo is checking signature sources..." : "FreshClam is checking signature sources...");
+    const cardHeaderClass = "update-card-header p-8 grid grid-cols-1 gap-6 lg:items-center";
+    const cardActionsClass = "update-card-actions flex flex-wrap items-center gap-2 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap";
+    return (<div className="px-8 max-w-6xl mx-auto pb-20 flex flex-col gap-8">
+      <PageHeader title={t("updates.updates")} description={t("updates.update_signatures_and_rules_clamshield_and_scanning_engines")}/>
+
+      <h2 className="text-xl font-semibold text-white">{t("updates.signatures_amp_rules")}</h2>
+
+      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-start gap-4 min-w-0">
+            <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-full shrink-0"><Database className="w-8 h-8"/></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">{t("updates.clamav_official_signatures")}</h3>
+              <p className="text-slate-400 text-sm mt-1">{localizeText(statusLine(status?.stats?.lastClamAVUpdate, status?.stats?.lastClamAVUpdateResult))}</p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            <button onClick={() => setOpenPanel(openPanel === "clamav" ? null : "clamav")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "clamav" ? "rotate-180" : ""}`}/>
+            </button>
+            <button onClick={() => runUpdate("clamav")} disabled={signatureUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${signatureUpdateActive ? "animate-spin" : ""}`}/>
+              {localizeText(signatureUpdateActive ? "Updating..." : "Update ClamAV")}
+            </button>
+          </div>
+        </div>
+        {localizeText(openPanel === "clamav" && (<div className="px-8 pb-8 pt-2 border-t border-slate-800 grid sm:grid-cols-2 gap-4">
+            <div className="flex items-center justify-between gap-4 sm:col-span-2">
+              <span className="text-sm text-slate-300">{t("updates.automatic_clamav_updates")}</span>
+              <input type="checkbox" checked={updateSettings.autoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ autoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"/>
+            </div>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span>
+              <input type="number" min={24} max={720} value={updateSettings.clamavUpdateIntervalHours || updateSettings.updateIntervalHours || 24} onChange={event => updateNumberSetting("clamavUpdateIntervalHours", event.target.value, 24, 24, 720)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/>
+            </label>
+          </div>))}
+        {localizeText(signatureTarget === "clamav" && (signatureUpdateActive || updateState === "done") && (<ProgressPanel title={signatureUpdateActive ? t("updates.updating_official_clamav_signatures") : signatureUpdateFailed ? t("updates.clamav_update_failed") : t("updates.clamav_update_complete")} progress={signatureProgress} failed={signatureUpdateFailed} active={signatureUpdateActive} label={signatureProgressLabel} barClass="bg-gradient-to-r from-emerald-500 to-cyan-400"/>))}
+        {localizeText(signatureTarget === "clamav" && (updateState === "running" || updateState === "done") && (<div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title={signatureOutputTitle} running={updateState === "running"} lines={output}/>
+          </div>))}
+      </section>
+
+      <section className="bg-slate-900 border border-cyan-500/20 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-start gap-4 min-w-0">
+            <div className="p-3 bg-cyan-500/10 text-cyan-400 rounded-full shrink-0"><Database className="w-8 h-8"/></div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold text-white text-lg">{t("updates.securiteinfo_signatures")}</h3>
+                <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[11px] border border-slate-700">{t("updates.third_party_source")}</span>
+              </div>
+              <p className="text-slate-400 text-sm mt-1">{localizeText(status?.securiteInfo?.connected ? `${status.securiteInfo.plan === "paid" ? "Paid" : "Basic"} - ${status.securiteInfo.installedCount || 0}/${status.securiteInfo.expectedCount || 0} databases - ${statusLine(status.securiteInfo.lastUpdated, status.securiteInfo.lastResult)}` : "Not installed")}</p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            <button onClick={() => setOpenPanel(openPanel === "securiteinfo" ? null : "securiteinfo")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "securiteinfo" ? "rotate-180" : ""}`}/>
+            </button>
+            {localizeText(status?.securiteInfo?.connected ? (<button onClick={() => runUpdate("securiteinfo")} disabled={signatureUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <RefreshCw className={`w-5 h-5 ${signatureUpdateActive ? "animate-spin" : ""}`}/>
+                {localizeText(signatureUpdateActive ? "Updating..." : "Update SecuriteInfo")}
+              </button>) : (<Link to="/" className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"><KeyRound className="w-4 h-4"/>{t("updates.configure_on_dashboard")}</Link>))}
+          </div>
+        </div>
+        {localizeText(openPanel === "securiteinfo" && (<div className="px-8 pb-8 pt-2 border-t border-cyan-500/20 space-y-4">
+            <label className="block max-w-xs">
+              <span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span>
+              <input type="number" min={1} max={24} value={updateSettings.securiteInfoUpdateIntervalHours || 1} onChange={event => updateNumberSetting("securiteInfoUpdateIntervalHours", event.target.value, 1, 1, 24)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/>
+            </label>
+            <div className={`flex items-start justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-4 ${updateSettings.securiteInfoPlan === "paid" ? "" : "opacity-60"}`}>
+              <div>
+                <span className="text-slate-200 font-medium flex items-center gap-2"><FileWarning className="w-4 h-4 text-amber-300"/>{t("updates.securiteinfo_pua_signatures")}</span>
+                <span className="text-slate-500 text-xs block mt-1">{t("updates.optional_database")}<code>securiteinfo-pua-app-and-vulnerabilities.ndb</code>{t("updates.pua_false_positive_note")}</span>
+                {localizeText(updateSettings.securiteInfoPlan !== "paid" && <span className="text-slate-500 text-xs block mt-1">{t("updates.available_for_paid_securiteinfo_plans")}</span>)}
+              </div>
+              <input type="checkbox" checked={updateSettings.securiteInfoPlan === "paid" && updateSettings.securiteInfoIncludePua === true} disabled={updateSettings.securiteInfoPlan !== "paid"} onChange={event => saveUpdateSettings({ securiteInfoIncludePua: event.target.checked })} className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"/>
+            </div>
+          </div>))}
+        {localizeText(signatureTarget === "securiteinfo" && (signatureUpdateActive || updateState === "done") && (<ProgressPanel title={signatureUpdateActive ? t("updates.updating_securiteinfo_signatures") : signatureUpdateFailed ? t("updates.securiteinfo_update_failed") : t("updates.securiteinfo_update_complete")} progress={signatureProgress} failed={signatureUpdateFailed} active={signatureUpdateActive} label={signatureProgressLabel} barClass="bg-gradient-to-r from-cyan-500 to-sky-400" borderClass="border-cyan-500/20"/>))}
+        {localizeText(signatureTarget === "securiteinfo" && (updateState === "running" || updateState === "done") && (<div className="px-8 pb-8 pt-4 border-t border-cyan-500/20">
+            <Terminal title={signatureOutputTitle} running={updateState === "running"} lines={output} accent="text-cyan-300/80"/>
+          </div>))}
+      </section>
+
+      <section className="bg-slate-900 border border-violet-500/20 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-start gap-4 min-w-0">
+            <div className="p-3 bg-violet-500/10 text-violet-400 rounded-full shrink-0"><Database className="w-8 h-8"/></div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold text-white text-lg">{t("updates.sanesecurity_signatures")}</h3>
+                <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[11px] border border-slate-700">{t("updates.signed_third_party_source")}</span>
+              </div>
+              <p className="text-slate-400 text-sm mt-1">{localizeText(status?.saneSecurity?.connected ? `${status.saneSecurity.profile === "complete" ? "Complete" : "Malware Protection"} - ${status.saneSecurity.installedCount || 0}/${status.saneSecurity.expectedCount || 0} databases - ${statusLine(status.saneSecurity.lastUpdated, status.saneSecurity.lastResult)}` : "Not installed")}</p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            <button onClick={() => setOpenPanel(openPanel === "sanesecurity" ? null : "sanesecurity")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "sanesecurity" ? "rotate-180" : ""}`}/>
+            </button>
+            {localizeText(status?.saneSecurity?.connected ? (<button onClick={runSaneUpdate} disabled={saneUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <RefreshCw className={`w-5 h-5 ${saneUpdateActive ? "animate-spin" : ""}`}/>
+                {localizeText(saneUpdateActive ? "Updating..." : "Update SaneSecurity")}
+              </button>) : (<Link to="/" className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors"><ShieldCheck className="w-4 h-4"/>{t("updates.configure_on_dashboard")}</Link>))}
+          </div>
+        </div>
+        {localizeText(openPanel === "sanesecurity" && (<div className="px-8 pb-8 pt-2 border-t border-violet-500/20 max-w-xs">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span>
+              <input type="number" min={1} max={24} value={updateSettings.saneSecurityUpdateIntervalHours || 1} onChange={event => updateNumberSetting("saneSecurityUpdateIntervalHours", event.target.value, 1, 1, 24)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/>
+            </label>
+          </div>))}
+        {localizeText((saneUpdateActive || saneUpdateState === "done") && (<ProgressPanel title={saneUpdateActive ? t("updates.downloading_and_verifying_sanesecurity_databases") : saneUpdateFailed ? t("updates.sanesecurity_update_failed") : t("updates.sanesecurity_update_complete")} progress={saneProgress} failed={saneUpdateFailed} active={saneUpdateActive} label={saneOutput.at(-1) || t("updates.sanesecurity_is_preparing_its_signed_database_update")} barClass="bg-gradient-to-r from-violet-500 to-fuchsia-400" borderClass="border-violet-500/20"/>))}
+        {localizeText((saneUpdateState === "running" || saneUpdateState === "done") && (<div className="px-8 pb-8 pt-4 border-t border-violet-500/20">
+            <Terminal title={t("updates.sanesecurity_output")} running={saneUpdateState === "running"} lines={saneOutput} accent="text-violet-300/80"/>
+          </div>))}
+      </section>
+
+      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full shrink-0"><ShieldCheck className="w-8 h-8"/></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">{t("updates.yara_forge_rules")}</h3>
+              <p className="text-slate-400 text-sm">{localizeText(status?.stats?.lastYaraUpdate ? `${statusLine(status.stats.lastYaraUpdate)} - ${status.stats.yaraRuleset} - ${status.stats.yaraRuleCount || 0} rules` : "Update required")}</p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            <button onClick={() => setOpenPanel(openPanel === "yara" ? null : "yara")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings_446695c")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yara" ? "rotate-180" : ""}`}/></button>
+            <button onClick={runYaraUpdate} disabled={yaraUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${yaraUpdateState === "running" ? "animate-spin" : ""}`}/>
+              {localizeText(yaraUpdateState === "running" ? "Updating..." : "Update YARA Rules")}
+            </button>
+          </div>
+        </div>
+        {localizeText(openPanel === "yara" && (<div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.auto_update_yara_rules")}</span><input type="checkbox" checked={updateSettings.yaraAutoUpdateEnabled !== false} onChange={event => saveUpdateSettings({ yaraAutoUpdateEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <label className="block"><span className="text-xs font-medium text-slate-400">{t("updates.ruleset")}</span><select value={updateSettings.yaraRuleset || "core"} onChange={event => saveUpdateSettings({ yaraRuleset: event.target.value })} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"><option value="core">{t("updates.core")}</option><option value="extended">{t("updates.extended")}</option><option value="full">{t("updates.full")}</option></select></label>
+              <label className="block"><span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span><input type="number" min={1} max={8760} value={updateSettings.yaraUpdateIntervalHours || 168} onChange={event => updateNumberSetting("yaraUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/></label>
+            </div>
+          </div>))}
+        {localizeText((yaraUpdateActive || yaraUpdateState === "done") && (<ProgressPanel title={yaraUpdateActive ? t("updates.updating_yara_forge_rules") : yaraUpdateFailed ? t("updates.yara_update_failed") : t("updates.yara_update_complete")} progress={yaraProgress} failed={yaraUpdateFailed} active={yaraUpdateActive} label={yaraOutput.at(-1) || t("updates.yara_forge_is_checking_rules")} barClass="bg-gradient-to-r from-indigo-500 to-emerald-400"/>))}
+        {localizeText((yaraUpdateState === "running" || yaraUpdateState === "done") && (<div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title={t("updates.yara_output")} running={yaraUpdateState === "running"} lines={yaraOutput}/>
+          </div>))}
+      </section>
+
+      <div className="mt-4 border-t border-slate-700 pt-8">
+        <h2 className="text-xl font-semibold text-white">{t("updates.apps_amp_engines")}</h2>
+      </div>
+
+      <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-emerald-500/10 rounded-full"><img src="/shield.svg" width={32} height={32} alt="" aria-hidden="true"/></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">{t("updates.clamshield_application")}</h3>
+              <p className="text-slate-400 text-sm">{t("updates.installed_b92fd7f")}{localizeText(status?.appVersion || "Unknown")}{localizeText(appUpdateInfo?.latestVersion ? ` - Latest: ${appUpdateInfo.latestVersion}` : "")}{t("updates.last_checked")}{localizeText(statusLine(status?.stats?.lastAppUpdateCheck))}
+              </p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            {localizeText(appUpdateState === "available" && <>
+              <button onClick={skipAppVersion} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.skip_version")}</button>
+              <button onClick={remindAppTomorrow} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.remind_tomorrow")}</button>
+            </>)}
+            <button onClick={() => setOpenPanel(openPanel === "app" ? null : "app")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings_446695c")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "app" ? "rotate-180" : ""}`}/></button>
+            <button onClick={appUpdateState === "available" ? installAppUpdate : checkAppUpdate} disabled={appUpdateState === "checking" || appUpdateState === "running"} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${appUpdateState === "checking" || appUpdateState === "running" ? "animate-spin" : ""}`}/>
+              {localizeText(appUpdateState === "checking" ? "Checking..." : appUpdateState === "running" ? "Installing..." : appUpdateState === "available" ? "Install Update" : "Check ClamShield")}
+            </button>
+          </div>
+        </div>
+        {localizeText(openPanel === "app" && (<div className="px-8 pb-8 pt-2 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.check_for_clamshield_app_updates")}</span><input type="checkbox" checked={updateSettings.appUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ appUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.notify_me_when_update_is_available")}</span><input type="checkbox" checked={updateSettings.appUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ appUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.notify_me_on_failed_update")}</span><input type="checkbox" checked={updateSettings.appUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ appUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span><input type="number" min={1} max={8760} value={updateSettings.appUpdateIntervalHours || 168} onChange={event => updateNumberSetting("appUpdateIntervalHours", event.target.value, 168, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/></label>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.silent_install_clamshield_updates")}</span><input type="checkbox" checked={updateSettings.appSilentAutoInstall === true} onChange={event => saveUpdateSettings({ appSilentAutoInstall: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+          </div>))}
+        {localizeText(appUpdateState !== "idle" && (<ProgressPanel title={appUpdateActive ? t("updates.checking_clamshield_updates") : appUpdateFailed ? t("updates.clamshield_update_check_failed") : appUpdateState === "available" ? (appUpdateInfo?.skipped ? t("updates.clamshield_update_skipped") : t("updates.clamshield_update_available")) : t("updates.clamshield_update_check_complete")} progress={appProgress} failed={appUpdateFailed} active={appUpdateActive} label={appOutput.at(-1) || t("updates.clamshield_is_checking_github_releases")} barClass="bg-gradient-to-r from-cyan-500 to-indigo-400"/>))}
+        {localizeText(appUpdateState !== "idle" && (<div className="px-8 pb-8 pt-4 border-t border-slate-800">
+            <Terminal title={t("updates.clamshield_output")} running={appUpdateActive} lines={appOutput}/>
+          </div>))}
+      </section>
+
+      <section className="bg-slate-900 border border-emerald-500/20 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-full"><DownloadCloud className="w-8 h-8"/></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">{t("updates.clamav_engine")}</h3>
+              <p className="text-slate-400 text-sm">{t("updates.installed_b92fd7f")}{localizeText(status?.stats?.engineVersion || "Unknown")}{localizeText(clamavEngineInfo?.latestVersion ? ` - Latest: ${clamavEngineInfo.latestVersion}` : "")}{t("updates.last_checked")}{localizeText(statusLine(status?.stats?.clamavEngineLastCheck, status?.stats?.clamavEngineLastCheckResult))}
+              </p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            {localizeText(clamavEngineState === "available" && <>
+              <button onClick={() => skipEngineVersion("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.skip_version")}</button>
+              <button onClick={() => remindEngineTomorrow("clamavEngine", clamavEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.remind_tomorrow")}</button>
+            </>)}
+            <button onClick={() => setOpenPanel(openPanel === "clamavEngine" ? null : "clamavEngine")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings_446695c")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "clamavEngine" ? "rotate-180" : ""}`}/></button>
+            <button onClick={clamavEngineState === "available" ? () => installEngineUpdate("clamavEngine") : () => checkEngineUpdate("clamavEngine")} disabled={clamavEngineActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${clamavEngineActive ? "animate-spin" : ""}`}/>
+              {localizeText(clamavEngineState === "checking" ? "Checking..." : clamavEngineState === "running" ? "Installing..." : clamavEngineState === "available" ? "Install Update" : "Check ClamAV")}
+            </button>
+          </div>
+        </div>
+        {localizeText(openPanel === "clamavEngine" && (<div className="px-8 pb-8 pt-2 border-t border-emerald-500/20 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.check_for_clamav_engine_updates")}</span><input type="checkbox" checked={updateSettings.clamavEngineUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ clamavEngineUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.notify_me_when_update_is_available")}</span><input type="checkbox" checked={updateSettings.clamavEngineUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ clamavEngineUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.notify_me_on_failed_update")}</span><input type="checkbox" checked={updateSettings.clamavEngineUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ clamavEngineUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span><input type="number" min={1} max={8760} value={updateSettings.clamavEngineUpdateIntervalHours || 24} onChange={event => updateNumberSetting("clamavEngineUpdateIntervalHours", event.target.value, 24, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-emerald-500"/></label>
+          </div>))}
+        {localizeText(clamavEngineState !== "idle" && (<ProgressPanel title={clamavEngineActive ? t("updates.checking_clamav_engine_updates") : clamavEngineFailed ? t("updates.clamav_engine_update_failed") : clamavEngineState === "available" ? (clamavEngineInfo?.skipped ? t("updates.clamav_engine_update_skipped") : t("updates.clamav_engine_update_available")) : t("updates.clamav_engine_update_check_complete")} progress={clamavEngineProgress} failed={clamavEngineFailed} active={clamavEngineActive} label={clamavEngineOutput.at(-1) || t("updates.clamav_engine_is_checking_github_releases")} barClass="bg-gradient-to-r from-emerald-500 to-cyan-400" borderClass="border-emerald-500/20"/>))}
+        {localizeText(clamavEngineState !== "idle" && (<div className="px-8 pb-8 pt-4 border-t border-emerald-500/20">
+            <Terminal title={t("updates.clamav_engine_output")} running={clamavEngineActive} lines={clamavEngineOutput}/>
+          </div>))}
+      </section>
+
+      <section className="bg-slate-900 border border-amber-500/20 rounded-xl overflow-hidden">
+        <div className={cardHeaderClass}>
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="p-3 bg-amber-500/10 text-amber-300 rounded-full"><DownloadCloud className="w-8 h-8"/></div>
+            <div className="min-w-0">
+              <h3 className="font-semibold text-white text-lg">{t("updates.yara_engine")}</h3>
+              <p className="text-slate-400 text-sm">{t("updates.installed_b92fd7f")}{localizeText(status?.stats?.yaraEngineVersion || "Unknown")}{localizeText(yaraEngineInfo?.latestVersion ? ` - Latest: ${yaraEngineInfo.latestVersion}` : "")}{t("updates.last_checked")}{localizeText(statusLine(status?.stats?.yaraEngineLastCheck, status?.stats?.yaraEngineLastCheckResult))}
+              </p>
+            </div>
+          </div>
+          <div className={cardActionsClass}>
+            {localizeText(yaraEngineState === "available" && <>
+              <button onClick={() => skipEngineVersion("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.skip_version")}</button>
+              <button onClick={() => remindEngineTomorrow("yaraEngine", yaraEngineInfo)} className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.remind_tomorrow")}</button>
+            </>)}
+            <button onClick={() => setOpenPanel(openPanel === "yaraEngine" ? null : "yaraEngine")} className="inline-flex items-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition-colors">{t("updates.settings_446695c")}<ChevronDown className={`w-4 h-4 transition-transform ${openPanel === "yaraEngine" ? "rotate-180" : ""}`}/></button>
+            <button onClick={yaraEngineState === "available" ? () => installEngineUpdate("yaraEngine") : () => checkEngineUpdate("yaraEngine")} disabled={yaraEngineActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <RefreshCw className={`w-5 h-5 ${yaraEngineActive ? "animate-spin" : ""}`}/>
+              {localizeText(yaraEngineState === "checking" ? "Checking..." : yaraEngineState === "running" ? "Installing..." : yaraEngineState === "available" ? "Install Update" : "Check YARA")}
+            </button>
+          </div>
+        </div>
+        {localizeText(openPanel === "yaraEngine" && (<div className="px-8 pb-8 pt-2 border-t border-amber-500/20 space-y-4">
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.check_for_yara_engine_updates")}</span><input type="checkbox" checked={updateSettings.yaraEngineUpdateCheckEnabled !== false} onChange={event => saveUpdateSettings({ yaraEngineUpdateCheckEnabled: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.notify_me_when_update_is_available")}</span><input type="checkbox" checked={updateSettings.yaraEngineUpdateNotifyAvailable !== false} onChange={event => saveUpdateSettings({ yaraEngineUpdateNotifyAvailable: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <div className="flex items-center justify-between gap-4"><span className="text-sm text-slate-300">{t("updates.notify_me_on_failed_update")}</span><input type="checkbox" checked={updateSettings.yaraEngineUpdateNotifyFailed === true} onChange={event => saveUpdateSettings({ yaraEngineUpdateNotifyFailed: event.target.checked })} className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"/></div>
+            <label className="block max-w-xs"><span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span><input type="number" min={1} max={8760} value={updateSettings.yaraEngineUpdateIntervalHours || 24} onChange={event => updateNumberSetting("yaraEngineUpdateIntervalHours", event.target.value, 24, 1, 8760)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-amber-500"/></label>
+          </div>))}
+        {localizeText(yaraEngineState !== "idle" && (<ProgressPanel title={yaraEngineActive ? t("updates.checking_yara_engine_updates") : yaraEngineFailed ? t("updates.yara_engine_update_failed") : yaraEngineState === "available" ? (yaraEngineInfo?.skipped ? t("updates.yara_engine_update_skipped") : t("updates.yara_engine_update_available")) : t("updates.yara_engine_update_check_complete")} progress={yaraEngineProgress} failed={yaraEngineFailed} active={yaraEngineActive} label={yaraEngineOutput.at(-1) || t("updates.yara_engine_is_checking_github_releases")} barClass="bg-gradient-to-r from-amber-500 to-emerald-400" borderClass="border-amber-500/20"/>))}
+        {localizeText(yaraEngineState !== "idle" && (<div className="px-8 pb-8 pt-4 border-t border-amber-500/20">
+            <Terminal title={t("updates.yara_engine_output")} running={yaraEngineActive} lines={yaraEngineOutput} accent="text-amber-300/80"/>
+          </div>))}
+      </section>
+
+    </div>);
+}
+function Terminal({ title, running, lines, accent = "text-emerald-400/80" }: {
+    title: string;
+    running: boolean;
+    lines: string[];
+    accent?: string;
+}) {
+    useLanguage();
+    return (<div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col h-64">
+      <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2">
+        <span className="font-mono text-sm text-slate-300 flex items-center gap-2">
+          {localizeText(running ? <Loader2 className="w-4 h-4 animate-spin text-indigo-400"/> : null)}
+          {localizeText(title)}
+        </span>
+      </div>
+      <div className={`flex-1 p-4 overflow-auto font-mono text-xs ${accent} leading-relaxed space-y-1 flex flex-col justify-end`}>
+        {localizeText(lines.map((line, index) => <div key={index}>{localizeText(line)}</div>))}
+      </div>
+    </div>);
+}
+function ProgressPanel({ title, progress, failed, active, label, barClass, borderClass = "border-slate-800" }: {
+    title: string;
+    progress: number;
+    failed: boolean;
+    active: boolean;
+    label: string;
+    barClass: string;
+    borderClass?: string;
+}) {
+    useLanguage();
+    return (<div className={`px-8 py-5 border-t ${borderClass} space-y-3`}>
+      <div className="flex items-center justify-between gap-4 text-sm">
+        <span className="text-slate-300 font-medium">{localizeText(title)}</span>
+        <span className="text-slate-500 tabular-nums">{localizeText(progress)}%</span>
+      </div>
+      <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
+        <div className={`h-full rounded-full transition-all duration-700 ${failed ? "bg-gradient-to-r from-rose-600 to-orange-400" : barClass} ${active ? "animate-pulse" : ""}`} style={{ width: `${progress}%` }}/>
+      </div>
+      <p className="text-xs text-slate-500 truncate">{localizeText(label)}</p>
+    </div>);
+}
