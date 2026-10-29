@@ -9,6 +9,7 @@ const { validateSource } = require('../scripts/release-source.cjs');
 const { assetNames, digest, createManifest, verifyManifest } = require('../scripts/release-manifest.cjs');
 const { verifyUploaded } = require('../scripts/publish-release.cjs');
 const { finalizeRelease } = require('../scripts/finalize-release.cjs');
+const { validateReusableRun, selectReusableArtifact } = require('../scripts/reuse-release-artifact.cjs');
 const yaml = require('js-yaml');
 const sha = 'a'.repeat(40), version = '9.8.7';
 function fixture() {
@@ -78,8 +79,22 @@ test('release runs the shared full CI suite before audit, packaging, signatures,
   assert.ok(ordered.every((index:number,i:number)=>index>=0&&(!i||index>ordered[i-1])));
   assert.equal(release.jobs.build.permissions.contents,'read');
   assert.equal(release.jobs.publish.permissions.contents,'write');
-  assert.equal(release.jobs.publish.needs,'build');
+  assert.deepEqual(release.jobs.publish.needs,['build','reuse']);
   assert.ok(release.jobs.publish.steps.some((s:any)=>s.run?.includes('--source-digest')));
   assert.ok(!release.jobs.publish.steps.some((s:any)=>/npm (ci|install|run build)|electron-builder|sign-windows/.test(s.run||'')));
   for(const job of Object.values(release.jobs) as any[])for(const step of job.steps)if(step.uses&&!step.uses.startsWith('./'))assert.match(step.uses,/@[a-f0-9]{40}$/);
+});
+
+test('artifact promotion rejects failed builds, pull-request runs, foreign sources and substituted artifacts', () => {
+  const repository = 'owner/project';
+  const run = { repository: { full_name: repository }, head_repository: { full_name: repository },
+    path: '.github/workflows/release-build.yml', event: 'workflow_dispatch', status: 'completed', conclusion: 'success', head_sha: sha };
+  assert.doesNotThrow(() => validateReusableRun(run, repository, sha));
+  for (const change of [{ conclusion: 'failure' }, { status: 'in_progress' }, { event: 'pull_request' },
+    { head_sha: 'b'.repeat(40) }, { path: '.github/workflows/ci.yml' }, { head_repository: { full_name: 'foreign/fork' } }])
+    assert.throws(() => validateReusableRun({ ...run, ...change }, repository, sha));
+  const artifact = { id: 123, name: `ClamShield-${sha}`, expired: false };
+  assert.equal(selectReusableArtifact([artifact], sha), 123);
+  for (const artifacts of [[], [{ ...artifact, expired: true }], [artifact, artifact], [{ ...artifact, id: -1 }], [{ ...artifact, name: 'other' }]])
+    assert.throws(() => selectReusableArtifact(artifacts, sha));
 });

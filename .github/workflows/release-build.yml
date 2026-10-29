@@ -10,6 +10,10 @@ on:
         description: Publish the verified artifacts as the latest release
         default: false
         type: boolean
+      artifact_run_id:
+        description: 'Optional successful Release Build run ID: publish its exact tested artifact without rebuilding'
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -17,6 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
+    if: inputs.artifact_run_id == ''
     name: Validate, sign and attest
     runs-on: windows-latest
     timeout-minutes: 45
@@ -29,6 +34,7 @@ jobs:
       version: ${{ steps.source.outputs.version }}
       tag: ${{ steps.source.outputs.tag }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      run_id: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +56,7 @@ jobs:
       - name: Audit every dependency before packaging
         run: npm run audit:security
       - name: Import release signing key
+        timeout-minutes: 2
         env:
           RELEASE_PFX_BASE64: ${{ secrets.RELEASE_PFX_BASE64 }}
           RELEASE_PFX_PASSWORD: ${{ secrets.RELEASE_PFX_PASSWORD }}
@@ -108,40 +115,73 @@ jobs:
         shell: pwsh
         run: |
           if ($env:CLAMSHIELD_CODESIGN_SHA1 -match '^[A-Fa-f0-9]{40}$') {
-            foreach ($store in @('My', 'Root')) {
-              $certificatePath = "Cert:\CurrentUser\$store\$env:CLAMSHIELD_CODESIGN_SHA1"
+            foreach ($store in @('CurrentUser\My', 'LocalMachine\Root')) {
+              $certificatePath = "Cert:\$store\$env:CLAMSHIELD_CODESIGN_SHA1"
               if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath -Force }
             }
           }
+  reuse:
+    name: Select original verified release artifact
+    if: inputs.artifact_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.artifact.outputs.sha }}
+      version: ${{ steps.artifact.outputs.version }}
+      tag: ${{ steps.artifact.outputs.tag }}
+      artifact_id: ${{ steps.artifact.outputs.artifact_id }}
+      run_id: ${{ steps.artifact.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
+      - name: Verify original release run and immutable artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+        run: node scripts/reuse-release-artifact.cjs
   publish:
     name: Verify provenance and publish identical installer
-    needs: build
-    if: inputs.publish
+    needs: [build, reuse]
+    if: always() && inputs.publish && (needs.build.result == 'success' || needs.reuse.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
       attestations: read
+      actions: read
+    env:
+      SOURCE_SHA: ${{ needs.build.outputs.sha || needs.reuse.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version || needs.reuse.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.build.outputs.sha }}
+          ref: ${{ needs.build.outputs.sha || needs.reuse.outputs.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build.outputs.artifact_id || needs.reuse.outputs.artifact_id }}
+          run-id: ${{ needs.build.outputs.run_id || needs.reuse.outputs.run_id }}
+          github-token: ${{ github.token }}
           path: sealed-release
           merge-multiple: true
       - name: Verify checksums and source binding
-        env:
-          SOURCE_SHA: ${{ needs.build.outputs.sha }}
-          RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: node scripts/release-manifest.cjs verify sealed-release "$SOURCE_SHA" "$RELEASE_VERSION"
       - name: Verify GitHub build provenance
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ needs.build.outputs.sha }}
-          RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           for file in "ClamShield-Setup-$RELEASE_VERSION.exe" "ClamShield-Setup-$RELEASE_VERSION.exe.blockmap" latest.yml SHA256SUMS.txt release-manifest.json; do
             gh attestation verify "sealed-release/$file" --bundle sealed-release/provenance.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-build.yml" --source-digest "$SOURCE_SHA"
@@ -149,6 +189,4 @@ jobs:
       - name: Upload, compare server digests and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ needs.build.outputs.sha }}
-          RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: node scripts/publish-release.cjs sealed-release "$SOURCE_SHA" "$RELEASE_VERSION"

@@ -1,16 +1,21 @@
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { spawnSync, execFileSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
 const project = path.join(root, "native", "ClamShieldShellExt", "ClamShieldShellExt.vcxproj");
 
+const vswhere = path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
+let discovered = [];
+if (fs.existsSync(vswhere)) {
+  discovered = execFileSync(vswhere, ['-latest', '-products', '*', '-version', '[17.0,)', '-requires', 'Microsoft.Component.MSBuild', '-find', 'MSBuild\\**\\Bin\\MSBuild.exe'], { encoding: 'utf8', windowsHide: true })
+    .trim().split(/\r?\n/).filter(Boolean);
+}
 const candidates = [
   process.env.MSBUILD_EXE,
+  ...discovered,
   "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\MSBuild\\Current\\Bin\\MSBuild.exe",
-  "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\MSBuild\\Current\\Bin\\MSBuild.exe",
-  "C:\\Program Files\\Microsoft Visual Studio\\2019\\BuildTools\\MSBuild\\Current\\Bin\\MSBuild.exe",
-  "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\MSBuild\\Current\\Bin\\MSBuild.exe"
+  "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\MSBuild\\Current\\Bin\\MSBuild.exe"
 ].filter(Boolean);
 
 const msbuild = candidates.find(candidate => fs.existsSync(candidate));

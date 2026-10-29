@@ -38,8 +38,12 @@ SmartScreen warnings. Use a publicly trusted signing certificate for that goal.
    names are not accepted as `source_ref`.
 3. Leave `publish` unchecked to produce a verified artifact for Windows VM
    acceptance testing. Check it to publish after the automated gates succeed.
-   A second dispatch is a **new build**; its artifact must be assessed as such.
-   There is no claim that it reuses a previous dispatch's bytes.
+   Leave `artifact_run_id` empty when building. To publish the exact installer
+   after VM acceptance testing, dispatch again with the original source SHA/tag,
+   that successful run's ID in `artifact_run_id`, and `publish` checked. This
+   selects its original immutable artifact; it does not rebuild or re-sign.
+   Leaving the run ID empty on another dispatch creates a **new build** that
+   must be assessed separately.
 
 The workflow performs this sequence:
 
@@ -66,6 +70,12 @@ The workflow performs this sequence:
    GitHub asset's SHA-256 digest, size and upload state. Publish only after they
    match. Recheck the published tag, state and digests. Existing releases and
    mismatched tags stop publication.
+
+Artifact promotion accepts only a successful `Release Build` dispatch in this
+repository, bound to the selected published source. Expired, duplicate or
+missing artifacts fail. The publishing job re-verifies checksums and GitHub
+provenance before uploading. Release notes use a public release summary rather
+than automatically copying commit or discussion titles.
 
 If upload or verification fails, publication stops; a draft may remain for
 inspection. Do not work around a failure by replacing a published installer or

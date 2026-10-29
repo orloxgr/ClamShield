@@ -27,7 +27,8 @@ function publish(directory, sha, version, repository = process.env.GITHUB_REPOSI
   verifyTag();
   const names = [...assetNames(version), 'release-manifest.json', 'provenance.json'];
   if (!fs.statSync(path.join(directory, 'provenance.json')).isFile()) throw new Error('Release provenance is missing.');
-  gh(['release', 'create', tag, ...names.map(name => path.join(directory, name)), '--repo', repository, '--target', sha, '--title', `ClamShield ${version}`, '--draft', '--generate-notes']);
+  const notes = `ClamShield ${version}\n\nSource commit: ${sha}\n\nThe installer was built, tested, signed and attested by the Release Build workflow. Verify the attached SHA256SUMS.txt, release-manifest.json and provenance.json before installation.\n\nSigning identity and Windows certificate trust are reported by the installer's Authenticode signature; GitHub provenance does not grant public certificate trust.`;
+  gh(['release', 'create', tag, ...names.map(name => path.join(directory, name)), '--repo', repository, '--target', sha, '--title', `ClamShield ${version}`, '--draft', '--notes', notes]);
   const uploaded = api(`releases/tags/${tag}`);
   if (!uploaded.draft || uploaded.prerelease || uploaded.target_commitish !== sha) throw new Error('Unexpected draft release source/state.');
   verifyManifest(directory, sha, version);
