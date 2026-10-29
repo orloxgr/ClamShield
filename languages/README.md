@@ -4,13 +4,13 @@
 
 ## Recommended: edit on GitHub and submit a pull request
 
-**Current translation branch:** [codex/modular-localization](https://github.com/orloxgr/ClamShield/tree/codex/modular-localization/languages). Use this branch until the work is merged; afterwards use `main`.
+**Start here:** [ClamShield translation files](https://github.com/orloxgr/ClamShield/tree/main/languages). Open the file for your language and follow the steps below.
 
 1. Sign in to GitHub and open your language file, for example [Spanish — es.json](es.json) or [Greek — el.json](el.json). The complete language list is below.
 2. Click the **pencil icon** above the file. Its tooltip may say **“Fork this repository and edit the file”**. Confirm **Fork this repository** if prompted.
 3. Correct the `translation` values; keep identifiers, English text, placeholders and JSON punctuation intact. For credits, see [Manual review and your name](#manual-review-and-your-name).
 4. Click **Commit changes…**, enter a short message such as `Improve Spanish translation`, then confirm **Propose changes** or **Commit changes**, as shown.
-5. Continue to the pull-request page; if needed, choose **Compare & pull request**. Check the destination is **orloxgr/ClamShield**, base **codex/modular-localization**, and the source is your edited branch.
+5. Continue to the pull-request page; if needed, choose **Compare & pull request**. The destination should be **orloxgr/ClamShield → main**, which GitHub normally selects automatically.
 6. Add a title, describe the changes and whether your review is partial or complete, then click **Create pull request**.
 
 **A commit saves your edit; the pull request submits it to ClamShield. Make sure you complete the last step.** Maintainers review the contribution before merging it. For later corrections, edit and commit to the same branch; the existing pull request updates automatically.
@@ -124,40 +124,4 @@ All initial translations are machine-generated drafts, **not volunteer-reviewed 
 
 ## Add a new language
 
-Copy [template.json](template.json) to a base language-code filename, such as `nl.json`. Set `language.code` to match the filename, `englishName` to the English language name, `name` to its native name, and `direction` to `ltr` or `rtl`. Start with `"status": "auto"` and `"reviewers": []`; use `reviewed` only after the complete review described above. Fill in translations and submit the new file through a pull request or email. For a GitHub upload, create a new branch in your fork from the current translation branch.
-
-## Optional: command-line Git workflow
-
-The browser workflow above is recommended. If you already use Git, you can use the following instead. Keep the pull-request base on `codex/modular-localization` until it is merged, then use `main`.
-
-1. Fork [orloxgr/ClamShield](https://github.com/orloxgr/ClamShield) on GitHub.
-2. Clone your fork and create a translation branch from the current upstream translation branch:
-
-```sh
-git clone https://github.com/YOUR_NAME/ClamShield.git
-cd ClamShield
-git remote add upstream https://github.com/orloxgr/ClamShield.git
-git fetch upstream
-git switch -c translate-es upstream/codex/modular-localization
-```
-
-3. Edit only your file, for example `languages/es.json`, in a UTF-8 text editor. Correct `translation` and any `forms`; leave identifiers, English text, limits, `optionalParameters` and `plural` unchanged. Update review metadata only as described above.
-4. Optionally validate locally. Node.js 22 or newer and the repository dependencies are needed for this command:
-
-```sh
-npm ci
-npm run languages:check -- languages/es.json
-```
-
-5. Preview your file in Settings → Language. Check short buttons and labels, dialogs, count/plural messages and, for Arabic/Urdu, right-to-left layout. The app reports invalid entries. This preview does not require compiling code if you have a compatible installed build.
-6. Commit only the translation file and push your branch:
-
-```sh
-git add languages/es.json
-git commit -m "Improve Spanish translation"
-git push -u origin translate-es
-```
-
-7. Open a pull request to the upstream translation branch. Say whether this is a partial correction or a full native-speaker review, list what screens were checked, and give your preferred credit name. CI checks JSON and placeholders; length warnings do not block a contribution. No one needs to send credentials, API keys, personal files, or engine samples for a translation contribution.
-
-To get later changes before editing again, run `git fetch upstream` and merge the current upstream branch into your translation branch. Avoid regenerating other languages or replacing existing volunteer work with automatic output.
+Copy [template.json](template.json) to a base language-code filename, such as `nl.json`. Set `language.code` to match the filename, `englishName` to the English language name, `name` to its native name, and `direction` to `ltr` or `rtl`. Start with `"status": "auto"` and `"reviewers": []`; use `reviewed` only after the complete review described above. Fill in translations and submit the new file through a pull request or email. For a GitHub upload, add the file to the `languages` folder in your own fork, then submit it to **orloxgr/ClamShield → main** as described above.

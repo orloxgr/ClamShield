@@ -86,7 +86,7 @@ app.whenReady().then(async () => {
     assert.equal(labels.es, runtime.languageLabel(packs.es.language));
     assert.equal(labels.el, runtime.languageLabel(packs.el.language));
     const help = await win.webContents.executeJavaScript(`(()=>{const section=document.getElementById('application-language').closest('section');return {links:[...section.querySelectorAll('a')].map(a=>({text:a.textContent,href:a.href})),paragraphs:section.querySelectorAll('p').length}})()`);
-    assert.deepEqual(help.links, [{text:'Help translating ClamShield',href:'https://github.com/orloxgr/ClamShield/tree/codex/modular-localization/languages'}]);
+    assert.deepEqual(help.links, [{text:'Help translating ClamShield',href:'https://github.com/orloxgr/ClamShield/tree/main/languages'}]);
     assert.equal(help.paragraphs, 0);
     const settingsKey = Object.keys(english.strings).find(key => english.strings[key].StringInEng === 'Settings');
     for (const pack of Object.values(packs)) {
