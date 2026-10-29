@@ -125,7 +125,7 @@ YARA matches appear in the Results page with `Engine: YARA`, rule name, source, 
 
 On Windows, ClamShield writes YARA scan lists as UTF-16LE without BOM so the upstream YARA CLI can scan paths with Greek, Cyrillic, Arabic, and other Unicode characters.
 
-YARA engine updates are resolved from official VirusTotal/YARA GitHub releases. If the latest YARA source release does not include a Windows x64 ZIP asset, ClamShield uses the newest recent release that does include a Windows x64 binary package. For example, YARA v4.5.8 was published without Windows ZIP assets, so ClamShield can continue installing the latest available Windows binary instead of failing the first-time setup.
+YARA engine updates are resolved from official VirusTotal/YARA GitHub releases. If the latest YARA source release does not include a Windows x64 ZIP asset, ClamShield uses the newest recent release that does include a Windows x64 binary package.
 
 Because YARA Forge rules contain detection patterns, Microsoft Defender or another antivirus may flag the rules file itself. If the affected file is under `C:\ProgramData\ClamShield\yara\rules\`, this is usually a false positive against the rule database rather than active malware.
 

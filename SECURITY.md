@@ -35,7 +35,7 @@ The repository includes GitHub Actions CI for:
 
 The release security gate audits production, development and optional dependencies, including Electron, and requires zero known vulnerabilities at every severity. It also verifies installed package versions against the lockfile so stale local modules cannot enter an installer. CI and the release workflow run this gate; Electron Builder also runs it before packaging. An unavailable or incomplete audit blocks packaging. Electron is declared as a development dependency but is included in the installer, so a production-only audit is insufficient for release validation.
 
-The project does not yet have a comprehensive automated test suite. Manual release testing is still required, especially for:
+Automated tests cover critical application flows and failure paths. Clean-Windows acceptance testing is still required, especially for:
 
 - clean Windows installation
 - first-run ClamAV engine installation
