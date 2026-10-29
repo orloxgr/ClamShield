@@ -81,8 +81,6 @@
     "files": [
       "dist/**/*",
       "electron-main.cjs",
-      "engine/**/*",
-      "data/**/*",
       "public/**/*"
     ],
     "extraFiles": [

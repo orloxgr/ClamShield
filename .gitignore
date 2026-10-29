@@ -12,7 +12,10 @@ shell/*.dll
 .DS_Store
 *.log
 .env*
-!.env.example
+
+# Runtime state and downloaded engines do not belong in source or installers.
+/data/
+/engine/
 
 # Generated from trusted localization sources during development/build/CI.
 public/localization-runtime.cjs
