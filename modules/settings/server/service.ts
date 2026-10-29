@@ -215,10 +215,6 @@ export async function loadConfig() {
 export async function saveConfig(settings: any, options: {
     keys?: Iterable<string>;
 } = {}) {
-    runtimeState.virusTotalUsageRefreshEveryRequests = normalizeNumberSetting("virusTotalUsageRefreshEveryRequests", settings.virusTotalUsageRefreshEveryRequests);
-    runtimeState.virusTotalUsageSyncEnabled = settings.virusTotalCloudEnabled === true;
-    runtimeState.currentLogsDir = settings.logsDir || defaultLogsDir;
-    runtimeState.debugLoggingEnabled = settings.enableDebugLog === true;
     const safeSettings = { ...settings };
     delete safeSettings.securiteInfoToken;
     delete safeSettings.securiteInfoUrl;
@@ -239,6 +235,10 @@ export async function saveConfig(settings: any, options: {
         }
     }
     saveSettingsPatchRows(safeSettings, keysToSave);
+    runtimeState.virusTotalUsageRefreshEveryRequests = normalizeNumberSetting("virusTotalUsageRefreshEveryRequests", settings.virusTotalUsageRefreshEveryRequests);
+    runtimeState.virusTotalUsageSyncEnabled = settings.virusTotalCloudEnabled === true;
+    runtimeState.currentLogsDir = settings.logsDir || defaultLogsDir;
+    runtimeState.debugLoggingEnabled = settings.enableDebugLog === true;
 }
 export async function restoreInstalledSignatureProviderSettings(settings: any) {
     const next = { ...settings };

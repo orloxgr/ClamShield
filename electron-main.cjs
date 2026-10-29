@@ -992,9 +992,19 @@ async function handleContextMenuRequest(argv = process.argv) {
 function getPublicAssetPath(fileName) {
     return path.join(__dirname, 'public', fileName);
 }
-ipcMain.handle('clamshield-alert-action', async (_event, payload = {}) => {
+function trustedAlertSender(event, threatId) {
+    const win = trustedLanguageSender(event);
+    const entry = [...activeAlerts.entries()].find(([, value]) => value === win);
+    const url = new URL(event.sender.getURL());
+    if (!entry || !url.pathname.endsWith('/alert.html') || url.searchParams.get('id') !== String(entry[0]) || (threatId !== undefined && String(entry[0]) !== threatId))
+        throw new Error('Untrusted threat alert request');
+    return win;
+}
+ipcMain.handle('clamshield-alert-action', async (event, payload = {}) => {
     const threatId = String(payload.id || '');
     const action = String(payload.action || '');
+    trustedAlertSender(event, threatId);
+    if (!['quarantine', 'exception', 'results'].includes(action)) throw new Error('Invalid threat alert action');
     if (!currentApiPort || !threatId || !action) {
         throw new Error(englishText("desktop.electron_main.the_alert_action_is_missing_required_data"));
     }
@@ -1005,7 +1015,8 @@ ipcMain.handle('clamshield-alert-action', async (_event, payload = {}) => {
         return { success: false, error: error.message || englishText("desktop.alert.html.the_action_failed_try_again_or_choose_decide_later") };
     }
 });
-ipcMain.handle('clamshield-alert-log', async (_event, payload = {}) => {
+ipcMain.handle('clamshield-alert-log', async (event, payload = {}) => {
+    trustedAlertSender(event);
     if (!currentApiPort)
         return { success: false };
     try {
@@ -1019,8 +1030,10 @@ ipcMain.handle('clamshield-alert-log', async (_event, payload = {}) => {
         return { success: false };
     }
 });
-ipcMain.handle('clamshield-results-reminder-action', async (_event, payload = {}) => {
+ipcMain.handle('clamshield-results-reminder-action', async (event, payload = {}) => {
+    if (trustedLanguageSender(event) !== resultsReminderWindow || !new URL(event.sender.getURL()).pathname.endsWith('/results-reminder.html')) throw new Error('Untrusted results reminder request');
     const action = String(payload.action || '');
+    if (!['remind-10', 'remind-60', 'forget', 'open'].includes(action)) throw new Error('Invalid results reminder action');
     if (!currentApiPort || !action) {
         throw new Error(englishText("desktop.electron_main.the_results_reminder_action_is_missing_required_data"));
     }

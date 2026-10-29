@@ -50,18 +50,8 @@ export async function saveExceptions(list: string[], newOrigin = "unknown") {
             const key = normalizedStatePath(item);
             insertExceptionRow(db, item, existingAddedAt.get(key) || now + index, existingMetadata.get(key) || { origin: newOrigin });
         });
+        db.prepare('DELETE FROM exception_reports WHERE normalized_path NOT IN (SELECT normalized_path FROM exceptions)').run();
     });
-    const normalizedPaths = new Set(list.map(item => normalizedStatePath(item)).filter(Boolean));
-    const reports = await getExceptionReports();
-    let changed = false;
-    for (const key of Object.keys(reports)) {
-        if (!normalizedPaths.has(key)) {
-            delete reports[key];
-            changed = true;
-        }
-    }
-    if (changed)
-        await saveExceptionReports(reports);
 }
 
 export async function getExceptionReports() {

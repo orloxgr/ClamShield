@@ -3,6 +3,7 @@ import { defaultSettings } from "../../modules/settings/server/schema";
 import { pathExists } from "../scanning/files";
 import { engineBaseDir } from "./paths";
 import { sleep } from "./utils";
+import { randomUUID } from 'node:crypto';
 import fs from "fs/promises";
 import path from "path";
 export async function retryRemovePath(targetPath: string, attempts = 5) {
@@ -43,14 +44,27 @@ export async function findExtractedClamavDir() {
     }
     return "";
 }
+export async function commitStagedEngineDirectory(stagingDir: string, finalDir: string) {
+    const backup = `${finalDir}.previous-${randomUUID()}`;
+    const previous = await pathExists(finalDir);
+    if (previous) await fs.rename(finalDir, backup);
+    try { await fs.rename(stagingDir, finalDir); }
+    catch (error) {
+        if (previous) {
+            try { await fs.rename(backup, finalDir); }
+            catch (rollback) { throw new AggregateError([error, rollback], `Engine replacement failed; previous engine is retained at ${backup}`); }
+        }
+        throw error;
+    }
+    if (previous) await retryRemovePath(backup).catch(error => console.warn('Previous engine cleanup deferred:', backup, error.message));
+}
 export async function adoptClamavEngineFolder(sourceDir: string) {
     const finalClamDir = path.join(engineBaseDir, "clamav");
     const stagingDir = path.join(engineBaseDir, `clamav-staging-${Date.now()}`);
     try {
         await retryRemovePath(stagingDir);
         await retryCopyDirectory(sourceDir, stagingDir);
-        await retryRemovePath(finalClamDir);
-        await fs.rename(stagingDir, finalClamDir);
+        await commitStagedEngineDirectory(stagingDir, finalClamDir);
         if (path.resolve(sourceDir).toLowerCase() !== path.resolve(finalClamDir).toLowerCase()) {
             await retryRemovePath(sourceDir).catch(e => console.debug(englishText("backend.core.clamav_extracted_folder_cleanup_failed"), e?.message || e));
         }
@@ -78,8 +92,7 @@ export async function adoptYaraEngineFolder(sourceDir: string, finalYaraDir: str
     try {
         await retryRemovePath(stagingDir);
         await retryCopyDirectory(sourceDir, stagingDir);
-        await retryRemovePath(finalYaraDir);
-        await fs.rename(stagingDir, finalYaraDir);
+        await commitStagedEngineDirectory(stagingDir, finalYaraDir);
         return finalYaraDir;
     }
     catch (e: any) {

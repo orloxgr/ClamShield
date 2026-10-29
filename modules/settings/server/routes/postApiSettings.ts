@@ -16,9 +16,10 @@ export function registerPostApiSettings(app: any, context: Pick<ApplicationConte
             const normalizedRequest = normalizeSettingsPatch(req.body, context.settings);
             const requestedSettings = normalizedRequest.patch;
             if (Object.keys(requestedSettings).length === 1 && "virusTotalShowLimitWarnings" in requestedSettings) {
-                context.settings = { ...context.settings, virusTotalShowLimitWarnings: requestedSettings.virusTotalShowLimitWarnings };
+                const nextSettings = { ...context.settings, virusTotalShowLimitWarnings: requestedSettings.virusTotalShowLimitWarnings };
                 // Save just this preference; do not rewrite installation defaults or restart engines.
-                saveSettingsPatchRows(context.settings, ["virusTotalShowLimitWarnings"]);
+                saveSettingsPatchRows(nextSettings, ["virusTotalShowLimitWarnings"]);
+                context.settings = nextSettings;
                 if (!virusTotalLimitWarningsEnabled(context.settings.virusTotalShowLimitWarnings)) {
                     context.virusTotalScanQueue.disableConfirmations();
                     context.scheduleVirusTotalScan();
@@ -57,8 +58,8 @@ export function registerPostApiSettings(app: any, context: Pick<ApplicationConte
                     });
                 }
             }
+            await saveConfig(nextSettings, { keys: settingsKeysToPersist });
             context.settings = nextSettings;
-            await saveConfig(context.settings, { keys: settingsKeysToPersist });
             if (!virusTotalLimitWarningsEnabled(context.settings.virusTotalShowLimitWarnings))
                 context.virusTotalScanQueue.disableConfirmations();
             await writeWindowsContextMenuState(context.settings);

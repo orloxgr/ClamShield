@@ -1,0 +1,29 @@
+name: Full ClamShield validation
+description: The same complete checks for pull requests and release builds
+runs:
+  using: composite
+  steps:
+    - name: TypeScript
+      shell: pwsh
+      run: npm run lint
+    - name: Language files
+      shell: pwsh
+      run: npm run languages:check
+    - name: All automated tests
+      shell: pwsh
+      run: npm test
+    - name: Build interface test fixtures
+      shell: pwsh
+      run: npm run build
+    - name: Electron navigation and startup watchdog
+      shell: pwsh
+      run: npm run test:desktop-navigation
+    - name: Electron threat notifications
+      shell: pwsh
+      run: node scripts/test-desktop-alerts.cjs
+    - name: VirusTotal interface
+      shell: pwsh
+      run: npm run test:virustotal-ui
+    - name: Localization interface
+      shell: pwsh
+      run: npm run test:localization-ui

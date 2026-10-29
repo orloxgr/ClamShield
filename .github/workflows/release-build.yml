@@ -1,65 +1,154 @@
 name: Release Build
-
 on:
   workflow_dispatch:
-
+    inputs:
+      source_ref:
+        description: 'Published full commit SHA or vX.Y.Z tag, matching the workflow run commit'
+        required: true
+        type: string
+      publish:
+        description: Publish the verified artifacts as the latest release
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: clamshield-release
+  cancel-in-progress: false
 jobs:
-  windows-installer:
-    name: Windows Installer
+  build:
+    name: Validate, sign and attest
     runs-on: windows-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
       attestations: write
-
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+      tag: ${{ steps.source.outputs.tag }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: TypeScript check
-        run: npm run lint
-
-      - name: Full dependency security gate
+      - name: Fix and verify release source
+        id: source
+        env:
+          RELEASE_SOURCE_REF: ${{ inputs.source_ref }}
+        run: node scripts/release-source.cjs
+      - run: npm ci
+      - name: All checks, identical to CI
+        uses: ./.github/actions/validate
+      - name: Audit every dependency before packaging
         run: npm run audit:security
-
-      - name: Build installer
-        run: npm run build:exe
-
-      - name: Generate checksums
-        run: npm run release:checksums
-
-      - name: Read package version
-        id: package
-        shell: pwsh
+      - name: Import release signing key
+        env:
+          RELEASE_PFX_BASE64: ${{ secrets.RELEASE_PFX_BASE64 }}
+          RELEASE_PFX_PASSWORD: ${{ secrets.RELEASE_PFX_PASSWORD }}
+        run: ./scripts/import-release-certificate.ps1
+      - name: Build and sign installer once
+        run: npm run build:exe -- --win nsis --x64 --publish never
+      - name: Final signing and updater metadata
+        run: node scripts/finalize-release.cjs
+      - name: Verify all release signatures
+        env:
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        run: ./scripts/verify-release-signatures.ps1 -Directory "release/$env:RELEASE_VERSION"
+      - name: Final checksums and immutable release manifest
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
         run: |
-          $package = Get-Content package.json -Raw | ConvertFrom-Json
-          "version=$($package.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      - name: Generate installer attestation
-        uses: actions/attest@v4
+          npm run release:checksums
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/release-manifest.cjs create "release/$env:RELEASE_VERSION" $env:SOURCE_SHA $env:RELEASE_VERSION
+      - name: Attest final signed bytes and manifests
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
-            release/${{ steps.package.outputs.version }}/ClamShield-Setup-${{ steps.package.outputs.version }}.exe
-            release/${{ steps.package.outputs.version }}/ClamShield-Setup-${{ steps.package.outputs.version }}.exe.blockmap
-            release/${{ steps.package.outputs.version }}/latest.yml
-            release/${{ steps.package.outputs.version }}/SHA256SUMS.txt
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+            release/${{ steps.source.outputs.version }}/ClamShield-Setup-${{ steps.source.outputs.version }}.exe
+            release/${{ steps.source.outputs.version }}/ClamShield-Setup-${{ steps.source.outputs.version }}.exe.blockmap
+            release/${{ steps.source.outputs.version }}/latest.yml
+            release/${{ steps.source.outputs.version }}/SHA256SUMS.txt
+            release/${{ steps.source.outputs.version }}/release-manifest.json
+      - name: Save provenance and verify sealed bytes
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item -LiteralPath $env:ATTESTATION_BUNDLE -Destination "release/$env:RELEASE_VERSION/provenance.json"
+          node scripts/release-manifest.cjs verify "release/$env:RELEASE_VERSION" $env:SOURCE_SHA $env:RELEASE_VERSION
+      - name: Upload the sealed release, without rebuilding
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ClamShield-${{ steps.package.outputs.version }}-windows
+          name: ClamShield-${{ steps.source.outputs.sha }}
           path: |
-            release/${{ steps.package.outputs.version }}/ClamShield-Setup-${{ steps.package.outputs.version }}.exe
-            release/${{ steps.package.outputs.version }}/ClamShield-Setup-${{ steps.package.outputs.version }}.exe.blockmap
-            release/${{ steps.package.outputs.version }}/latest.yml
-            release/${{ steps.package.outputs.version }}/SHA256SUMS.txt
+            release/${{ steps.source.outputs.version }}/ClamShield-Setup-${{ steps.source.outputs.version }}.exe
+            release/${{ steps.source.outputs.version }}/ClamShield-Setup-${{ steps.source.outputs.version }}.exe.blockmap
+            release/${{ steps.source.outputs.version }}/latest.yml
+            release/${{ steps.source.outputs.version }}/SHA256SUMS.txt
+            release/${{ steps.source.outputs.version }}/release-manifest.json
+            release/${{ steps.source.outputs.version }}/provenance.json
           if-no-files-found: error
+          overwrite: false
+      - name: Remove imported signing key
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CLAMSHIELD_CODESIGN_SHA1 -match '^[A-Fa-f0-9]{40}$') {
+            foreach ($store in @('My', 'Root')) {
+              $certificatePath = "Cert:\CurrentUser\$store\$env:CLAMSHIELD_CODESIGN_SHA1"
+              if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath -Force }
+            }
+          }
+  publish:
+    name: Verify provenance and publish identical installer
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: sealed-release
+          merge-multiple: true
+      - name: Verify checksums and source binding
+        env:
+          SOURCE_SHA: ${{ needs.build.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: node scripts/release-manifest.cjs verify sealed-release "$SOURCE_SHA" "$RELEASE_VERSION"
+      - name: Verify GitHub build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.build.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          for file in "ClamShield-Setup-$RELEASE_VERSION.exe" "ClamShield-Setup-$RELEASE_VERSION.exe.blockmap" latest.yml SHA256SUMS.txt release-manifest.json; do
+            gh attestation verify "sealed-release/$file" --bundle sealed-release/provenance.json --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-build.yml" --source-digest "$SOURCE_SHA"
+          done
+      - name: Upload, compare server digests and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.build.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: node scripts/publish-release.cjs sealed-release "$SOURCE_SHA" "$RELEASE_VERSION"

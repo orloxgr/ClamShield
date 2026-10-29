@@ -28,7 +28,7 @@ The repository includes GitHub Actions CI for:
 
 - `npm ci`
 - TypeScript validation with `npm run lint`
-- focused tests for exception reporting, desktop startup and diagnostics, threat alerts, update timeouts, and VirusTotal queues and usage
+- every automated test, including failure paths for quarantine/restore, exception/report transactions, settings persistence, engine activation, API/IPC authorization, Defender refusal, desktop startup and VirusTotal queues
 - real Electron checks for interface navigation, preload IPC and threat popup actions
 - production build with `npm run build`
 - full dependency audit and installed-version verification with `npm run audit:security`
@@ -46,7 +46,11 @@ The project does not yet have a comprehensive automated test suite. Manual relea
 - Windows Defender integration behavior
 - uninstall cleanup
 
-Adding focused automated tests for settings validation, updater selection logic, scan-output parsing, and quarantine/result storage is on the roadmap.
+CI and release call the same shared validation action. Tests use disposable
+databases/files and injected Windows failures; they do not change the test host's
+Defender configuration. See [privilege separation](docs/privilege-separation.md)
+for the current elevated architecture, completed boundary hardening and the
+proposed service design. The service migration has not been implemented.
 
 ## Binary Provenance
 
@@ -56,17 +60,27 @@ Release installers are built from the source in this repository with Electron Bu
 - `ClamShield-Setup-<version>.exe.blockmap`
 - `latest.yml`
 - `SHA256SUMS.txt`
+- `release-manifest.json` (new workflow releases)
+- `provenance.json` (new workflow releases)
 
-GitHub release assets expose SHA-256 digests, and `SHA256SUMS.txt` is generated from the local release directory. The repository also includes a manual GitHub Actions release-build workflow that can build the Windows installer and generate GitHub artifact attestations.
+The [release workflow](docs/release-process.md) requires a fixed published source,
+all tests and the full audit before packaging. It requires signing, verifies the
+signer's certificate, finalizes updater metadata after the last signature and
+attests the final bytes. A separate publishing job verifies source-bound
+provenance, uploads the same immutable workflow artifact and compares GitHub's
+asset digests before publication. It cannot overwrite an existing release.
+Signing secrets must be configured before using this workflow; missing secrets
+block the release. Previous maintainer-built releases retain their original
+provenance and are not retroactively attested.
 
 Current limitations:
 
 - builds are not reproducible byte-for-byte
 - public releases may be maintainer-built unless the release notes explicitly say the GitHub Actions artifact was used
 - maintainer-built installers may use a local self-signed Authenticode certificate; this is not a publicly trusted publisher certificate and does not remove Windows trust warnings
-- automated builds without access to a signing certificate may be unsigned
+- release-workflow builds without access to a signing certificate fail; local development builds are not a substitute for the signed release process
 
-Publicly trusted code signing and stricter release provenance are planned improvements.
+Publicly trusted code signing remains a separate requirement from GitHub build provenance.
 
 ## Third-Party Engines and Rules
 

@@ -315,7 +315,7 @@ npm run build:exe
 Release artifacts are written to a versioned directory:
 
 ```text
-release/<version>/ClamShield Setup <version>.exe
+release/<version>/ClamShield-Setup-<version>.exe
 ```
 
 Generate SHA-256 checksums for the release directory:
@@ -328,15 +328,21 @@ The `release/` and `dist/` folders are build outputs and should not be committed
 
 ## Release Checklist
 
-Before publishing a release:
+Follow [the signed release process](docs/release-process.md). The release workflow
+uses a published full commit SHA or version tag, runs the same complete tests as
+CI, audits every dependency, builds and signs, then generates final checksums and
+GitHub attestations. Its publishing job verifies and uploads that exact artifact
+without rebuilding. Signing secrets are required; existing releases cannot be
+overwritten. Older releases are not retroactively attested by this workflow.
 
-1. Bump the version in `package.json` and `package-lock.json`.
-2. Run `npm install`.
-3. Run `npm run lint`.
-   Run `npm run audit:security`; releases require zero known vulnerabilities across all dependencies, including Electron and build tools. A failed or unavailable audit blocks packaging.
-4. Run `npm run build:exe`.
-5. Run `npm run release:checksums`.
-6. Publish the installer, `latest.yml`, blockmap, and `SHA256SUMS.txt` together.
+Release preparation and acceptance checks:
+
+1. Bump and commit the version in `package.json` and `package-lock.json`, then push to `main`.
+2. Configure the signing secrets described in the release guide.
+3. Dispatch Release Build from the same commit/tag, passing its fixed `source_ref`.
+4. Require every test and the full zero-vulnerability dependency audit to pass.
+5. Require verified signatures, final metadata/checksums and source-bound provenance.
+6. Use only the sealed workflow artifact; run with `publish` enabled when publication is intended.
 7. Install the generated `.exe` on a clean Windows test machine or VM.
 8. Install the ClamAV engine from the app.
 9. Update signatures.

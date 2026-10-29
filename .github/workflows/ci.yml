@@ -1,68 +1,24 @@
 name: CI
-
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   pull_request:
-
+permissions:
+  contents: read
 jobs:
   validate:
     name: Validate
     runs-on: windows-latest
-
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build trusted localization runtimes
-        run: npm run build:localization
-
-      - name: Language validation and security tests
-        run: npm run languages:check && node --import tsx --test server/localization.test.ts
-
-      - name: TypeScript check
-        run: npm run lint
-
-      - name: VirusTotal on-demand queue tests
-        run: npm run test:virustotal-scan
-
-      - name: FreshClam timeout tests
-        run: npm run test:updates
-
-      - name: Exception reporting tests
-        run: npm run test:exceptions
-
-      - name: Desktop startup tests
-        run: npm run test:startup
-
-      - name: Real Electron navigation test
-        run: npm run test:desktop-navigation
-
-      - name: Threat notification tests
-        run: npm run test:alerts
-
-      - name: Release security gate tests
-        run: npm run test:release-security
-
-      - name: Build
-        run: npm run build
-
-      - name: VirusTotal queue interface test
-        run: npm run test:virustotal-ui
-
-      - name: Localization interface tests
-        run: npm run test:localization-ui
-
+      - run: npm ci
+      - uses: ./.github/actions/validate
       - name: Full dependency security gate
         run: npm run audit:security
