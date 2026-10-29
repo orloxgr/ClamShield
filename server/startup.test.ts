@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 
 const source = fs.readFileSync("electron-main.cjs", "utf8");
 const tree = ts.createSourceFile("electron-main.cjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -117,7 +117,7 @@ test("the main window uses a dark background and paints its bundled local page b
 
 test("the actual ready handler waits for the startup paint before loading backend code and preserves minimized launch", async () => {
     let handler = "";
-    const visit = (node: ts.Node) => {
+    const visit = (node: any) => {
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.expression.getText(tree) === "app" &&
             node.expression.name.text === "on" && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "ready") {
             handler = node.arguments[1].getText(tree);

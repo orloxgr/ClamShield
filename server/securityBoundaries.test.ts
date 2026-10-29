@@ -5,7 +5,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import ts from 'typescript';
+import ts from "../scripts/test-source.cjs";
 import { requireLocalApiSession, apiSessionToken, apiCookieName, apiHeaderName } from './core/security';
 
 test('API mutations require a valid session, local Host and matching browser Origin', async t => {

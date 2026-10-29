@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 
 function fixture() {
     const source = readBackendSource();

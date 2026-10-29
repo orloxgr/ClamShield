@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import DropdownSelect, { type DropdownOption, } from "../../../src/components/DropdownSelect";
 import PageHeader from "../../../src/components/PageHeader";
 import Modal from "../../../src/components/Modal";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { ListPagination } from "../../../src/components/ListControls";
 import VirusTotalQueueDialog from "../../../addons/virustotal/ui/VirusTotalQueueDialog";
 import { describeVirusTotalResult } from "../../../addons/virustotal/shared/state";
@@ -644,7 +644,7 @@ export default function ResultsPage() {
                 </article>);
             }))}
           </div>
-          <ListPagination page={currentPage} pageSize={pageSize} total={totalItems} onPage={setPage} onPageSize={setPageSize}/>
+          <ListPagination page={currentPage} pageSize={pageSize} total={totalItems} onPage={setPage} onPageSize={size => setPageSize(size as PageSize)}/>
         </div>))}
       {localizeText(dismissTarget && <Modal title={t("results.remove_finding_from_results")} onClose={() => setDismissTarget(null)} busy={Boolean(busyId)}>
         <div className="space-y-4 px-6 py-4 text-sm">

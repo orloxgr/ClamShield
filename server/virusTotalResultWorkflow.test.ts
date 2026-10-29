@@ -5,7 +5,7 @@ import { advanceVirusTotalResult, nextVirusTotalResultAttempt } from "../addons/
 import { describeVirusTotalResult } from "../addons/virustotal/shared/state";
 import fs from "node:fs";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 
 const hash = "abc";
 function fixture() {

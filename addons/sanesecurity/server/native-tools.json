@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-29",
+  "packages": [
+    {
+      "name": "gcc-libs",
+      "version": "16.2.0-1",
+      "source": "https://packages.msys2.org/packages/gcc-libs",
+      "url": "https://repo.msys2.org/msys/x86_64/gcc-libs-16.2.0-1-x86_64.pkg.tar.zst",
+      "sha256": "50e1bbbb1b4186ba1ed8c08cdbb5c0a8c2343e4b5747bace24273e26fb148471",
+      "family": "msys",
+      "dependencies": []
+    },
+    {
+      "name": "libiconv",
+      "version": "1.19-1",
+      "source": "https://packages.msys2.org/packages/libiconv",
+      "url": "https://repo.msys2.org/msys/x86_64/libiconv-1.19-1-x86_64.pkg.tar.zst",
+      "sha256": "0fa55ea2a6ccf97cf8c58b24b2615815e15e16e6e4e888091c263c2c83c5313d",
+      "family": "msys",
+      "dependencies": [
+        "gcc-libs"
+      ]
+    },
+    {
+      "name": "libidn2",
+      "version": "2.3.8-1",
+      "source": "https://packages.msys2.org/packages/libidn2",
+      "url": "https://repo.msys2.org/msys/x86_64/libidn2-2.3.8-1-x86_64.pkg.tar.zst",
+      "sha256": "55e0de96b893e9f67f14a4283d411fc2a45d7b59333bc16e2a9b16e5bfc9282f",
+      "family": "msys",
+      "dependencies": [
+        "libintl",
+        "libunistring"
+      ]
+    },
+    {
+      "name": "libintl",
+      "version": "0.22.5-1",
+      "source": "https://packages.msys2.org/packages/libintl",
+      "url": "https://repo.msys2.org/msys/x86_64/libintl-0.22.5-1-x86_64.pkg.tar.zst",
+      "sha256": "336d66b9d95cf9c1804958f8e260762a3e83bf158ed5981f783bc772a31073cf",
+      "family": "msys",
+      "dependencies": [
+        "gcc-libs",
+        "libiconv"
+      ]
+    },
+    {
+      "name": "liblz4",
+      "version": "1.10.0-1",
+      "source": "https://packages.msys2.org/packages/liblz4",
+      "url": "https://repo.msys2.org/msys/x86_64/liblz4-1.10.0-1-x86_64.pkg.tar.zst",
+      "sha256": "1cbbe51ee91bf32691aabb15bdb7c8548e8b5ef8195122ef31f10edcca6e952f",
+      "family": "msys",
+      "dependencies": [
+        "gcc-libs"
+      ]
+    },
+    {
+      "name": "libopenssl",
+      "version": "3.6.5-1",
+      "source": "https://packages.msys2.org/packages/libopenssl",
+      "url": "https://repo.msys2.org/msys/x86_64/libopenssl-3.6.5-1-x86_64.pkg.tar.zst",
+      "sha256": "05f6cc946f0dde3aecc3632007fa1d874e40720226117b750327bc2a01846325",
+      "family": "msys",
+      "dependencies": []
+    },
+    {
+      "name": "libunistring",
+      "version": "1.4.2-1",
+      "source": "https://packages.msys2.org/packages/libunistring",
+      "url": "https://repo.msys2.org/msys/x86_64/libunistring-1.4.2-1-x86_64.pkg.tar.zst",
+      "sha256": "bcd04706d95b5e7127d39834565bceed6b400192f5fb51599745aba28d5da018",
+      "family": "msys",
+      "dependencies": [
+        "libiconv"
+      ]
+    },
+    {
+      "name": "libxxhash",
+      "version": "0.8.4-1",
+      "source": "https://packages.msys2.org/packages/libxxhash",
+      "url": "https://repo.msys2.org/msys/x86_64/libxxhash-0.8.4-1-x86_64.pkg.tar.zst",
+      "sha256": "ba784ad117626401cd5d3ec0cf70399f9de72a63755f96c28fa2032303f9c330",
+      "family": "msys",
+      "dependencies": []
+    },
+    {
+      "name": "libzstd",
+      "version": "1.5.7-1",
+      "source": "https://packages.msys2.org/packages/libzstd",
+      "url": "https://repo.msys2.org/msys/x86_64/libzstd-1.5.7-1-x86_64.pkg.tar.zst",
+      "sha256": "5e370b2e725a0a7e5ff58d84653c9a0cd5a10b9cfe930f2d949a28ad2a11c1f2",
+      "family": "msys",
+      "dependencies": [
+        "gcc-libs"
+      ]
+    },
+    {
+      "name": "mingw-w64-ucrt-x86_64-7zip",
+      "version": "26.05-1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-7zip",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-7zip-26.05-1-any.pkg.tar.zst",
+      "sha256": "b7e845e72699d246253cbfd5fb755102d2b55041f82aac78ef6e31a531214714",
+      "family": "archive",
+      "dependencies": [
+        "mingw-w64-ucrt-x86_64-cc-libs"
+      ]
+    },
+    {
+      "name": "mingw-w64-ucrt-x86_64-cc-libs",
+      "version": "16.2.0-6",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-cc-libs",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-cc-libs-16.2.0-6-any.pkg.tar.zst",
+      "sha256": "d8fff9e62443168bcda8ce746697243519c4f090ea607357ce94feac0bd10a50",
+      "family": "archive",
+      "dependencies": [
+        "mingw-w64-ucrt-x86_64-libgcc",
+        "mingw-w64-ucrt-x86_64-libstdc++"
+      ]
+    },
+    {
+      "name": "mingw-w64-ucrt-x86_64-libgcc",
+      "version": "16.2.0-6",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libgcc",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libgcc-16.2.0-6-any.pkg.tar.zst",
+      "sha256": "80b2497f019977dd9528b1abc8621b1328a0115ab1f724047ccbb56bf323f11d",
+      "family": "archive",
+      "dependencies": [
+        "mingw-w64-ucrt-x86_64-libwinpthread"
+      ]
+    },
+    {
+      "name": "mingw-w64-ucrt-x86_64-libstdc++",
+      "version": "16.2.0-6",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libstdc++",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libstdc%2B%2B-16.2.0-6-any.pkg.tar.zst",
+      "sha256": "33c5e58a85a538cf843a8672991cce591f0231d66da3b66a57629712d64be17f",
+      "family": "archive",
+      "dependencies": [
+        "mingw-w64-ucrt-x86_64-libgcc",
+        "mingw-w64-ucrt-x86_64-libwinpthread",
+        "mingw-w64-ucrt-x86_64-tzdata"
+      ]
+    },
+    {
+      "name": "mingw-w64-ucrt-x86_64-libwinpthread",
+      "version": "14.0.0.r569.g34eeafb7d-1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libwinpthread",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r569.g34eeafb7d-1-any.pkg.tar.zst",
+      "sha256": "b4ebe2826e848c5e790e06ea7b37d3e0594e005f42382b0506886f17df8127da",
+      "family": "archive",
+      "dependencies": []
+    },
+    {
+      "name": "mingw-w64-ucrt-x86_64-tzdata",
+      "version": "2026e-1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-tzdata",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-tzdata-2026e-1-any.pkg.tar.zst",
+      "sha256": "f1809089f8ed5cec858ae8584289172896eb921be1e78ba583555f74e9015428",
+      "family": "archive",
+      "dependencies": []
+    },
+    {
+      "name": "msys2-runtime",
+      "version": "3.6.11-4",
+      "source": "https://packages.msys2.org/packages/msys2-runtime",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-3.6.11-4-x86_64.pkg.tar.zst",
+      "sha256": "7b1c4b625483ceff9a87f2dfcf3659704dc3da655a0ad414ecb7d9175e7d3ba0",
+      "family": "msys",
+      "dependencies": []
+    },
+    {
+      "name": "popt",
+      "version": "1.19-1",
+      "source": "https://packages.msys2.org/packages/popt",
+      "url": "https://repo.msys2.org/msys/x86_64/popt-1.19-1-x86_64.pkg.tar.zst",
+      "sha256": "b402bd1d03815c5e28b7ab415d8e20f487eff2460ae0271a99674eeb0d77194f",
+      "family": "msys",
+      "dependencies": [
+        "libiconv",
+        "libintl"
+      ]
+    },
+    {
+      "name": "rsync",
+      "version": "3.5.1-2",
+      "source": "https://packages.msys2.org/packages/rsync",
+      "url": "https://repo.msys2.org/msys/x86_64/rsync-3.5.1-2-x86_64.pkg.tar.zst",
+      "sha256": "cba52e41d16f9873324fcf09853619964da87bc1ce116781a5449c968d4ffecc",
+      "family": "msys",
+      "dependencies": [
+        "libiconv",
+        "libidn2",
+        "liblz4",
+        "libopenssl",
+        "libxxhash",
+        "libzstd",
+        "popt"
+      ]
+    }
+  ],
+  "gnupg": {
+    "version": "2.5.24",
+    "url": "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.24_20260923.exe",
+    "sha256": "ea6f9dee2cccd83287432625b8b399173805add81d27067fcaf019c0c4da1ad8"
+  }
+}

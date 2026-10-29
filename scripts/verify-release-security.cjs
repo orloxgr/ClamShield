@@ -40,6 +40,11 @@ function verifyRelease(root = path.resolve(__dirname, '..')) {
   try { report = JSON.parse(result.stdout); } catch { throw new Error('Dependency audit returned unreadable output. Release blocked.'); }
   validateAudit(report);
   if (result.status !== 0) throw new Error('Dependency audit did not complete successfully. Release blocked.');
+  const native = spawnSync(process.execPath, [path.join(root, 'scripts/update-native-tools.cjs'), '--check'], {
+    cwd: root, encoding: 'utf8', windowsHide: true, timeout: 180000, maxBuffer: 1024 * 1024
+  });
+  if (native.error || native.status !== 0) throw new Error(`Native helper freshness verification failed. Release blocked. ${native.error?.message || native.stderr}`);
+  process.stdout.write(native.stdout);
   console.log('Release security gate passed: installed dependencies match the lockfile; full audit found zero known vulnerabilities.');
 }
 

@@ -45,7 +45,9 @@ The workflow performs this sequence:
 
 1. Checkout the fixed source; install exactly the lockfile with `npm ci`.
 2. Run the complete shared validation suite.
-3. Audit all dependencies, including development tools and Electron. Unknown,
+3. Audit all dependencies, including development tools and Electron. Compare the
+   pinned native SaneSecurity helper inventory with the current official MSYS2
+   packages and Windows GnuPG release. Unknown,
    incomplete or unavailable audits fail, as does any known vulnerability.
 4. Import the release key; build and sign the Windows app, shell extension and
    NSIS installer. Packaging runs the audit gate again.

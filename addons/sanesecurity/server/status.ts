@@ -69,7 +69,7 @@ export async function getSaneSecurityStatus(settings: any) {
         downloadedFiles,
         missingFiles,
         toolsInstalled,
-        helperSizeEstimateMb: 185,
+        helperSizeEstimateMb: 50,
         lastUpdated: settings.lastSaneSecurityUpdate || newestFile?.updatedAt || null,
         lastResult: settings.lastSaneSecurityUpdateResult || "",
         websiteUrl: saneSecurityWebsiteUrl,

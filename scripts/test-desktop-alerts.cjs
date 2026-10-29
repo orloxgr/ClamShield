@@ -20,7 +20,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow, ipcMain } = require('electron');
-const ts = require('typescript');
+const ts = require('./test-source.cjs');
 app.on('window-all-closed', () => {});
 app.setPath('userData', path.join(process.env.CLAMSHIELD_ALERT_TEST_DIR, 'profile'));
 app.setPath('sessionData', path.join(process.env.CLAMSHIELD_ALERT_TEST_DIR, 'session'));

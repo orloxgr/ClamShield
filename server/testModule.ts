@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import ts from 'typescript';
+import ts from "../scripts/test-source.cjs";
 import os from 'node:os';
 const require = createRequire(import.meta.url);
 // Execute the actual module with explicit external ports (DB, process, filesystem).

@@ -1,7 +1,7 @@
 import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Database, DownloadCloud, FileWarning, KeyRound, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import PageHeader from "../../../src/components/PageHeader";
 import { formatSystemDateTime } from "../../../src/lib/dateFormat";
 const MAX_TERMINAL_LINES = 800;

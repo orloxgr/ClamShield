@@ -14,7 +14,7 @@ if (!process.versions.electron) {
 }
 const { app, BrowserWindow, ipcMain } = require('electron');
 const http = require('node:http');
-const ts = require('typescript');
+const ts = require('./test-source.cjs');
 const { buildSync } = require('esbuild');
 const runtime = require('../public/localization-runtime.cjs');
 const english = runtime.englishPack;

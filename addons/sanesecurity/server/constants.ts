@@ -11,30 +11,21 @@ export const saneSecurityPublicKeyUrl = "https://www.sanesecurity.com/publickey.
 
 export const saneSecurityMirrorHost = "rsync.sanesecurity.net";
 
-export const saneSecurityCygwinSetupUrl = "https://cygwin.com/setup-x86_64.exe";
-
-export const saneSecurityCygwinMirrorUrls = [
-    "https://mirrors.kernel.org/sourceware/cygwin/",
-    "https://cygwin.mirror.constant.com/"
-];
-
 export const saneSecuritySigningKeyFingerprint = "4E025A1CBA90A0653F38D2D8D691DED931EA4D9E";
 
-export const saneSecurityToolsDir = path.join(programDataDir, "tools", "sanesecurity-cygwin");
+export const saneSecurityToolsDir = path.join(programDataDir, "tools", "sanesecurity-native");
 
-export const saneSecurityToolsCacheDir = path.join(programDataDir, "tools", "sanesecurity-cygwin-cache");
-
-export const saneSecuritySetupPath = path.join(programDataDir, "tools", "cygwin-setup-x86_64.exe");
+export const saneSecurityToolsCacheDir = path.join(programDataDir, "tools", "sanesecurity-native-cache");
 
 export const saneSecurityWorkingDir = path.join(programDataDir, "sanesecurity");
 
 export const saneSecurityGpgHomeDir = path.join(saneSecurityWorkingDir, "gnupg");
 
-export const saneSecurityRsyncPath = path.join(saneSecurityToolsDir, "bin", "rsync.exe");
+export const saneSecurityRsyncPath = path.join(saneSecurityToolsDir, "msys", "usr", "bin", "rsync.exe");
 
-export const saneSecurityGpgPath = path.join(saneSecurityToolsDir, "bin", "gpg.exe");
+export const saneSecurityGpgPath = path.join(saneSecurityToolsDir, "gnupg", "bin", "gpg.exe");
 
-export const saneSecurityCygpathPath = path.join(saneSecurityToolsDir, "bin", "cygpath.exe");
+export const saneSecurityCygpathPath = path.join(saneSecurityToolsDir, "msys", "usr", "bin", "cygpath.exe");
 
 export const saneSecurityRequiredDatabases = [
     "sanesecurity.ftm",

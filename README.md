@@ -168,7 +168,7 @@ SaneSecurity integration is disabled by default and does not require an account.
 - Complete installs 20 databases, adding spam, scam, URL, attachment, image, and spear-phishing signatures.
 - Databases and detached signatures are downloaded from SaneSecurity's public rsync mirrors.
 - ClamShield verifies every database with SaneSecurity's official GPG signing key and asks ClamAV to load-test it before installation.
-- First-time setup downloads the official signed Cygwin installer and installs the `rsync` and GnuPG packages inside `C:\ProgramData\ClamShield\tools`. This requires approximately 185 MB and outbound TCP port 873.
+- First-time setup extracts isolated, SHA-256-pinned official MSYS2 packages (rsync 3.5.1 and 7-Zip 26.05) and the official Windows GnuPG 2.5.24 distribution inside `C:\ProgramData\ClamShield\tools\sanesecurity-native`. No package installer or package hooks are executed. The helpers use approximately 50 MB, plus download cache, and require outbound TCP port 873 for database updates.
 - Subsequent automatic updates follow ClamShield's configured ClamAV signature update interval.
 
 SaneSecurity is an independent third-party provider. Its signatures can improve detection coverage but may also increase false positives. ClamShield does not guarantee provider availability or detection results.
@@ -284,7 +284,7 @@ C:\ProgramData\ClamShield\shield_scan_cache.sqlite
 
 Requirements:
 
-- Node.js
+- Node.js 26.13.0 or newer for development (Electron supplies its own Node runtime in the installed application)
 - npm
 - Windows for the packaged `.exe` build
 

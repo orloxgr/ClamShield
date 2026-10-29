@@ -1,6 +1,6 @@
 import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router";
 import { Cloud, FolderSearch, HardDrive, FileSearch, Loader2, Cpu, Play, Trash2 } from "lucide-react";
 import { useScan } from "./ScanContext";
 import PageHeader from "../../../src/components/PageHeader";

@@ -15,7 +15,7 @@ export function readBackendSource() {
     }
   };
   for (const folder of ["server", "modules", "addons", "engines"]) visit(folder);
-  return files.sort().map(file => fs.readFileSync(file, "utf8").replace(/^export\s+(?:\/\/[^\n]*\n\s*)?/gm, "")).join("\n");
+  return files.sort().map(file => fs.readFileSync(file, "utf8").replace(/^export\s+(?:\/\/[^\n]*\n\s*)?(?=(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\b)/gm, "")).join("\n");
 }
 
 export function serverTestContext(values: Record<string, any>) {

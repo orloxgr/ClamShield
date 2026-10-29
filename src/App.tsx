@@ -3,7 +3,7 @@ import { t, localizeText, useLanguage } from "./lib/i18n";
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import { BrowserRouter as Router, Routes, Route, NavLink } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, NavLink } from "react-router";
 import { Shield, Search, Activity, Archive, RefreshCw, History, Settings, Loader2, Download, AlertTriangle, ShieldCheck, FileWarning, CalendarClock, Globe2 } from "lucide-react";
 import Dashboard from "../modules/dashboard/ui/Dashboard";
 import Scan from "../modules/on-demand/ui/Scan";

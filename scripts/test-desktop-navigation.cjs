@@ -22,7 +22,7 @@ if (!process.versions.electron) {
 
 const { app, BrowserWindow, ipcMain } = require('electron');
 const http = require('node:http');
-const ts = require('typescript');
+const ts = require('./test-source.cjs');
 const { buildSync } = require('esbuild');
 app.setPath('userData', path.join(process.env.CLAMSHIELD_DESKTOP_TEST_DIR, 'profile'));
 app.setPath('sessionData', path.join(process.env.CLAMSHIELD_DESKTOP_TEST_DIR, 'session'));
@@ -44,7 +44,7 @@ app.whenReady().then(async () => {
     const bundle = buildSync({ stdin: { contents: `
       import React, { useEffect } from 'react';
       import { createRoot } from 'react-dom/client';
-      import { BrowserRouter, useNavigate, useLocation } from 'react-router-dom';
+      import { BrowserRouter, useNavigate, useLocation } from 'react-router';
       import UiErrorBoundary from './src/components/UiErrorBoundary';
       function Fixture() {
         const navigate = useNavigate(); const location = useLocation();

@@ -8,25 +8,16 @@ const root = path.resolve(__dirname, "..");
 const certSubject = process.env.CLAMSHIELD_CODESIGN_SUBJECT || "ClamShield Local Code Signing";
 const certSha1 = process.env.CLAMSHIELD_CODESIGN_SHA1;
 
-function findSigntool() {
+async function findSigntool() {
   const candidates = [
     process.env.SIGNTOOL_EXE,
-    path.join(
-      process.env.LOCALAPPDATA || "",
-      "electron-builder",
-      "Cache",
-      "winCodeSign",
-      "winCodeSign-2.6.0",
-      "windows-10",
-      "x64",
-      "signtool.exe"
-    ),
-    "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe",
-    "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\signtool.exe",
-    "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22000.0\\x64\\signtool.exe"
+    "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe"
   ].filter(Boolean);
 
-  return candidates.find((candidate) => fs.existsSync(candidate));
+  const existing = candidates.find((candidate) => fs.existsSync(candidate));
+  if (existing) return existing;
+  const { getSignToolPath } = require('app-builder-lib/out/toolsets/windows');
+  return (await getSignToolPath('1.1.0', true)).path;
 }
 
 function existing(paths) {
@@ -60,10 +51,10 @@ function signFile(signtool, file) {
   }
 }
 
-function signFiles(files) {
+async function signFiles(files) {
   if (process.platform !== "win32") return;
 
-  const signtool = findSigntool();
+  const signtool = await findSigntool();
   if (!signtool) {
     const message = "signtool.exe was not found; Windows artifacts were not signed.";
     if (process.env.CLAMSHIELD_REQUIRE_SIGNING === "1") throw new Error(message);
@@ -98,7 +89,7 @@ async function refreshInstallerMetadata(installerPath) {
 
 module.exports = async function signWindowsArtifacts(context) {
   if (context && context.appOutDir) {
-    signFiles([
+    await signFiles([
       path.join(context.appOutDir, "ClamShield.exe"),
       path.join(context.appOutDir, "shell", "ClamShieldShellExt.dll")
     ]);
@@ -107,7 +98,7 @@ module.exports = async function signWindowsArtifacts(context) {
 
   if (context && Array.isArray(context.artifactPaths)) {
     const artifactsToSign = context.artifactPaths.filter((file) => /\.(exe|msi|msix)$/i.test(file));
-    signFiles(artifactsToSign);
+    await signFiles(artifactsToSign);
     for (const file of artifactsToSign) {
       await refreshInstallerMetadata(file);
     }
@@ -120,7 +111,7 @@ module.exports = async function signWindowsArtifacts(context) {
     path.join(root, "release", require("../package.json").version, "win-unpacked", "shell", "ClamShieldShellExt.dll"),
     path.join(root, "release", require("../package.json").version, `ClamShield-Setup-${require("../package.json").version}.exe`)
   ];
-  signFiles(manualTargets);
+  await signFiles(manualTargets);
   for (const file of manualTargets) {
     if (fs.existsSync(file)) await refreshInstallerMetadata(file);
   }

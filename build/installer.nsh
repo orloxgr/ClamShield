@@ -13,6 +13,10 @@
     Page custom ClamShieldOptionsPageCreate ClamShieldOptionsPageLeave
   !macroend
 
+  ; electron-builder registers plugin directories asynchronously while reading
+  ; this include. Defer plugin commands until its generated header is complete,
+  ; avoiding duplicate nsDialogs registration with the unified NSIS 3.12 bundle.
+  !macro customHeader
   Function ClamShieldOptionsPageCreate
     ${if} ${Silent}
       Abort
@@ -50,6 +54,7 @@
     ${NSD_GetState} $clamShieldStartMinimizedCheckbox $clamShieldStartMinimized
     ${NSD_GetState} $clamShieldWindowsContextMenuCheckbox $clamShieldWindowsContextMenu
   FunctionEnd
+  !macroend
 !endif
 
 !macro customInit

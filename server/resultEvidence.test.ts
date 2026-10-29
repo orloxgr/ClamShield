@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 import { DatabaseSync } from "node:sqlite";
 import { freshScanEvidence } from "../modules/results/server/evidence";
 
@@ -39,7 +39,7 @@ test("removal deletes only the selected finding, preserves exclusions and record
       runAppStateTransaction: (_db: any, callback: any) => { db.exec("BEGIN"); try { callback(); db.exec("COMMIT"); } catch (error) { db.exec("ROLLBACK"); throw error; } }
     });
     let route = "";
-    const visit = (node: ts.Node) => {
+    const visit = (node: any) => {
       if (ts.isCallExpression(node) && node.expression.getText(tree) === "app.post" &&
           ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "/api/results/:id/dismiss") route = node.getText(tree);
       ts.forEachChild(node, visit);

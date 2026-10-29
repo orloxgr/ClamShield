@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import vm from 'node:vm';
-import ts from 'typescript';
+import ts from "../scripts/test-source.cjs";
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { englishPack, englishText, languageLabel, languageLengthWarnings, localizeText, setLanguage, t, translate, validateLanguagePack, type LanguagePack } from '../shared/localization/runtime';
@@ -84,7 +84,7 @@ test('every authored JSX text and literal translation key belongs to the catalog
   const brands = new Set(['ClamShield', 'SecuriteInfo', 'SaneSecurity', 'Sanesecurity', 'VT']);
   for (const file of ['src', 'modules', 'addons', 'engines', 'server', 'shared'].flatMap(visitFiles).filter(file => /\.tsx?$/.test(file) && !file.endsWith('.test.ts'))) {
     const tree = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-    const visit = (node: ts.Node) => {
+    const visit = (node: any) => {
       if (ts.isJsxText(node)) {
         const text = node.text.replace(/\s+/g, ' ').trim();
         if (/[A-Za-z]/.test(text) && !brands.has(text) && !/^\S+\.(?:ign2|hdb|ndb)$/.test(text)) assert.ok(english.has(text), `${file}: ${text}`);

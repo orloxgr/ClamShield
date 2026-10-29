@@ -7,13 +7,6 @@ export default class UiErrorBoundary extends React.Component<{
     failure: any;
     notice: string;
 }> {
-    declare props: {
-        children: ReactNode;
-    };
-    declare setState: (state: Partial<{
-        failure: any;
-        notice: string;
-    }>) => void;
     state = { failure: null as any, notice: "" };
     static getDerivedStateFromError(error: Error) {
         return {

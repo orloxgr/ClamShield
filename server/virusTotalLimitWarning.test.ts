@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 import { estimateVirusTotalScan, virusTotalLimitWarningsEnabled } from "../addons/virustotal/server/virusTotalLimitWarning";
 
 const now = Date.UTC(2026, 9, 15, 12);
@@ -23,7 +23,7 @@ test("the actual settings route saves only this preference and preserves existin
     const source = readBackendSource();
     const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
     let normalizer = "", handler = "";
-    const visit = (node: ts.Node) => {
+    const visit = (node: any) => {
         if (ts.isFunctionDeclaration(node) && node.name?.text === "normalizeSettingsPatch") normalizer = node.getText(tree);
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "post" &&
             node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "/api/settings") handler = node.arguments[1].getText(tree);

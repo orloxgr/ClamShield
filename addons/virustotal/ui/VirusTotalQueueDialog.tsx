@@ -2,7 +2,7 @@ import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
 import { useEffect, useState } from "react";
 import { Loader2, Search } from "lucide-react";
 import Modal from "../../../src/components/Modal";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { formatSystemDateTime } from "../../../src/lib/dateFormat";
 const sources: Record<string, string> = { all: "All", results: "Results", shield: "Shield", scan: "On-demand scans" };
 export default function VirusTotalQueueDialog({ onClose }: {

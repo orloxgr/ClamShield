@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
 import { DatabaseSync } from "node:sqlite";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 import { reportStatus, updateReportStatus } from "../modules/exceptions/server/reporting";
 const source = readBackendSource();
 const tree = ts.createSourceFile(
@@ -58,7 +58,7 @@ function fixture() {
     },
   });
   let code = functionSource("insertExceptionReportRow");
-  const visit = (node: ts.Node) => {
+  const visit = (node: any) => {
     if (
       ts.isCallExpression(node) &&
       node.expression.getText(tree) === "app.post" &&

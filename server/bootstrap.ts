@@ -455,7 +455,7 @@ export async function startServer() {
     else {
         const distPath = path.join(runtimeDir);
         app.use(express.static(distPath));
-        app.get("*", (req, res, next) => {
+        app.get(/.*/, (req, res, next) => {
             if (path.extname(req.path)) {
                 const error: any = new Error(englishText("backend.bootstrap.ts.a_requested_interface_resource_was_not_found"));
                 error.status = 404;

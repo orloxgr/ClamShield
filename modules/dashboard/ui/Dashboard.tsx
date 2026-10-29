@@ -1,6 +1,6 @@
 import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw, Cloud, KeyRound, SearchCheck, Trash2, UploadCloud } from "lucide-react";
 
 import PageHeader from "../../../src/components/PageHeader";

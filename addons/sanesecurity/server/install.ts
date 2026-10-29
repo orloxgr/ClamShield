@@ -1,67 +1,15 @@
 import { englishText } from "../../../shared/localization/runtime";
-import { downloadFile, verifyAuthenticodeSignature } from "../../../server/core/downloads";
+import { downloadFile } from "../../../server/core/downloads";
 import { appTempDir } from "../../../server/core/paths";
 import { runHiddenProcess } from "../../../server/platform/processes";
 import { pathExists } from "../../../server/scanning/files";
-import { saneSecurityCygpathPath, saneSecurityCygwinMirrorUrls, saneSecurityCygwinSetupUrl, saneSecurityGpgHomeDir, saneSecurityGpgPath, saneSecurityMirrorHost, saneSecurityPublicKeyUrl, saneSecurityRsyncPath, saneSecuritySetupPath, saneSecuritySigningKeyFingerprint, saneSecurityToolsCacheDir, saneSecurityToolsDir, saneSecurityWorkingDir } from "./constants";
+import { saneSecurityCygpathPath, saneSecurityGpgHomeDir, saneSecurityGpgPath, saneSecurityMirrorHost, saneSecurityPublicKeyUrl, saneSecurityRsyncPath, saneSecuritySigningKeyFingerprint, saneSecurityWorkingDir } from "./constants";
 import { getSaneSecurityDatabaseNames, removeSaneSecurityDatabaseFiles } from "./status";
 import { resolve4 } from "dns/promises";
 import fs from "fs/promises";
 import path from "path";
-export async function ensureSaneSecurityTools(onLog: (line: string) => void) {
-    if (await pathExists(saneSecurityRsyncPath) &&
-        await pathExists(saneSecurityGpgPath) &&
-        await pathExists(saneSecurityCygpathPath)) {
-        onLog(englishText("backend.sanesecurity.sanesecurity_helper_tools_are_already_installed"));
-        return;
-    }
-    if (process.platform !== "win32") {
-        throw new Error(englishText("backend.sanesecurity.automatic_sanesecurity_helper_installation_is_currently_supported"));
-    }
-    onLog(englishText("backend.sanesecurity.first_time_setup_downloading_the_official_signed_cygwin_installer"));
-    await downloadFile(saneSecurityCygwinSetupUrl, saneSecuritySetupPath, onLog);
-    const signature = await verifyAuthenticodeSignature(saneSecuritySetupPath);
-    onLog(englishText("backend.sanesecurity.cygwin_installer_signature_verified", {
-        value1: String(signature.Subject || signature.Thumbprint || englishText("backend.sanesecurity.valid_signer"))
-    }));
-    await fs.mkdir(saneSecurityToolsDir, { recursive: true });
-    await fs.mkdir(saneSecurityToolsCacheDir, { recursive: true });
-    let lastError = "";
-    for (const mirrorUrl of saneSecurityCygwinMirrorUrls) {
-        onLog(englishText("backend.sanesecurity.installing_rsync_and_gnupg_from", {
-            mirrorUrl: String(mirrorUrl)
-        }));
-        const result = await runHiddenProcess(saneSecuritySetupPath, [
-            "-q",
-            "-W",
-            "-O",
-            "-B",
-            "-n",
-            "-d",
-            "-N",
-            "-R", saneSecurityToolsDir,
-            "-l", saneSecurityToolsCacheDir,
-            "-s", mirrorUrl,
-            "-P", "rsync,gnupg2"
-        ], {
-            timeoutMs: 15 * 60 * 1000,
-            onLine: line => {
-                if (/error|warning|install|download|package/i.test(line))
-                    onLog(line);
-            }
-        });
-        if (result.code === 0 &&
-            await pathExists(saneSecurityRsyncPath) &&
-            await pathExists(saneSecurityGpgPath) &&
-            await pathExists(saneSecurityCygpathPath)) {
-            onLog(englishText("backend.sanesecurity.sanesecurity_helper_tools_installed_successfully"));
-            return;
-        }
-        lastError = (result.stderr || result.stdout || `Cygwin setup exited with code ${result.code}`).trim();
-        onLog(englishText("backend.sanesecurity.helper_installation_failed_from_this_mirror_trying_another_mirror"));
-    }
-    throw new Error(lastError || englishText("backend.sanesecurity.could_not_install_the_sanesecurity_helper_tools"));
-}
+import { ensureSaneSecurityTools } from './tools';
+
 export async function toCygwinPath(windowsPath: string) {
     const result = await runHiddenProcess(saneSecurityCygpathPath, ["-u", windowsPath], { timeoutMs: 30000 });
     if (result.code !== 0 || !result.stdout.trim()) {
@@ -76,10 +24,9 @@ export async function ensureSaneSecuritySigningKey(onLog: (line: string) => void
     const keyPath = path.join(saneSecurityWorkingDir, "publickey.gpg");
     onLog(englishText("backend.sanesecurity.downloading_the_official_sanesecurity_signing_key"));
     await downloadFile(saneSecurityPublicKeyUrl, keyPath);
-    const [gpgHome, keyFile] = await Promise.all([
-        toCygwinPath(saneSecurityGpgHomeDir),
-        toCygwinPath(keyPath)
-    ]);
+    // Official Windows GnuPG accepts Windows paths; only MSYS2 rsync needs conversion.
+    const gpgHome = saneSecurityGpgHomeDir;
+    const keyFile = keyPath;
     const imported = await runHiddenProcess(saneSecurityGpgPath, [
         "--batch",
         "--no-autostart",
@@ -96,8 +43,9 @@ export async function ensureSaneSecuritySigningKey(onLog: (line: string) => void
         "--with-colons",
         "--fingerprint"
     ], { timeoutMs: 60000 });
-    const normalizedOutput = `${fingerprints.stdout}\n${fingerprints.stderr}`.replace(/\s/g, "").toUpperCase();
-    if (!normalizedOutput.includes(saneSecuritySigningKeyFingerprint)) {
+    const trustedFingerprint = fingerprints.stdout.split(/\r?\n/).some(line =>
+        line.startsWith('fpr:') && line.split(':')[9]?.toUpperCase() === saneSecuritySigningKeyFingerprint);
+    if (fingerprints.code !== 0 || !trustedFingerprint) {
         throw new Error(englishText("backend.sanesecurity.the_downloaded_sanesecurity_signing_key_fingerprint_did_not_match"));
     }
     onLog(englishText("backend.sanesecurity.sanesecurity_signing_key_verified", {
@@ -199,17 +147,19 @@ export async function downloadAndInstallSaneSecurityDatabases(settings: any, onL
         }));
         const databasePath = path.join(stagingDir, name);
         const signaturePath = `${databasePath}.sig`;
-        const [databaseFile, signatureFile] = await Promise.all([
-            toCygwinPath(databasePath),
-            toCygwinPath(signaturePath)
-        ]);
         const signatureResult = await runHiddenProcess(saneSecurityGpgPath, [
             "--batch",
             "--no-autostart",
+            "--status-fd", "1",
             "--homedir", gpgHome,
-            "--verify", signatureFile, databaseFile
+            "--verify", signaturePath, databasePath
         ], { timeoutMs: 60000 });
-        if (signatureResult.code !== 0) {
+        const trustedSignature = signatureResult.stdout.split(/\r?\n/).some(line => {
+            const fields = line.trim().split(/\s+/);
+            return fields[0] === '[GNUPG:]' && fields[1] === 'VALIDSIG' &&
+                [fields[2], fields[11]].includes(saneSecuritySigningKeyFingerprint);
+        });
+        if (signatureResult.code !== 0 || !trustedSignature) {
             throw new Error(englishText("backend.sanesecurity.sanesecurity_gpg_verification_failed_for", {
                 name: String(name)
             }));

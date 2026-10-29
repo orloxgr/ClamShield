@@ -3,7 +3,7 @@
   "description": "ClamShield - Windows GUI for ClamAV",
   "author": "Byron Iniotakis",
   "private": true,
-  "version": "1.4.1",
+  "version": "1.4.2",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -12,7 +12,7 @@
     "build": "npm run build:localization && vite build && esbuild server.ts --platform=node --packages=external --bundle --outfile=dist/server.cjs",
     "build:shell": "node scripts/build-shell-extension.cjs",
     "prebuild:exe": "npm run audit:security && node scripts/prepare-release.cjs",
-    "build:exe": "npm run build:shell && npm run build && electron-builder",
+    "build:exe": "npm run build:shell && npm run build && node --import tsx scripts/build-installer.ts",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -26,6 +26,8 @@
     "test:virustotal-ui": "node scripts/test-virustotal-queue-ui.cjs",
     "audit:critical": "npm audit --omit=dev --audit-level=critical",
     "audit:security": "node scripts/verify-release-security.cjs",
+    "native-tools:refresh": "node scripts/update-native-tools.cjs",
+    "native-tools:check": "node scripts/update-native-tools.cjs --check",
     "release:checksums": "node scripts/generate-checksums.cjs",
     "test:exceptions": "node --import tsx --test server/exceptionReporting.test.ts server/exceptionRoutes.test.ts",
     "build:localization": "node scripts/build-localization.cjs",
@@ -39,6 +41,10 @@
   "build": {
     "appId": "com.clamshield.app",
     "productName": "ClamShield",
+    "toolsets": {
+      "winCodeSign": "1.1.0",
+      "nsis": "1.2.1"
+    },
     "beforePack": "scripts/verify-release-security.cjs",
     "afterSign": "scripts/sign-windows-artifacts.cjs",
     "afterAllArtifactBuild": "scripts/sign-windows-artifacts.cjs",
@@ -114,32 +120,46 @@
     ]
   },
   "dependencies": {
-    "axios": "^1.19.0",
-    "chokidar": "^5.0.0",
+    "axios": "^1.21.0",
+    "chokidar": "^6.0.0",
     "clsx": "^2.1.1",
-    "date-fns": "^4.4.0",
-    "express": "^4.22.2",
-    "lucide-react": "^0.546.0",
-    "motion": "^12.43.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "react-router-dom": "^7.18.2",
-    "tailwind-merge": "^3.6.0",
+    "express": "^5.3.0",
+    "lucide-react": "^1.64.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^8.5.1",
+    "tailwind-merge": "^3.7.0",
+    "tar": "^7.5.22",
     "unzipper": "^0.12.5"
   },
   "devDependencies": {
+    "@babel/parser": "^8.0.8",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/express": "^4.17.21",
-    "@types/node": "^22.20.1",
-    "@vitejs/plugin-react": "^5.2.0",
-    "autoprefixer": "^10.5.4",
-    "concurrently": "^9.2.4",
-    "electron": "^45.0.0",
-    "electron-builder": "^26.15.7",
-    "esbuild": "^0.28.1",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/unzipper": "^0.10.11",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.1",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.23.1",
-    "typescript": "~5.8.2",
-    "vite": "^6.4.5"
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "engines": {
+    "node": ">=26.13.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "electron-winstaller@5.4.4": true
+  },
+  "overrides": {
+    "@electron/asar": "4.3.1",
+    "@electron/get": "5.1.0",
+    "@electron/universal": "3.0.6",
+    "electron-winstaller": "5.4.4"
   }
 }

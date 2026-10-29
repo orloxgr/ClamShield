@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 import { PendingThreats } from "../modules/shield/server/pendingThreats";
@@ -123,7 +123,7 @@ function actionFixture() {
     const source = readBackendSource();
     const tree = ts.createSourceFile("server.ts", source, ts.ScriptTarget.Latest, true);
     let route = "";
-    function visit(node: ts.Node) {
+    function visit(node: any) {
         if (ts.isCallExpression(node) && node.expression.getText(tree) === "app.post" &&
             node.arguments[0]?.getText(tree) === '"/api/pending-threats/:id/action"') route = node.getText(tree);
         ts.forEachChild(node, visit);

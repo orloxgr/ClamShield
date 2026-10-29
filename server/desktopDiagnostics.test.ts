@@ -5,7 +5,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
-import ts from "typescript";
+import ts from "../scripts/test-source.cjs";
 const require = createRequire(import.meta.url);
 const {
   sanitize,
@@ -306,7 +306,7 @@ test("desktop diagnostics IPC rejects other frames and unsafe external protocols
     },
   });
   let code = functionSource("trustedMainSender");
-  const visit = (node: ts.Node) => {
+  const visit = (node: any) => {
     if (
       ts.isCallExpression(node) &&
       node.expression.getText(tree) === "ipcMain.handle" &&
@@ -345,7 +345,7 @@ test("copy diagnostics waits for the asynchronous Electron clipboard and reports
     ipcMain: { handle: (name: string, callback: any) => handlers[name] = callback }
   });
   let code = functionSource("trustedMainSender");
-  const visit = (node: ts.Node) => {
+  const visit = (node: any) => {
     if (ts.isCallExpression(node) && node.expression.getText(tree) === "ipcMain.handle" && node.arguments[0]?.getText(tree) === "'clamshield-copy-diagnostics'") code += `\n${node.getText(tree)};`;
     ts.forEachChild(node, visit);
   };
