@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
+import net from "node:net";
 import ts from "../scripts/test-source.cjs";
 
 const source = fs.readFileSync("electron-main.cjs", "utf8");
@@ -14,6 +15,24 @@ function functionSource(name: string) {
     assert.ok(node); return node.getText(tree);
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("startup port discovery listens only on loopback and closes its temporary listener", async () => {
+    const addresses: net.AddressInfo[] = [];
+    const servers: net.Server[] = [];
+    const context = vm.createContext({ net: { createServer: () => {
+        const server = net.createServer();
+        server.once("listening", () => addresses.push(server.address() as net.AddressInfo));
+        servers.push(server);
+        return server;
+    } } });
+    vm.runInContext(`${functionSource("getFreePort")}\nglobalThis.getPort = getFreePort;`, context);
+    const port = await context.getPort();
+    assert.equal(addresses.length, 1);
+    assert.equal(addresses[0].address, "127.0.0.1");
+    assert.equal(addresses[0].family, "IPv4");
+    assert.equal(port, addresses[0].port);
+    assert.equal(servers[0].listening, false);
+});
 
 function pollingFixture() {
     let now = 0;

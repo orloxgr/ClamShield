@@ -319,14 +319,15 @@ foreach ($path in $paths) {
         $operations[$path] = $_.Exception.Message
     }
 }
-try { $prefsAfter = Get-MpPreference -ErrorAction Stop; $active = @($prefsAfter.ExclusionPath) } catch { $active = @(); $operations['Verify'] = $_.Exception.Message }
+$verified = $false
+try { $prefsAfter = Get-MpPreference -ErrorAction Stop; $active = @($prefsAfter.ExclusionPath); $verified = $true } catch { $active = @(); $operations['Verify'] = $_.Exception.Message }
 $pending = @()
 foreach ($path in $paths) {
     $listed = Test-ClamShieldPathListed $active $path
     if ($enabled -and -not $listed) { $pending += $path }
     if (-not $enabled -and $listed) { $pending += $path }
 }
-$success = ($pending.Count -eq 0)
+$success = $verified -and ($pending.Count -eq 0)
 $result = [ordered]@{
     Supported = $true
     Success = $success

@@ -7,6 +7,7 @@ import PageHeader from "../../../src/components/PageHeader";
 import UpdateJobProgress from "../../../src/components/UpdateJobProgress";
 import VirusTotalQueueDialog from "../../../addons/virustotal/ui/VirusTotalQueueDialog";
 import { formatRelativeTime, formatSystemDateTime } from "../../../src/lib/dateFormat";
+import { dashboardProtectionState } from "./protection";
 export default function Dashboard() {
     useLanguage();
     const [status, setStatus] = useState<any>(null);
@@ -339,7 +340,8 @@ export default function Dashboard() {
     };
     if (!status)
         return <div className="p-8">{t("shield.loading")}</div>;
-    const isProtected = status.settings?.shieldEnabled && !status.isSimulated;
+    const protectionState = dashboardProtectionState(status);
+    const isProtected = protectionState === 'protected';
     const securiteInfo = status.securiteInfo || {};
     const securiteInfoInstalled = securiteInfo.connected && Number(securiteInfo.installedCount || 0) > 0;
     const saneSecurity = status.saneSecurity || {};
@@ -382,11 +384,11 @@ export default function Dashboard() {
                 : "bg-rose-500/10 border-rose-500/20 text-rose-300"}`}>
             {localizeText(isProtected ? <Shield className="w-5 h-5"/> : <ShieldAlert className="w-5 h-5"/>)}
             <span className="font-semibold">
-              {localizeText(isProtected ? "You're Protected" : status.isSimulated ? "Engine missing" : "Shield off")}
+              {localizeText(isProtected ? "You're Protected" : protectionState === 'engine-missing' ? "Engine missing" : protectionState === 'definitions-missing' ? "Update Definitions" : "Shield off")}
             </span>
           </div>)}/>
 
-      {localizeText(status.isSimulated && status.platform === "win32" && (<div className="p-6 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between">
+      {localizeText(protectionState === 'engine-missing' && status.platform === "win32" && (<div className="p-6 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-indigo-300 text-lg flex items-center gap-2">
                 <DownloadCloud className="w-5 h-5"/>{t("dashboard.download_windows_engine")}</h3>
@@ -402,6 +404,11 @@ export default function Dashboard() {
             </div>
             {localizeText(!status.isInstalling && (<button onClick={installEngine} className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition-colors">{t("dashboard.install_clamav_engine")}</button>))}
         </div>))}
+
+      {protectionState === 'definitions-missing' && (<div className="p-6 bg-amber-500/10 border border-amber-500/20 rounded-xl flex flex-wrap gap-4 items-center justify-between">
+          <p className="text-amber-200">{localizeText("No virus database found. Please go to Updates and download virus definitions first.")}</p>
+          <Link to="/updates" className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg">{localizeText("Update Definitions")}</Link>
+      </div>)}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">

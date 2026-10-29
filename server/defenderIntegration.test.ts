@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execFileSync } from 'node:child_process';
 import { testModule } from './testModule';
 
 function fixture(results: any[], platform = 'win32') {
@@ -42,4 +43,14 @@ test('unsupported platform never invokes PowerShell', async () => {
     assert.equal((await f.defender.restoreDefenderPreferences()).Success, false);
     assert.equal((await f.defender.syncDefenderCompatibilityExclusions({ yaraDir: '/tmp/test' })).Supported, false);
     assert.equal(f.scripts.length, 0);
+});
+
+test('exclusion cleanup fails when Windows cannot verify the resulting preferences', { skip: process.platform !== 'win32' }, () => {
+    const f = fixture([]);
+    const script = `function Get-MpPreference { throw 'Preferences unavailable' }\n${f.defender.defenderCompatibilityExclusionsScript(['C:\\ClamShield-QA\\quarantine'], false)}`;
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
+    const result = JSON.parse(output.split('CLAMSHIELD_JSON_START')[1].split('CLAMSHIELD_JSON_END')[0]);
+    assert.equal(result.Success, false);
+    assert.equal(result.NeedsManualAction, true);
+    assert.match(result.Operations.Verify, /Preferences unavailable/);
 });

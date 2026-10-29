@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "desktop": "electron .",
-    "build": "npm run build:localization && vite build && esbuild server.ts --platform=node --packages=external --bundle --outfile=dist/server.cjs",
+    "build": "npm run build:localization && vite build && esbuild server.ts --platform=node --packages=external --bundle --outfile=dist/server.cjs && esbuild server/uninstall.ts --platform=node --packages=external --bundle --outfile=dist/uninstall.cjs",
     "build:shell": "node scripts/build-shell-extension.cjs",
     "prebuild:exe": "npm run audit:security && node scripts/prepare-release.cjs",
     "build:exe": "npm run build:shell && npm run build && node --import tsx scripts/build-installer.ts",

@@ -1,3 +1,10 @@
+if (process.argv.includes('--cleanup-defender-on-uninstall')) {
+    const { app } = require('electron');
+    app.whenReady()
+        .then(() => require('./dist/uninstall.cjs').cleanupDefenderForUninstall())
+        .then(() => app.exit(0), error => { console.error('Defender exclusion cleanup failed:', error.message); app.exit(2); });
+    return;
+}
 const { t, englishText, localizeText, desktopLanguage } = require('./public/desktop-localization.cjs');
 const { app, BrowserWindow, Tray, Menu, nativeImage, session, shell, powerMonitor, ipcMain } = require('electron');
 const path = require('path');
@@ -746,9 +753,10 @@ function createUpdateAvailableWindow(update, config, port) {
     });
 }
 function getFreePort() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         const srv = net.createServer();
-        srv.listen(0, () => {
+        srv.once('error', reject);
+        srv.listen(0, '127.0.0.1', () => {
             const port = srv.address().port;
             srv.close(() => resolve(port));
         });

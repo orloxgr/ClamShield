@@ -110,6 +110,16 @@
   DeleteRegKey HKCU "Software\Classes\*\shell\ClamShield"
   DeleteRegKey HKCU "Software\Classes\Directory\shell\ClamShield"
   ${ifNot} ${isUpdated}
+    DetailPrint "Removing ClamShield Defender compatibility exclusions..."
+    nsExec::ExecToLog `"$INSTDIR\ClamShield.exe" --cleanup-defender-on-uninstall`
+    Pop $0
+    ${if} $0 != "0"
+      ${ifNot} ${Silent}
+        MessageBox MB_OK|MB_ICONSTOP "ClamShield could not remove its Defender compatibility exclusions. Open ClamShield Settings, turn off 'Exclude ClamShield YARA and quarantine from Defender', and try uninstalling again. Windows Security or your device policy may require manual action."
+      ${endif}
+      SetErrorLevel 2
+      Abort
+    ${endif}
     ExecWait `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Set-MpPreference -DisableRealtimeMonitoring $$false -DisableBehaviorMonitoring $$false -DisableIOAVProtection $$false -DisableScriptScanning $$false -DisableBlockAtFirstSeen $$false -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples -ScanScheduleDay Everyday -DisableCatchupFullScan $$false -DisableCatchupQuickScan $$false -ErrorAction SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.SecurityAndMaintenance' -Name Enabled -Force -ErrorAction SilentlyContinue; $$dnsBackupPath = Join-Path $$env:ProgramData 'ClamShield\dns-protection-backup.json'; if (Test-Path -LiteralPath $$dnsBackupPath) { try { $$dnsBackup = Get-Content -LiteralPath $$dnsBackupPath -Raw | ConvertFrom-Json; foreach ($$savedAdapter in @($$dnsBackup.adapters)) { $$networkAdapter = Get-NetAdapter -InterfaceIndex ([int]$$savedAdapter.interfaceIndex) -ErrorAction SilentlyContinue; if (-not $$networkAdapter) { $$networkAdapter = Get-NetAdapter -Name ([string]$$savedAdapter.interfaceAlias) -ErrorAction SilentlyContinue | Select-Object -First 1 }; if ($$networkAdapter) { $$addresses = @(@($$savedAdapter.ipv4) + @($$savedAdapter.ipv6) | Where-Object { $$_ }); if ($$addresses.Count -gt 0) { Set-DnsClientServerAddress -InterfaceIndex $$networkAdapter.InterfaceIndex -ServerAddresses $$addresses -ErrorAction SilentlyContinue } else { Set-DnsClientServerAddress -InterfaceIndex $$networkAdapter.InterfaceIndex -ResetServerAddresses -ErrorAction SilentlyContinue } } }; Clear-DnsClientCache -ErrorAction SilentlyContinue } catch {} }; Remove-Item -LiteralPath $$dnsBackupPath -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath (Join-Path $$env:ProgramData 'ClamShield\securiteinfo-token.bin') -Force -ErrorAction SilentlyContinue"`
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClamShield"
     ExecWait `"$SYSDIR\schtasks.exe" /delete /tn "ClamShield" /f`

@@ -4,7 +4,7 @@ const { parse } = require('@babel/parser');
 const { transformSync } = require('esbuild');
 /** @returns {any} */
 function createSourceFile(file, text, ..._options) {
-  const parsed = parse(text, { sourceType: 'unambiguous', errorRecovery: true, plugins: ['typescript', ...(file.endsWith('.tsx') ? ['jsx'] : [])] });
+  const parsed = parse(text, { sourceType: file.endsWith('.cjs') ? 'commonjs' : 'unambiguous', errorRecovery: true, plugins: ['typescript', ...(file.endsWith('.tsx') ? ['jsx'] : [])] });
   const unexpected = parsed.errors.filter(error => !['VarRedeclaration', 'DuplicateExport'].includes(error.reasonCode));
   if (unexpected.length) throw unexpected[0];
   const visited = new WeakSet();
