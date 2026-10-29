@@ -369,7 +369,7 @@ ClamAV is a trademark of Cisco Systems, Inc. ClamShield is an independent GUI ap
 
 ClamShield includes English and 15 automatic translation drafts. The language selector shows both English and native language names; drafts stay marked `(auto)` until a volunteer reviews the complete language file. Reviewed translations display the contributor's preferred name.
 
-You can correct a single UTF-8 JSON file with a text editor. See the [translation and Git contribution guide](languages/README.md) for file locations, character limits, placeholders, review credits and pull-request instructions.
+The easiest way to help is to open your language's JSON file on GitHub, click the pencil icon, edit it and submit a pull request. No Git installation or coding experience is needed. See the [translation guide](languages/README.md) for the browser steps, manual-review credits and local testing. You can also edit a downloaded file and email it to [orloxgr@gmail.com](mailto:orloxgr@gmail.com).
 
 ## Support
 
