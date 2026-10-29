@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { validateSource } = require('../scripts/release-source.cjs');
 const { assetNames, digest, createManifest, verifyManifest } = require('../scripts/release-manifest.cjs');
-const { verifyUploaded } = require('../scripts/publish-release.cjs');
+const { verifyUploaded, publish } = require('../scripts/publish-release.cjs');
 const { finalizeRelease } = require('../scripts/finalize-release.cjs');
 const { validateReusableRun, selectReusableArtifact } = require('../scripts/reuse-release-artifact.cjs');
 const yaml = require('js-yaml');
@@ -57,6 +57,60 @@ test('publication rejects truncated, incomplete, or substituted server-side asse
     assert.throws(()=>verifyUploaded(assets.slice(1),f.directory,f.names));
   } finally { f.clean(); }
 });
+
+function publicationFixture(existing: boolean) {
+  const f = fixture();
+  createManifest(f.directory, sha, version);
+  fs.writeFileSync(path.join(f.directory, 'provenance.json'), 'provenance fixture');
+  const names = [...f.names, 'release-manifest.json', 'provenance.json'];
+  const draft = { id: 123, tag_name: `v${version}`, draft: true, prerelease: false, target_commitish: sha, html_url: 'https://github.com/owner/project/releases/tag/'+`v${version}`,
+    assets: names.map(name => { const bytes = fs.readFileSync(path.join(f.directory,name)); return { name, size: bytes.length, digest: `sha256:${digest(bytes)}`, state: 'uploaded' }; }) };
+  let release: any = existing ? structuredClone(draft) : null;
+  const mutations: string[] = [];
+  function gh(args: string[]) {
+    if (args[0] === 'release' && args[1] === 'create') { mutations.push('create'); release = structuredClone(draft); return draft.html_url; }
+    const endpoint = args.find(arg => arg.startsWith('repos/owner/project/'))?.slice('repos/owner/project/'.length);
+    assert.ok(endpoint, JSON.stringify(args));
+    assert.ok(!endpoint.startsWith('releases/tags/'), 'Drafts must not be addressed by the published-tag endpoint');
+    if (endpoint === 'releases?per_page=100') return JSON.stringify([release ? [release] : []]);
+    if (endpoint === `git/ref/tags/v${version}`) return JSON.stringify({object:{type:'commit',sha}});
+    if (endpoint === 'releases/123') {
+      if (args.includes('PATCH')) { mutations.push('publish'); release.draft = false; }
+      return JSON.stringify(release);
+    }
+    throw new Error('Unexpected publication request');
+  }
+  return { ...f, gh, mutations, get release() { return release; } };
+}
+
+test('publication creates a draft, verifies its assets by release ID, then publishes the same release', () => {
+  const f = publicationFixture(false);
+  try {
+    assert.equal(publish(f.directory, sha, version, 'owner/project', f.gh).draft, false);
+    assert.deepEqual(f.mutations, ['create', 'publish']);
+  } finally { f.clean(); }
+});
+
+test('publication resumes an already uploaded identical draft without replacing any assets', () => {
+  const f = publicationFixture(true);
+  try {
+    const assets = structuredClone(f.release.assets);
+    publish(f.directory, sha, version, 'owner/project', f.gh);
+    assert.deepEqual(f.mutations, ['publish']);
+    assert.deepEqual(f.release.assets, assets);
+  } finally { f.clean(); }
+});
+
+test('existing public releases and drafts with different sources or assets are never modified', () => {
+  for (const change of [{draft:false}, {prerelease:true}, {target_commitish:'b'.repeat(40)}, {assets:[]}]) {
+    const f = publicationFixture(true);
+    try {
+      Object.assign(f.release, change);
+      assert.throws(() => publish(f.directory, sha, version, 'owner/project', f.gh));
+      assert.deepEqual(f.mutations, []);
+    } finally { f.clean(); }
+  }
+});
 test('final signing targets only the installer, so unpacked executables cannot change after packaging', async () => {
   const f=fixture();
   try {
@@ -79,6 +133,7 @@ test('release runs the shared full CI suite before audit, packaging, signatures,
   assert.ok(ordered.every((index:number,i:number)=>index>=0&&(!i||index>ordered[i-1])));
   assert.equal(release.jobs.build.permissions.contents,'read');
   assert.equal(release.jobs.publish.permissions.contents,'write');
+  assert.equal(release.jobs.publish.steps[0].with.ref, '${{ github.sha }}');
   assert.deepEqual(release.jobs.publish.needs,['build','reuse']);
   assert.ok(release.jobs.publish.steps.some((s:any)=>s.run?.includes('--source-digest')));
   assert.ok(!release.jobs.publish.steps.some((s:any)=>/npm (ci|install|run build)|electron-builder|sign-windows/.test(s.run||'')));
