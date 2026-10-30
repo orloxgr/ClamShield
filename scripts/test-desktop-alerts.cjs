@@ -44,8 +44,12 @@ app.whenReady().then(async () => {
       `${['handleThreatEvent', 'handleApiEvent', 'createAlertWindow'].map(functionSource).join('\n')}
        return { handleThreatEvent, handleApiEvent };`)(
       require("../public/desktop-localization.cjs").englishText, require("../public/desktop-localization.cjs").t, root, BrowserWindow, path, activeAlerts, new Set(), () => ({ playSoundOnAlert: false }), file => path.join(root, 'public', file),
-      win => windows.push(win), () => {});
+      win => {
+        windows.push(win);
+        win.webContents.once('dom-ready', () => { win.fixtureDomReady = true; });
+      }, () => {});
     let failAction = true, holdAction = false, release;
+    ipcMain.handle('clamshield-language', () => require('../public/localization-runtime.cjs').englishPack);
     ipcMain.handle('clamshield-alert-action', async (_event, payload) => {
       actions.push(payload);
       if (holdAction) await new Promise(resolve => release = resolve);
@@ -56,10 +60,21 @@ app.whenReady().then(async () => {
     const open = async threat => {
       await context.handleThreatEvent(threat, 1234);
       const win = windows.at(-1);
-      await until(async () => !win.webContents.isLoading() && await win.webContents.executeJavaScript('Boolean(document.getElementById("quarantineBtn") && window.clamshieldAlert)'));
+      // DOM readiness proves that the controls and their handlers are installed;
+      // whole-page loading also waits for optional media, which is unrelated.
+      await until(async () => win.fixtureDomReady && await win.webContents.executeJavaScript('Boolean(document.getElementById("quarantineBtn") && window.clamshieldAlert)'));
       return win;
     };
     const win = await open(clam);
+    const sound = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const audio = document.getElementById('alertSound');
+      const timer = setTimeout(() => reject(new Error('Bundled alert sound did not load')), 5000);
+      audio.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Bundled alert sound is missing')); }, {once:true});
+      audio.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve({src:audio.currentSrc, duration:audio.duration}); }, {once:true});
+      audio.preload = 'metadata'; audio.load();
+    })`);
+    assert.equal(sound.src, require('node:url').pathToFileURL(path.join(root, 'public/alert.wav')).href);
+    assert.ok(sound.duration > 0, 'alert sound must load from the bundled file without playing');
     await context.handleThreatEvent({ ...clam, detections: [clam, { engine: 'VirusTotal' }] }, 1234);
     await context.handleThreatEvent({ ...clam, id: 'duplicate-provider' }, 1234);
     assert.equal(windows.length, 1, 'one popup per file');
