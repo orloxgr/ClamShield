@@ -1,6 +1,13 @@
 import { normalizeCachePath } from "../../../modules/shield/server/cache";
 import { isNoisyClamFileLine, parseClamOutputPath } from "./arguments";
 
+export function parseClamFileDetection(line: string, expectedPath: string) {
+    const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
+    if (!match || normalizeCachePath(match[1]) !== normalizeCachePath(expectedPath))
+        return null;
+    return { originalPath: match[1], threatName: match[2] };
+}
+
 export function isLockedOrUnstableClamLine(line: string) {
     return /File path check failure|Can't get file status|Can't open file(?: or directory)?|Can't access file|Can't fstat descriptor|Access denied|Permission denied/i.test(line);
 }

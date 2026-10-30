@@ -151,7 +151,14 @@ export async function waitForClamdReady(settings: any, timeoutMs = 45000, onProg
         details: [...runtimeState.clamdStartupOutput.slice(-12), ...logTail]
     };
 }
-export async function manageClamd(settings: any) {
+let clamdManagement: Promise<void> = Promise.resolve();
+export function manageClamd(settings: any) {
+    const requestedSettings = { ...settings };
+    const next = clamdManagement.then(() => applyClamdSettings(requestedSettings));
+    clamdManagement = next.catch(() => {});
+    return next;
+}
+async function applyClamdSettings(settings: any) {
     if (runtimeState.isSimulated || !settings.clamdPath)
         return;
     if (settings.offloadToMemory) {
@@ -167,30 +174,35 @@ export async function manageClamd(settings: any) {
             console.log(englishText("backend.clamav.starting_clamd_process"));
             try {
                 runtimeState.clamdStartupOutput = [];
-                runtimeState.clamdProcess = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf], { windowsHide: true });
+                const child = spawn(settings.clamdPath, ["--config-file=" + settings.clamdConf], { windowsHide: true });
+                runtimeState.clamdProcess = child;
                 runtimeState.clamdConfSignature = nextClamdConfSignature;
                 applyShieldLowImpactPriority(runtimeState.clamdProcess, settings, "clamd");
-                runtimeState.clamdProcess.stdout?.on("data", (data: Buffer) => {
+                child.stdout?.on("data", (data: Buffer) => {
                     const lines = data.toString().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
                     recordClamdOutput(filterClamdStartupOutput(lines));
                     lines.forEach(line => logClamdOutput(line, "log"));
                 });
-                runtimeState.clamdProcess.stderr?.on("data", (data: Buffer) => {
+                child.stderr?.on("data", (data: Buffer) => {
                     const lines = data.toString().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
                     recordClamdOutput(filterClamdStartupOutput(lines));
                     lines.forEach(line => logClamdOutput(line, "warn"));
                 });
-                runtimeState.clamdProcess.on("error", (err: any) => {
+                child.on("error", (err: any) => {
                     console.error(englishText("backend.clamav.failed_to_start_clamd"), err.message);
                     recordClamdOutput([`Failed to start clamd: ${err.message}`]);
-                    runtimeState.clamdProcess = null;
-                    runtimeState.clamdConfSignature = "";
+                    if (runtimeState.clamdProcess === child) {
+                        runtimeState.clamdProcess = null;
+                        runtimeState.clamdConfSignature = "";
+                    }
                 });
-                runtimeState.clamdProcess.on("close", (code: number | null) => {
+                child.on("close", (code: number | null) => {
                     console.log(englishText("backend.clamav.clamd_process_closed"));
                     recordClamdOutput([`clamd process closed${code === null ? "" : ` with exit code ${code}`}.`]);
-                    runtimeState.clamdProcess = null;
-                    runtimeState.clamdConfSignature = "";
+                    if (runtimeState.clamdProcess === child) {
+                        runtimeState.clamdProcess = null;
+                        runtimeState.clamdConfSignature = "";
+                    }
                 });
             }
             catch (e: any) {

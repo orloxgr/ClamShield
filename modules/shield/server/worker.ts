@@ -1,7 +1,7 @@
 import { englishText } from "../../../shared/localization/runtime";
 import { buildClamScanArgs, getClamScanChildTimeoutMs } from "../../../engines/clamav/server/arguments";
 import { flushPendingClamdDatabaseReload, manageClamd, stopClamdAfterScannerTimeout, waitForClamdReady } from "../../../engines/clamav/server/daemon";
-import { isLockedOrUnstableClamLine } from "../../../engines/clamav/server/output";
+import { isLockedOrUnstableClamLine, parseClamFileDetection } from "../../../engines/clamav/server/output";
 import { runYaraScanForTargets } from "../../../engines/yara/server/scan";
 import { ApplicationContext } from "../../../server/core/applicationContext";
 import { runtimeState } from "../../../server/core/runtimeState";
@@ -34,7 +34,11 @@ export function createQueuePendingThreat(context: Pick<ApplicationContext, "pend
     };
 }
 export function createStartShield(context: Pick<ApplicationContext, "shieldWatcher" | "pendingThreatStore" | "shieldScanCache" | "activeJobs" | "appendJobLogs" | "createScanHeartbeat" | "sendApiEvent" | "queuePendingThreat" | "pendingThreats" | "enqueueShieldVirusTotalCheck" | "settings">) {
-    return async function (currentSettings: any) {
+    let retireCurrentQueue = () => {};
+    let restarting: Promise<void> = Promise.resolve();
+    const start = async (currentSettings: any) => {
+        retireCurrentQueue();
+        retireCurrentQueue = () => {};
         if (context.shieldWatcher) {
             await context.shieldWatcher.close();
             context.shieldWatcher = null;
@@ -83,11 +87,16 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
             reason: "add" | "change";
         }>();
         const lockedFileBackoff = new Map<string, number>();
+        let retired = false;
+        retireCurrentQueue = () => {
+            retired = true;
+            pendingShieldScans.clear();
+        };
         let activeShieldScans = 0;
         const shieldProfile = getScanIntensityProfile(currentSettings, 0, "shield");
         const maxShieldScans = shieldProfile.workers;
         const processShieldQueue = () => {
-            while (activeShieldScans < maxShieldScans && pendingShieldScans.size > 0) {
+            while (!retired && activeShieldScans < maxShieldScans && pendingShieldScans.size > 0) {
                 const next = Array.from(pendingShieldScans.entries()).find(([normalizedPath]) => !filesBeingScanned.has(normalizedPath)) as [
                     string,
                     {
@@ -109,7 +118,7 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
             }
         };
         const enqueueShieldFile = (filePath: string, reason: "add" | "change") => {
-            if (shouldSkipShieldPath(filePath))
+            if (retired || shouldSkipShieldPath(filePath))
                 return;
             if (reason === "add")
                 context.pendingThreatStore.fileAdded(filePath);
@@ -138,7 +147,7 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
                 filePath: String(filePath)
             }));
             const fingerprint = await getFileFingerprint(filePath);
-            if (!fingerprint || (reason !== "add" && cacheEntryMatches(fingerprint, context.shieldScanCache.get(normalizedPath))) || runtimeState.isSimulated) {
+            if (retired || !fingerprint || (reason !== "add" && cacheEntryMatches(fingerprint, context.shieldScanCache.get(normalizedPath))) || runtimeState.isSimulated) {
                 filesBeingScanned.delete(normalizedPath);
                 return;
             }
@@ -182,6 +191,11 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
                             value1: String(e?.message || e)
                         })]);
                 }
+            }
+            if (retired) {
+                delete context.activeJobs[jobId];
+                filesBeingScanned.delete(normalizedPath);
+                return;
             }
             let exePath = isClamd ? currentSettings.clamdscanPath : currentSettings.clamscanPath;
             let args = buildClamScanArgs(currentSettings, isClamd, "file", filePath);
@@ -285,9 +299,9 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
                             let actionTaken = "None";
                             for (const line of context.activeJobs[jobId].analysisLogs || []) {
                                 if (line.includes(" FOUND")) {
-                                    const match = line.match(/^(.*?):\s+(.*?)\s+FOUND$/);
-                                    if (match) {
-                                        const originalPath = match[1];
+                                    const detection = parseClamFileDetection(line, filePath);
+                                    if (detection) {
+                                        const originalPath = detection.originalPath;
                                         if (shouldSkipShieldPath(originalPath)) {
                                             context.appendJobLogs(jobId, [englishText("backend.shield.ignored_provider_safety_exclusion", {
                                                     originalPath: String(originalPath)
@@ -301,7 +315,7 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
                                             continue;
                                         }
                                         threatsFound++;
-                                        const threatName = match[2];
+                                        const threatName = detection.threatName;
                                         const action = normalizeShieldDetectionAction(currentSettings.actionOnDetection || (currentSettings.autoQuarantine ? "quarantine_silent" : "ask"));
                                         const actionKind = shieldActionKind(action);
                                         if (actionKind === "quarantine") {
@@ -461,5 +475,11 @@ export function createStartShield(context: Pick<ApplicationContext, "shieldWatch
         };
         context.shieldWatcher.on('add', (filePath) => enqueueShieldFile(filePath, "add"));
         context.shieldWatcher.on('change', (filePath) => enqueueShieldFile(filePath, "change"));
+    };
+    return (currentSettings: any) => {
+        const requestedSettings = { ...currentSettings };
+        const next = restarting.then(() => start(requestedSettings));
+        restarting = next.catch(() => {});
+        return next;
     };
 }

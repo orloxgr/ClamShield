@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-10-29",
+  "reviewedAt": "2026-10-30",
   "packages": [
     {
       "name": "gcc-libs",
@@ -155,19 +155,19 @@
     },
     {
       "name": "mingw-w64-ucrt-x86_64-tzdata",
-      "version": "2026e-1",
+      "version": "2026f-1",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-tzdata",
-      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-tzdata-2026e-1-any.pkg.tar.zst",
-      "sha256": "f1809089f8ed5cec858ae8584289172896eb921be1e78ba583555f74e9015428",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-tzdata-2026f-1-any.pkg.tar.zst",
+      "sha256": "dd8af2f770b3241d8c299343c12cd4d7e3b94c47195608158d28788a01575323",
       "family": "archive",
       "dependencies": []
     },
     {
       "name": "msys2-runtime",
-      "version": "3.6.11-4",
+      "version": "3.6.11-7",
       "source": "https://packages.msys2.org/packages/msys2-runtime",
-      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-3.6.11-4-x86_64.pkg.tar.zst",
-      "sha256": "7b1c4b625483ceff9a87f2dfcf3659704dc3da655a0ad414ecb7d9175e7d3ba0",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-3.6.11-7-x86_64.pkg.tar.zst",
+      "sha256": "01e768d169bced6e6f6fb5aa3529de032c0975f2ab18658a49d3f9a951a49e10",
       "family": "msys",
       "dependencies": []
     },

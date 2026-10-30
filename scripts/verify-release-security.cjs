@@ -30,6 +30,7 @@ function verifyInstalledDependencies(root) {
 
 function verifyRelease(root = path.resolve(__dirname, '..')) {
   verifyInstalledDependencies(root);
+  require('./patch-chokidar.cjs').verifyOrApply(root, true);
   const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   if (!fs.existsSync(npmCli)) throw new Error('Cannot locate npm for the full dependency audit. Run through npm or npx. Release blocked.');
   const result = spawnSync(process.execPath, [npmCli, 'audit', '--json', '--include=dev', '--include=optional'], {
