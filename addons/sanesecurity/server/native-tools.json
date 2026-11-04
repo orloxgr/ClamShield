@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-10-30",
+  "reviewedAt": "2026-11-04",
   "packages": [
     {
       "name": "gcc-libs",
@@ -146,10 +146,10 @@
     },
     {
       "name": "mingw-w64-ucrt-x86_64-libwinpthread",
-      "version": "14.0.0.r569.g34eeafb7d-1",
+      "version": "14.0.0.r598.ge3d18511f-1",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libwinpthread",
-      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r569.g34eeafb7d-1-any.pkg.tar.zst",
-      "sha256": "b4ebe2826e848c5e790e06ea7b37d3e0594e005f42382b0506886f17df8127da",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r598.ge3d18511f-1-any.pkg.tar.zst",
+      "sha256": "c35d6be83d141c8cfbb61f1637dd4b53aac8f5562d766aa26d0741c40bad4e4d",
       "family": "archive",
       "dependencies": []
     },
@@ -164,10 +164,10 @@
     },
     {
       "name": "msys2-runtime",
-      "version": "3.6.11-7",
+      "version": "3.6.12-1",
       "source": "https://packages.msys2.org/packages/msys2-runtime",
-      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-3.6.11-7-x86_64.pkg.tar.zst",
-      "sha256": "01e768d169bced6e6f6fb5aa3529de032c0975f2ab18658a49d3f9a951a49e10",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-3.6.12-1-x86_64.pkg.tar.zst",
+      "sha256": "c0dbaa624e29be6d08cf5c65609dca6c749431109e4572bf446a3ca9b4c4fd7c",
       "family": "msys",
       "dependencies": []
     },

@@ -1,4 +1,5 @@
 import {createHandleVirusTotalShieldDetection} from "../modules/shield/server/cloudDetection";
+import { ShieldVirusTotalQueue } from "../addons/virustotal/server/shieldQueue";
 import { englishText } from "../shared/localization/runtime";
 import { registerLanguageRoutes, describePresentationFields } from "./core/languages";
 import { registerPostApiSanesecurityConfigure, registerPostApiSanesecurityDisconnect, registerPostApiUpdateSanesecurity } from "../addons/sanesecurity/server/routes";
@@ -228,23 +229,17 @@ export async function startServer() {
     const pendingThreats = pendingThreatStore.items;
     const pendingThreatActions = new Map<string, Promise<any>>();
     const queuePendingThreat = createQueuePendingThreat(context);
-    const virusTotalShieldQueue = new Map<string, {
-        filePath: string;
-        queuedAt: number;
-        notBefore?: number;
-        uploadedHash?: string;
-        pendingUploadHash?: string;
-        forceCloudCheck?: boolean;
-        analysisId?: string;
-    }>();
+    const virusTotalShieldQueue = new ShieldVirusTotalQueue(getAppStateDb());
     let virusTotalShieldActiveItem: any = null;
     runtimeState.virusTotalQueueViewHandler = (options, configured) => {
         const pending = new Map<string, any>();
         for (const [id, item] of virusTotalShieldQueue)
             pending.set(id, {
                 id: `shield:${id}`, filePath: item.filePath, createdAt: item.queuedAt,
-                phase: item.pendingUploadHash ? "needs_upload" : item.uploadedHash ? englishText("backend.virustotal.analysing") : englishText("backend.virustotal.pending"),
-                nextAttemptAt: item.notBefore || 0, analysisId: item.analysisId || ""
+                phase: item.blockedReason ? "blocked" : item.pendingUploadHash ? "needs_upload" : item.uploadedHash && item.analysisId && !item.recheckHash ? "analysing" : "pending",
+                nextAttemptAt: item.blockedReason ? 0 : item.notBefore || 0, analysisId: item.analysisId || "",
+                message: item.message || (item.blockedReason ? englishText(item.blockedReason === "analysis" ? "vt.queue.analysis_missing" : "vt.queue.file_error") : ""),
+                blockedReason: item.blockedReason || ""
             });
         if (virusTotalShieldActiveItem)
             pending.set(normalizedStatePath(virusTotalShieldActiveItem.filePath), virusTotalShieldActiveItem);
@@ -278,7 +273,8 @@ export async function startServer() {
     scheduleShieldVirusTotalCheck = (delayMs = 0) => {
         if (runtimeState.virusTotalShieldTimer)
             clearTimeout(runtimeState.virusTotalShieldTimer);
-        if (virusTotalShieldQueue.size === 0)
+        if (!Array.from(virusTotalShieldQueue.values()).some(item => !item.blockedReason
+            && (settings.virusTotalShieldBackgroundCheckEnabled === true || item.forceCloudCheck || item.uploadedHash)))
             return;
         if (settings.virusTotalCloudEnabled !== true)
             return;

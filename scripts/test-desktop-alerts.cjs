@@ -40,14 +40,14 @@ app.whenReady().then(async () => {
   const windows = [], actions = [];
   try {
     const activeAlerts = new Map();
-    const context = new Function('englishText', 't', '__dirname', 'BrowserWindow', 'path', 'activeAlerts', 'dismissedAlerts', 'readAppSettings', 'getPublicAssetPath', 'trackNotification', 'attachWindowLogging',
+    const context = new Function('englishText', 't', '__dirname', 'BrowserWindow', 'path', 'activeAlerts', 'dismissedAlerts', 'readAppSettings', 'getPublicAssetPath', 'trackNotification', 'attachWindowLogging', 'reflowNotifications',
       `${['handleThreatEvent', 'handleApiEvent', 'createAlertWindow'].map(functionSource).join('\n')}
        return { handleThreatEvent, handleApiEvent };`)(
       require("../public/desktop-localization.cjs").englishText, require("../public/desktop-localization.cjs").t, root, BrowserWindow, path, activeAlerts, new Set(), () => ({ playSoundOnAlert: false }), file => path.join(root, 'public', file),
       win => {
         windows.push(win);
         win.webContents.once('dom-ready', () => { win.fixtureDomReady = true; });
-      }, () => {});
+      }, () => {}, () => {});
     let failAction = true, holdAction = false, release;
     ipcMain.handle('clamshield-language', () => require('../public/localization-runtime.cjs').englishPack);
     ipcMain.handle('clamshield-alert-action', async (_event, payload) => {
@@ -56,7 +56,7 @@ app.whenReady().then(async () => {
       return failAction ? { success: false, error: 'The file is no longer at this location. Choose Decide later to keep the detection in Results.' } : { success: true };
     });
     ipcMain.handle('clamshield-alert-log', () => ({ success: true }));
-    const clam = { id: 'one', originalPath: 'D:\\Test\\sample.zip', threatName: 'Test.Signature', engine: 'ClamAV' };
+    const clam = { id: 'one', originalPath: 'D:\\Users\\Byron\\Downloads\\eicar_com2.zip', threatName: 'SecuriteInfo.com.Eicar-Test-Signature-1.UNOFFICIAL', engine: 'ClamAV' };
     const open = async threat => {
       await context.handleThreatEvent(threat, 1234);
       const win = windows.at(-1);
@@ -79,8 +79,30 @@ app.whenReady().then(async () => {
     await context.handleThreatEvent({ ...clam, id: 'duplicate-provider' }, 1234);
     assert.equal(windows.length, 1, 'one popup per file');
     await until(async () => /ClamAV \+ VirusTotal/.test(await win.webContents.executeJavaScript('document.getElementById("providers").textContent')));
+    await until(async () => await win.webContents.executeJavaScript('document.querySelector(".actions").getBoundingClientRect().bottom <= innerHeight'));
+    assert.equal(win.getSize()[0], 420);
+    assert.ok(win.getSize()[1] <= 185, 'ordinary alert remains compact');
+    const capture = async filename => {
+      if (!process.env.CLAMSHIELD_ALERT_SCREENSHOT_DIR) return;
+      await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      fs.mkdirSync(process.env.CLAMSHIELD_ALERT_SCREENSHOT_DIR, { recursive: true });
+      fs.writeFileSync(path.join(process.env.CLAMSHIELD_ALERT_SCREENSHOT_DIR, filename), (await win.webContents.capturePage()).toPNG());
+    };
+    await capture('threat-popup-compact.png');
+    const runtime = require('../public/localization-runtime.cjs');
+    for (const filename of fs.readdirSync(path.join(root, 'languages')).filter(name => name.endsWith('.json') && name !== 'template.json')) {
+      const pack = runtime.validateLanguagePack(JSON.parse(fs.readFileSync(path.join(root, 'languages', filename), 'utf8')));
+      win.webContents.send('clamshield-language-changed', pack);
+      await until(async () => await win.webContents.executeJavaScript(`document.documentElement.lang === ${JSON.stringify(pack.language.code)} && document.querySelector('.actions').getBoundingClientRect().bottom <= innerHeight`));
+      assert.ok(await win.webContents.executeJavaScript('[...document.querySelectorAll("button")].every(button => button.scrollWidth <= button.clientWidth && button.getBoundingClientRect().right <= innerWidth)'), filename + ': translated actions fit');
+      if (pack.language.code === 'el') await capture('threat-popup-greek.png');
+    }
+    win.webContents.send('clamshield-language-changed', runtime.englishPack);
+    await until(async () => win.getSize()[1] <= 185 && await win.webContents.executeJavaScript('document.documentElement.lang === "en" && document.querySelector(".actions").getBoundingClientRect().bottom <= innerHeight'));
+    const compactHeight = win.getSize()[1];
     await win.webContents.executeJavaScript('document.getElementById("quarantineBtn").click()');
     await until(async () => await win.webContents.executeJavaScript('!document.getElementById("actionError").hidden && !document.getElementById("quarantineBtn").disabled'));
+    await until(async () => await win.webContents.executeJavaScript('document.querySelector(".actions").getBoundingClientRect().bottom <= innerHeight'));
     const geometry = await win.webContents.executeJavaScript(`(() => {
       const message = document.getElementById('actionError'), buttons = document.querySelector('.actions');
       return { text: message.textContent, messageBottom: message.getBoundingClientRect().bottom, buttonsTop: buttons.getBoundingClientRect().top,
@@ -89,12 +111,8 @@ app.whenReady().then(async () => {
     assert.match(geometry.text, /Decide later/);
     assert.ok(geometry.messageBottom <= geometry.buttonsTop, 'failure text is visible above actions');
     assert.ok(geometry.buttonsBottom <= geometry.height, 'actions remain inside popup');
-    if (process.env.CLAMSHIELD_ALERT_SCREENSHOT_DIR) {
-      const directory = process.env.CLAMSHIELD_ALERT_SCREENSHOT_DIR;
-      fs.mkdirSync(directory, { recursive: true });
-      await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-      fs.writeFileSync(path.join(directory, 'threat-popup-error.png'), (await win.webContents.capturePage()).toPNG());
-    }
+    assert.ok(win.getSize()[1] > compactHeight, 'popup grows to show the action error');
+    await capture('threat-popup-error.png');
     failAction = false;
     await win.webContents.executeJavaScript('document.getElementById("laterBtn").click()');
     await until(() => win.isDestroyed());
@@ -117,6 +135,7 @@ app.whenReady().then(async () => {
     app.exit(0);
   } catch (error) {
     console.error(error);
+    for (const win of windows) if (!win.isDestroyed()) console.error(await win.webContents.executeJavaScript('JSON.stringify({lang:document.documentElement.lang,height:innerHeight,body:document.body.getBoundingClientRect().height,wrap:document.querySelector(".wrap").getBoundingClientRect().height,actions:document.querySelector(".actions").getBoundingClientRect().toJSON()})').catch(() => ''));
     for (const win of windows) if (!win.isDestroyed()) win.destroy();
     app.exit(1);
   }

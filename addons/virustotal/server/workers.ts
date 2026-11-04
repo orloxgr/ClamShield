@@ -11,7 +11,7 @@ import { shouldSkipBuiltInScanPath } from "../../../server/scanning/targets";
 import { loadVirusTotalApiKey } from "./account";
 import { virusTotalPublicApiLimits } from "./constants";
 import { buildVirusTotalRefinement, buildVirusTotalThreatName, getVirusTotalDetectionCount, getVirusTotalRefinementStatus, getVirusTotalResultUploadFollowupAt, isVirusTotalResultUploadFollowupDue, persistVirusTotalResult, runVirusTotalResultCloudCheck, virusTotalFileAnalysis } from "./refinement";
-import { createVirusTotalNoReport, fetchVirusTotalFileReport, formatVirusTotalUploadSize, getVirusTotalShieldUploadMaxBytes, summarizeVirusTotalFileReport } from "./requests";
+import { fetchVirusTotalFileReport, formatVirusTotalUploadSize, getVirusTotalShieldUploadMaxBytes, summarizeVirusTotalFileReport } from "./requests";
 import { isVirusTotalAutoRefinementCandidate } from "./status";
 import { createHash } from "crypto";
 import { existsSync } from "fs";
@@ -37,24 +37,36 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
             return;
         }
         const next = Array.from(context.virusTotalShieldQueue.entries())
-            .find(([, queuedItem]) => Number(queuedItem.notBefore || 0) <= now);
+            .find(([, queuedItem]) => !queuedItem.blockedReason && Number(queuedItem.notBefore || 0) <= now
+                && (context.settings.virusTotalShieldBackgroundCheckEnabled === true || queuedItem.forceCloudCheck || queuedItem.uploadedHash));
         if (!next) {
-            const nextAt = Math.min(...Array.from(context.virusTotalShieldQueue.values()).map(item => Number(item.notBefore || now)));
+            const nextAt = Math.min(...Array.from(context.virusTotalShieldQueue.values())
+                .filter(item => !item.blockedReason && (context.settings.virusTotalShieldBackgroundCheckEnabled === true || item.forceCloudCheck || item.uploadedHash))
+                .map(item => Number(item.notBefore || now)));
             if (Number.isFinite(nextAt))
                 context.scheduleShieldVirusTotalCheck(Math.max(1000, nextAt - now));
             return;
         }
         const [normalizedPath, item] = next;
-        context.virusTotalShieldQueue.delete(normalizedPath);
+        // Keep the accepted upload durable while its request is in flight.
         runtimeState.virusTotalShieldRunning = true;
         context.virusTotalShieldActiveItem = { id: `shield:${normalizedPath}`, filePath: item.filePath, createdAt: item.queuedAt,
-            phase: item.pendingUploadHash ? "needs_upload" : item.uploadedHash ? englishText("backend.virustotal.analysing") : englishText("backend.virustotal.pending"), active: true };
+            phase: item.pendingUploadHash ? "needs_upload" : item.uploadedHash && item.analysisId && !item.recheckHash ? "analysing" : "pending", active: true };
+        let sha256 = item.sha256 || item.uploadedHash || item.pendingUploadHash || "";
+        let completed = false;
         try {
             if (!existsSync(item.filePath) && !item.uploadedHash) {
                 runtimeState.virusTotalShieldLastMessage = `File unavailable. Restore it and scan again: ${item.filePath}`;
+                context.virusTotalShieldQueue.set(normalizedPath, { ...item, blockedReason: "file",
+                    message: englishText("vt.queue.file_error") });
                 return;
             }
-            const sha256 = existsSync(item.filePath) ? await hashFile(item.filePath, "sha256") : item.uploadedHash!;
+            sha256 = existsSync(item.filePath) ? await hashFile(item.filePath, "sha256") : item.uploadedHash!;
+            if (item.pendingUploadHash && item.pendingUploadHash !== sha256) {
+                context.virusTotalShieldQueue.set(normalizedPath, { ...item, sha256, pendingUploadHash: "", blockedReason: "file",
+                    message: englishText("vt.queue.file_changed") });
+                return;
+            }
             if (item.pendingUploadHash === sha256) {
                 const analysisId = await virusTotalFileAnalysis.upload(apiKey, item.filePath, async () => context.settings.virusTotalCloudEnabled === true && await loadVirusTotalApiKey() === apiKey);
                 await addHistory({
@@ -82,7 +94,7 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
                 return;
             }
             let report: any;
-            if (item.uploadedHash === sha256 && item.analysisId) {
+            if (item.uploadedHash === sha256 && item.analysisId && !item.recheckHash) {
                 let payload: any;
                 try {
                     payload = await virusTotalFileAnalysis.analysis(apiKey, item.analysisId, sha256);
@@ -90,12 +102,9 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
                 catch (error: any) {
                     if (!error.analysisMissing)
                         throw error;
-                    // Keep an expired submission actionable in Results; never discard or re-upload it silently.
-                    await addScanResult({ source: "shield", originalPath: item.filePath,
-                        threatName: "VirusTotal analysis requires review", engine: "VirusTotal", sha256,
-                        virusTotalRefinement: { ...buildVirusTotalRefinement(createVirusTotalNoReport(sha256)),
-                            message: englishText("backend.virustotal.the_earlier_analysis_expired_recheck_the_hash_in_results_if_no_re") },
-                        virusTotalChecks: { resultsUploadedUnknownHash: sha256, resultsUploadAnalysisId: item.analysisId, resultsAnalysisExpired: true } });
+                    context.virusTotalShieldQueue.set(normalizedPath, { ...item, sha256, blockedReason: "analysis",
+                        message: englishText("vt.queue.analysis_missing") });
+                    runtimeState.virusTotalShieldLastMessage = englishText("vt.queue.analysis_missing");
                     return;
                 }
                 if (!payload) {
@@ -120,6 +129,7 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
                     actionTaken
                 }).catch(() => { });
                 runtimeState.virusTotalShieldLastMessage = `${buildVirusTotalThreatName(report)}: ${item.filePath}`;
+                completed = true;
             }
             else if (report?.found === false) {
                 const fileStat = await fs.stat(item.filePath).catch(() => null);
@@ -130,7 +140,7 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
                         value1: String(formatVirusTotalUploadSize(fileStat.size)),
                         value2: String(formatVirusTotalUploadSize(maxBytes))
                     }) : "";
-                if (uploadEnabled &&
+                if (!item.recheckHash && uploadEnabled &&
                     fileStat &&
                     fileStat.isFile() &&
                     fileStat.size > 0 &&
@@ -146,10 +156,14 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
                 }
                 else {
                     runtimeState.virusTotalShieldLastMessage = uploadSkipMessage || `Hash checked: no report. Enable file uploads in Settings to request analysis: ${item.filePath}`;
+                    context.virusTotalShieldQueue.set(normalizedPath, { ...item, sha256, recheckHash: false,
+                        blockedReason: fileStat?.isFile() ? "upload" : "file",
+                        message: uploadSkipMessage || englishText(fileStat?.isFile() ? "vt.queue.upload_needed" : "vt.queue.file_error") });
                 }
             }
             else {
                 runtimeState.virusTotalShieldLastMessage = `VirusTotal clean: ${item.filePath}`;
+                completed = true;
             }
             runtimeState.virusTotalShieldNextAllowedAt = Date.now() + virusTotalPublicApiLimits.perLookupMs;
             runtimeState.virusTotalShieldWaitReason = "";
@@ -163,24 +177,21 @@ export function createProcessNextShieldVirusTotalCheck(context: Pick<Application
             runtimeState.virusTotalShieldLastMessage = e?.message || String(e);
             runtimeState.virusTotalShieldWaitReason = runtimeState.virusTotalShieldLastMessage;
             runtimeState.virusTotalShieldNextAllowedAt = Date.now() + backoffMs;
-            if (!e?.fileError) {
-                context.virusTotalShieldQueue.set(normalizedPath, item);
+            if (!e?.fileError && !e?.fileChanged) {
+                context.virusTotalShieldQueue.set(normalizedPath, { ...item, notBefore: runtimeState.virusTotalShieldNextAllowedAt });
             }
             else {
-                await addScanResult({ source: "shield", originalPath: item.filePath,
-                    threatName: "VirusTotal check requires review", engine: "VirusTotal",
-                    sha256: item.uploadedHash || item.pendingUploadHash || "",
-                    virusTotalRefinement: { status: "blocked", label: englishText("results.action_required"), severity: "neutral",
-                        checkedAt: Date.now(), report: createVirusTotalNoReport(item.uploadedHash || item.pendingUploadHash || ""),
-                        message: runtimeState.virusTotalShieldLastMessage + englishText("backend.virustotal.review_the_file_in_results_restore_access_and_retry_adjust_upload") },
-                    virusTotalChecks: { resultsUploadedUnknownHash: item.uploadedHash || "", resultsUploadAnalysisId: item.analysisId || "", resultsBlockedReason: "file" } });
+                context.virusTotalShieldQueue.set(normalizedPath, { ...item, sha256, blockedReason: "file",
+                    message: runtimeState.virusTotalShieldLastMessage + " " + englishText("vt.queue.file_error") });
             }
             console.warn(englishText("backend.virustotal.virustotal_shield_check_paused"), runtimeState.virusTotalShieldLastMessage);
         }
         finally {
             runtimeState.virusTotalShieldRunning = false;
             context.virusTotalShieldActiveItem = null;
-            if (context.virusTotalShieldQueue.size > 0)
+            if (completed && context.virusTotalShieldQueue.get(normalizedPath) === item)
+                context.virusTotalShieldQueue.delete(normalizedPath);
+            if (Array.from(context.virusTotalShieldQueue.values()).some(task => !task.blockedReason))
                 context.scheduleShieldVirusTotalCheck(Math.max(0, runtimeState.virusTotalShieldNextAllowedAt - Date.now()));
         }
     };

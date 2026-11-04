@@ -18,17 +18,18 @@
 
     body {
       margin: 0;
-      height: 100vh;
-      overflow: hidden;
+      min-height: 170px;
+      overflow-y: auto;
+      overflow-x: hidden;
       background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
       border: 1px solid rgba(239, 68, 68, 0.35);
     }
 
     .wrap {
-      height: 100%;
-      padding: 14px 16px;
+      min-height: 168px;
+      padding: 12px 14px 14px;
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-rows: auto 1fr auto;
       gap: 8px;
     }
 
@@ -44,6 +45,7 @@
     }
 
     .icon {
+      flex-shrink: 0;
       width: 34px;
       height: 34px;
       border-radius: 999px;
@@ -102,11 +104,13 @@
 
     .actions {
       display: flex;
-      justify-content: flex-end;
-      gap: 8px;
+      justify-content: flex-start;
+      gap: 6px;
       flex-wrap: nowrap;
       min-width: 0;
     }
+
+    .actions button { min-width: 0; }
 
     button {
       border: 1px solid transparent;
@@ -116,7 +120,9 @@
       font-weight: 700;
       color: white;
       cursor: pointer;
-      white-space: nowrap;
+      white-space: normal;
+      max-width: 100%;
+      overflow-wrap: anywhere;
     }
 
     button:disabled {
@@ -156,11 +162,7 @@
       background: #d97706;
       border-color: #f59e0b;
     }
-  /* Long translations wrap; actions remain reachable in a small notification. */
-    body { overflow-y: auto; overflow-x: hidden; }
-    .wrap { min-height: 100%; height: auto; }
-    .actions { flex-wrap: wrap; }
-    button { max-width: 100%; overflow-wrap: anywhere; }
+    /* Long translations wrap without reserving empty space in every popup. */
     .header > div { min-width: 0; }
     h1, .sub, .details { overflow-wrap: anywhere; }
   </style>

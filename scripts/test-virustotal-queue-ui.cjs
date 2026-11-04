@@ -50,6 +50,7 @@ app.whenReady().then(async () => {
     const methods = [];
     const submissions = [];
     const removals = [];
+    const queueActions = [];
     server = http.createServer((req, res) => {
       methods.push(req.method);
       const url = new URL(req.url, 'http://127.0.0.1');
@@ -57,6 +58,19 @@ app.whenReady().then(async () => {
       if (url.pathname === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(fs.readFileSync(path.join(root, 'dist/assets', cssName))); return; }
       if (url.pathname.startsWith('/api/')) {
         res.setHeader('Content-Type', 'application/json');
+        if (url.pathname === '/api/virustotal/queue/shield/action') {
+          assert.equal(req.method, 'POST');
+          let raw = ''; req.on('data', chunk => raw += chunk);
+          req.on('end', () => {
+            const action = JSON.parse(raw); queueActions.push(action);
+            const index = tasks.findIndex(task => task.id === action.id);
+            if (action.action === 'remove') tasks.splice(index, 1);
+            else if (action.action === 'recheck') Object.assign(tasks[index], { blockedReason: 'upload', actions: ['recheck', 'upload', 'remove'] });
+            else Object.assign(tasks[index], { state: 'Upload queued', actions: [] });
+            res.end(JSON.stringify({ success: true }));
+          });
+          return;
+        }
         if (url.pathname.endsWith('/dismiss')) {
           assert.equal(req.method, 'POST'); removals.push(url.pathname);
           const index = findings.findIndex(item => url.pathname === '/api/results/' + item.id + '/dismiss');
@@ -74,7 +88,9 @@ app.whenReady().then(async () => {
         else if (url.pathname === '/api/virustotal/queue') {
           const source = url.searchParams.get('source') || 'all', search = (url.searchParams.get('search') || '').toLowerCase();
           const items = tasks.filter(item => (source === 'all' || item.source === source) && item.filePath.toLowerCase().includes(search));
-          res.end(JSON.stringify({ items, total: items.length, totalPending: 3, counts: { results: 1, shield: 1, scan: 1 }, page: 1, pageSize: 50, enabled: true, configured: true }));
+          res.end(JSON.stringify({ items, total: items.length, totalPending: tasks.length,
+            counts: Object.fromEntries(['results','shield','scan'].map(source => [source,tasks.filter(item => item.source === source).length])),
+            page: 1, pageSize: 50, enabled: true, configured: true }));
         } else res.end(JSON.stringify({ enabled: true, configured: true }));
         return;
       }
@@ -137,6 +153,30 @@ app.whenReady().then(async () => {
     await click('Remove finding');
     await until(async () => !(await text()).includes('Test.Changed'));
     assert.deepEqual(removals, ['/api/results/changed/dismiss']);
+    const blocked = { id: 'shield:missing', source: 'shield', filePath: 'D:\\Downloads\\analysis-missing.zip', state: 'Action required',
+      submission: 'This is a cloud-check task, not a malware finding.', message: 'VirusTotal could not find the earlier analysis. Recheck the hash.',
+      blockedReason: 'analysis', actions: ['recheck', 'remove'] };
+    tasks.push(blocked);
+    await click('View queue');
+    await until(async () => (await text()).includes('analysis-missing.zip'));
+    assert.match(await text(), /not a malware finding/);
+    await click('Recheck hash');
+    await until(async () => (await text()).includes('Upload for analysis'));
+    assert.deepEqual(queueActions, [{ id: blocked.id, action: 'recheck' }]);
+    await click('Upload for analysis');
+    await until(async () => (await text()).includes('Uploaded samples may be shared'));
+    assert.equal(queueActions.length, 1, 'queue uploads also require confirmation');
+    await click('Cancel');
+    await click('Upload for analysis');
+    await win.webContents.executeJavaScript('[...document.querySelectorAll("button")].filter(button=>button.textContent.trim()==="Upload for analysis").at(-1).click()');
+    await until(async () => queueActions.length === 2);
+    assert.equal(queueActions[1].action, 'upload');
+    tasks.push({ ...blocked, id: 'shield:remove', filePath: 'D:\\Downloads\\keep-on-disk.zip', actions: ['recheck', 'remove'] });
+    await until(async () => (await text()).includes('keep-on-disk.zip'));
+    await click('Remove from queue');
+    await until(async () => !(await text()).includes('keep-on-disk.zip'));
+    assert.equal(queueActions.at(-1).action, 'remove');
+    assert.equal(removals.length, 1, 'removing a cloud task must not dismiss a real finding');
     console.log('PASS: real Dashboard queue button, source filters, search, close, actionable Results states, read-only queue and explicit upload confirmation, changed-file guidance and confirmed finding removal.');
     win.destroy(); server.close(); app.exit(0);
   } catch (error) { console.error(error); if (win && !win.isDestroyed()) win.destroy(); server?.close(); app.exit(1); }

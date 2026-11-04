@@ -24,6 +24,8 @@ export function scanResultSelectSql() {
 export function getScanResultFindingSource(result: any) {
     const threatName = String(result?.threatName || result?.threat_name || "");
     const engine = String(result?.engine || "");
+    if (engine.toLowerCase() === "virustotal")
+        return "VirusTotal";
     if (/^yara:/i.test(threatName) || engine.toLowerCase() === "yara")
         return "YARA";
     if (/securiteinfo\.com(?:[._-]|$)/i.test(threatName) || /^securiteinfo[._-]/i.test(threatName))
@@ -35,6 +37,7 @@ export function getScanResultFindingSource(result: any) {
 export function scanResultFindingSourceSql() {
     return `
         CASE
+            WHEN LOWER(COALESCE(engine, '')) = 'virustotal' THEN 'VirusTotal'
             WHEN LOWER(COALESCE(engine, '')) = 'yara' OR LOWER(COALESCE(threat_name, '')) LIKE 'yara:%' THEN 'YARA'
             WHEN INSTR(LOWER(COALESCE(threat_name, '')), 'securiteinfo.com') > 0
                  OR LOWER(COALESCE(threat_name, '')) LIKE 'securiteinfo.%'

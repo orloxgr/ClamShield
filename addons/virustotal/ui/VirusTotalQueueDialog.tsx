@@ -11,6 +11,23 @@ export default function VirusTotalQueueDialog({ onClose }: {
     useLanguage();
     const [source, setSource] = useState("all"), [search, setSearch] = useState(""), [page, setPage] = useState(1);
     const [data, setData] = useState<any>(null), [error, setError] = useState(""), [loading, setLoading] = useState(true);
+    const [actionBusy, setActionBusy] = useState(""), [actionError, setActionError] = useState("");
+    const [uploadTask, setUploadTask] = useState("");
+    const [revision, setRevision] = useState(0);
+    const manageTask = async (id: string, action: string) => {
+        if (actionBusy) return;
+        setActionBusy(id); setActionError("");
+        try {
+            const response = await fetch("/api/virustotal/queue/shield/action", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, action })
+            });
+            const body = await response.json();
+            if (!response.ok) throw new Error(body.error || t("vt.queue.update_failed"));
+            setUploadTask("");
+            setRevision(value => value + 1);
+        } catch (e: any) { setActionError(e.message); }
+        finally { setActionBusy(""); }
+    };
     useEffect(() => {
         const controller = new AbortController();
         let running = false;
@@ -43,7 +60,7 @@ export default function VirusTotalQueueDialog({ onClose }: {
         const initial = window.setTimeout(refresh, 150);
         const timer = window.setInterval(refresh, 3000);
         return () => { controller.abort(); window.clearTimeout(initial); window.clearInterval(timer); };
-    }, [source, search, page]);
+    }, [source, search, page, revision]);
     const button = "rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs hover:bg-slate-700 disabled:opacity-40";
     return <Modal title={t("common.virus_total_queue_dialog.virustotal_queue")} onClose={onClose}>
     <div className="space-y-3 border-b border-slate-800 px-6 py-4">
@@ -60,6 +77,7 @@ export default function VirusTotalQueueDialog({ onClose }: {
       </label>
       {localizeText(data && <p className="text-xs text-slate-400">{localizeText(data.totalPending)}{t("common.virus_total_queue_dialog.unfinished_task_s_across_all_queues_a_file_can_appear_in_more_tha")}</p>)}
       {localizeText(error && <p role="alert" className="rounded bg-red-500/10 p-2 text-sm text-red-200">{localizeText(error)}{t("common.virus_total_queue_dialog.the_list_may_be_out_of_date")}</p>)}
+      {actionError && <p role="alert" className="text-sm text-amber-200">{localizeText(actionError)}</p>}
       {localizeText(data && !data.enabled && <p className="text-sm text-amber-200">{t("common.virus_total_queue_dialog.cloud_checks_are_disabled_open_settings_to_enable_them_or_review")}</p>)}
       {localizeText(data && data.enabled && !data.configured && <p className="text-sm text-amber-200">{t("common.virus_total_queue_dialog.no_api_key_is_configured_open_settings_to_add_a_key_or_review_the")}</p>)}
     </div>
@@ -79,7 +97,16 @@ export default function VirusTotalQueueDialog({ onClose }: {
             {localizeText(item.nextAttemptAt > Date.now() && <span>{t("common.virus_total_queue_dialog.next_attempt")}{localizeText(formatSystemDateTime(item.nextAttemptAt))}</span>)}
           </div>
           {localizeText(item.message && <p className="break-words text-xs text-amber-200">{localizeText(item.message)}</p>)}
-          <Link className="inline-block text-xs text-sky-300" to={item.source === "scan" ? "/scan" : "/results"} onClick={onClose}>{localizeText(item.source === "scan" ? "Manage scan" : "Review in Results")}</Link>
+          {item.actions?.length > 0 ? <div className="flex flex-wrap gap-2">{item.actions.map((action: string) =>
+            <button key={action} className={button} disabled={Boolean(actionBusy)} onClick={() => action === "upload" ? setUploadTask(item.id) : manageTask(item.id, action)}>
+              {t(action === "recheck" ? "results.recheck_hash" : action === "upload" ? "results.upload_for_analysis" : "vt.queue.remove")}
+            </button>)}</div>
+            : <Link className="inline-block text-xs text-sky-300" to={item.source === "scan" ? "/scan" : item.source === "shield" ? "/shield" : "/results"} onClick={onClose}>{localizeText(item.source === "scan" ? "Manage scan" : item.source === "shield" ? "Shield" : "Review in Results")}</Link>}
+          {uploadTask === item.id && <div className="space-y-2 rounded border border-amber-500/30 p-3 text-xs text-amber-100">
+            <p>{t("results.submit_this_file_to_virustotal_for_analysis_uploaded_samples_may")}</p>
+            <div className="flex gap-2"><button className={button} disabled={Boolean(actionBusy)} onClick={() => setUploadTask("")}>{t("results.cancel")}</button>
+              <button className={button} disabled={Boolean(actionBusy)} onClick={() => manageTask(item.id, "upload")}>{t("results.upload_for_analysis")}</button></div>
+          </div>}
           {localizeText(item.analysisId && <p className="select-text break-all text-xs text-slate-500">{t("common.virus_total_queue_dialog.analysis_id")}{localizeText(item.analysisId)}</p>)}
         </article>))}</div>)}
     </div>

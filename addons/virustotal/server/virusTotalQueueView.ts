@@ -1,3 +1,5 @@
+import { englishText } from "../../../shared/localization/runtime";
+
 export type QueueRuntime = {
   enabled: boolean; configured: boolean; now?: number;
   activeResultsId?: string; activeScanId?: number;
@@ -19,16 +21,19 @@ export function describeQueueItem(item: any, runtime: QueueRuntime) {
     : active ? phase === "needs_upload" ? "Uploading file" : phase === "analysing" ? "Checking analysis" : "Checking hash"
     : phase === "analysing" ? "Awaiting analysis" : phase === "needs_upload" ? "Upload queued"
     : nextAt > now ? waitReason ? "Waiting to retry" : "Hash check scheduled" : "Hash lookup queued";
-  const submission = phase === "blocked" ? "Open Results to retry or resolve this finding."
+  const shieldTask = item.source === "shield";
+  const submission = phase === "blocked" && shieldTask ? englishText("vt.queue.task_only")
+    : phase === "blocked" ? "Open Results to retry or resolve this finding."
     : phase === "upload_required" ? "Hash checked: no report. Open Results to upload the file or quarantine it."
     : phase === "analysing" ? "File uploaded; ClamShield will monitor its analysis automatically."
     : phase === "needs_upload" ? "Hash checked: no report. File upload has not completed."
     : item.analysisId ? "An earlier file upload is recorded; a hash recheck is pending."
     : "Hash lookup only; no file upload is recorded for this task.";
-  return { ...item, phase, active, state, submission, nextAttemptAt: active ? 0 : nextAt,
+  return { ...item, phase, active, state, submission,
+    actions: shieldTask && phase === "blocked" ? ["recheck", ...(item.blockedReason === "upload" ? ["upload"] : []), "remove"] : [],
+    nextAttemptAt: active || phase === "blocked" ? 0 : nextAt,
     message: item.message || (nextAt > now ? waitReason || "" : "") };
 }
-
 // Paginate in SQLite: full scans can contain millions of pending files.
 export function getVirusTotalQueuePage(db: any, settings: any, shield: any[], runtime: QueueRuntime, options: any = {}) {
   const pageSize = 50;
@@ -78,6 +83,7 @@ export function getVirusTotalQueuePage(db: any, settings: any, shield: any[], ru
     : source === "all" ? totalPending : counts[source];
   const page = Math.max(1, Math.min(Math.ceil(total / pageSize) || 1, Math.floor(Number(options.page) || 1)));
   const items = db.prepare(`${sql} SELECT * FROM queue ${where} ORDER BY createdAt, id LIMIT ? OFFSET ?`).all(...parameters, ...filters, pageSize, (page - 1) * pageSize);
-  return { items: items.map((item: any) => describeQueueItem(item, runtime)), total, totalPending, counts, page, pageSize,
+  const shieldById = new Map(shield.map(item => [item.id, item]));
+  return { items: items.map((item: any) => describeQueueItem({ ...item, ...(item.source === "shield" ? shieldById.get(item.id) : {}) }, runtime)), total, totalPending, counts, page, pageSize,
     enabled: runtime.enabled, configured: runtime.configured };
 }

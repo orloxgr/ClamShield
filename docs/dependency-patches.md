@@ -1,5 +1,14 @@
 # Dependency patches
 
+## Build dependency overrides
+
+The package overrides pin EJS 7.0.2, glob 14.0.3 and minimatch 11.0.4 to avoid
+the vulnerable transitive versions requested by the packaging tools. EJS keeps
+the CommonJS render API, and the current ASAR tool uses the modern glob and
+minimatch APIs. Validate installer packaging when changing these pins; the full
+dependency audit includes build tools, even when their affected targets are not
+used by the Windows NSIS installer.
+
 ## Chokidar 6.0.0: Windows startup enumeration
 
 `scripts/patch-chokidar.cjs` fixes a race in the Windows root-parent subscription

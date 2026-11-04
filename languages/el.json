@@ -11944,6 +11944,56 @@
       "StringInEng": "Help translating ClamShield",
       "translation": "Help translating ClamShield",
       "maxChars": 27
+    },
+    "vt.queue.analysis_missing": {
+      "StringInEng": "VirusTotal could not find the earlier analysis. Recheck the hash; upload again only if no report is available. This is not a malware detection.",
+      "translation": "Το VirusTotal δεν βρήκε την προηγούμενη ανάλυση. Ελέγξτε ξανά το hash· στείλτε ξανά το αρχείο μόνο αν δεν υπάρχει αναφορά. Αυτό δεν είναι ανίχνευση ιού.",
+      "maxChars": 143
+    },
+    "vt.queue.upload_needed": {
+      "StringInEng": "No VirusTotal report is available for this hash. Upload the file for analysis or remove this task. This is not a malware detection.",
+      "translation": "Δεν υπάρχει αναφορά VirusTotal για αυτό το hash. Στείλτε το αρχείο για ανάλυση ή αφαιρέστε την εργασία. Αυτό δεν είναι ανίχνευση ιού.",
+      "maxChars": 131
+    },
+    "vt.queue.file_error": {
+      "StringInEng": "The cloud check could not finish. Restore access to the file, recheck the hash, or remove this task. This is not a malware detection.",
+      "translation": "Ο έλεγχος cloud δεν ολοκληρώθηκε. Αποκαταστήστε την πρόσβαση στο αρχείο, ελέγξτε ξανά το hash ή αφαιρέστε την εργασία. Αυτό δεν είναι ανίχνευση ιού.",
+      "maxChars": 133
+    },
+    "vt.queue.file_changed": {
+      "StringInEng": "The file changed before upload. Recheck its hash before submitting the new content.",
+      "translation": "Το αρχείο άλλαξε πριν την αποστολή. Ελέγξτε ξανά το hash πριν στείλετε το νέο περιεχόμενο.",
+      "maxChars": 83
+    },
+    "vt.queue.task_only": {
+      "StringInEng": "This is a cloud-check task, not a malware finding.",
+      "translation": "Αυτή είναι εργασία ελέγχου cloud, όχι ανίχνευση ιού.",
+      "maxChars": 50
+    },
+    "vt.queue.remove": {
+      "StringInEng": "Remove from queue",
+      "translation": "Αφαίρεση από ουρά",
+      "maxChars": 17
+    },
+    "vt.queue.update_failed": {
+      "StringInEng": "Could not update the VirusTotal task. Refresh the queue and try again.",
+      "translation": "Δεν ενημερώθηκε η εργασία VirusTotal. Ανανεώστε την ουρά και δοκιμάστε ξανά.",
+      "maxChars": 70
+    },
+    "vt.queue.enable_cloud": {
+      "StringInEng": "Enable VirusTotal cloud checks and configure an API key in Settings before retrying.",
+      "translation": "Ενεργοποιήστε τους ελέγχους VirusTotal και ορίστε API key στις Ρυθμίσεις πριν δοκιμάσετε ξανά.",
+      "maxChars": 84
+    },
+    "vt.queue.recheck_first": {
+      "StringInEng": "Recheck the hash before requesting another upload.",
+      "translation": "Ελέγξτε ξανά το hash πριν ζητήσετε νέα αποστολή.",
+      "maxChars": 50
+    },
+    "vt.queue.upload_unavailable": {
+      "StringInEng": "The file cannot be uploaded. Check file access and the upload size limit in Settings, then recheck its hash.",
+      "translation": "Το αρχείο δεν μπορεί να σταλεί. Ελέγξτε την πρόσβαση και το όριο μεγέθους στις Ρυθμίσεις και ελέγξτε ξανά το hash.",
+      "maxChars": 108
     }
   }
 }

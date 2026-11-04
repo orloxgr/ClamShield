@@ -1,6 +1,7 @@
 import express from "express";
 import {spawn} from "child_process";
 import {ScanProgress} from "../scanning/types";
+import type { ShieldVirusTotalTask } from "../../addons/virustotal/server/shieldQueue";
 // Live dependencies of trusted bundled modules; language packs never receive this object.
 export interface ApplicationContext {
   settings: any;
@@ -22,7 +23,7 @@ export interface ApplicationContext {
   pendingThreats: any;
   pendingThreatActions: Map<string,Promise<any>>;
   queuePendingThreat: any;
-  virusTotalShieldQueue: Map<string,{ filePath: string, queuedAt: number, notBefore?: number, uploadedHash?: string, pendingUploadHash?: string, forceCloudCheck?: boolean, analysisId?: string }>;
+  virusTotalShieldQueue: Map<string, ShieldVirusTotalTask>;
   virusTotalShieldActiveItem: any;
   eventClients: Set<express.Response>;
   sendApiEventToClient: any;

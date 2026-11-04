@@ -563,8 +563,8 @@ function trackNotification(win) {
     }
 }
 function createAlertWindow(threat, port, playSound) {
-    const alertWidth = 460;
-    const alertHeight = 240;
+    const alertWidth = 420;
+    const alertHeight = 170;
     const alertWin = new BrowserWindow({
         width: alertWidth,
         height: alertHeight,
@@ -580,6 +580,7 @@ function createAlertWindow(threat, port, playSound) {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            enablePreferredSizeMode: true,
             preload: getPublicAssetPath('alert-preload.cjs')
         }
     });
@@ -588,6 +589,20 @@ function createAlertWindow(threat, port, playSound) {
     alertWin.latestThreat = threat;
     trackNotification(alertWin);
     attachWindowLogging(alertWin, englishText("desktop.electron_main.threat_alert"));
+    // Size the trusted document naturally, including translated actions/errors.
+    // Reflow the stack after resizing to preserve its monitor/work-area anchor.
+    alertWin.webContents.on('preferred-size-changed', (_event, size) => {
+        if (alertWin.isDestroyed() || !Number.isFinite(size.height))
+            return;
+        const height = Math.max(alertHeight, Math.min(320, Math.ceil(size.height)));
+        if (alertWin.getSize()[1] !== height) {
+            // Windows freezes a non-resizable window's minimum at its last size.
+            alertWin.setResizable(true);
+            alertWin.setSize(alertWin.getSize()[0], height);
+            alertWin.setResizable(false);
+            reflowNotifications();
+        }
+    });
     alertWin.webContents.on('did-finish-load', () => alertWin.webContents.send('clamshield-alert-update', alertWin.latestThreat));
     alertWin.on('closed', () => {
         activeAlerts.delete(threat.id);
