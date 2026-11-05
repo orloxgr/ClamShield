@@ -1,5 +1,7 @@
 # Signed releases from a fixed source
 
+The published [v1.4.6 release](https://github.com/orloxgr/ClamShield/releases/tag/v1.4.6) is an example of this process: [Release Build run 42041293270](https://github.com/orloxgr/ClamShield/actions/runs/42041293270), source commit `9d083f77344557b88adef2cf8f395ce297434861`. Its assets include the signed installer, blockmap, updater metadata, checksums, source manifest and GitHub provenance. The signing certificate is currently self-signed. These source-bound attestations do not make the build byte-for-byte reproducible or the certificate publicly trusted.
+
 The release workflow is `.github/workflows/release-build.yml`. CI and release
 both call `.github/actions/validate`, including **every** `server/*.test.ts`
 test and the real Electron navigation, notifications, VirusTotal and language

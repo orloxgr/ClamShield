@@ -6,12 +6,26 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 
 For development transparency, runtime AI/cloud-service behavior, CI status, binary provenance, and current security limitations, see [Security, Trust, and Build Transparency](SECURITY.md).
 
+## Verification and architecture
+
+The published [v1.4.6 release](https://github.com/orloxgr/ClamShield/releases/tag/v1.4.6) provides the following verifiable baseline. Earlier issues and release notes describe the project at the time they were written.
+
+| Area | Status in v1.4.6 | Evidence |
+| --- | --- | --- |
+| Automated tests | 194 automated tests, plus real Electron interface, navigation and notification checks. CI and Release Build run the same validation suite. | [Shared validation action](.github/actions/validate/action.yml), [successful release run](https://github.com/orloxgr/ClamShield/actions/runs/42041293270) |
+| Backend structure | Feature modules under `modules/`, engine services under `engines/`, provider integrations under `addons/`, and shared infrastructure under `server/`. `server.ts` is a five-line startup entry point. | [Entry point](server.ts), [architecture guide](docs/modules-and-localization.md) |
+| Release origin | The installer was built, signed and attested in GitHub Actions from commit `9d083f77344557b88adef2cf8f395ce297434861`. Publication verified and uploaded the sealed workflow artifact without rebuilding it. | [Release Build workflow](.github/workflows/release-build.yml), [release assets and provenance](https://github.com/orloxgr/ClamShield/releases/tag/v1.4.6) |
+| Authenticode | The installer and application are signed with the project's **self-signed** code-signing certificate. This is not a publicly trusted publisher certificate. | [Signature and provenance verification instructions](docs/release-process.md#verify-a-downloaded-release) |
+| Reproducibility | Builds are **not yet reproducible byte-for-byte**. Checksums and GitHub provenance bind the published files to their source and workflow; they do not establish reproducible builds. | [Security limitations](SECURITY.md#binary-provenance) |
+
+Automated validation covers critical flows and injected failure cases. The documented [release checklist](#release-checklist) also includes manual clean-Windows acceptance checks.
+
 ## Highlights
 
 - Automatic ClamAV engine download and setup on Windows.
 - One-click FreshClam signature updates.
-- Optional SecuriteInfo third-party signatures using an account-specific FreshClam URL stored with Windows encryption.
-- Optional SaneSecurity signatures downloaded from public rsync mirrors and verified with the provider's official GPG key.
+- Optional SecuriteInfo third-party signatures using an account-specific FreshClam URL stored with Windows encryption, with individual database selection and descriptions.
+- Optional SaneSecurity signatures with individual database selection, downloaded from public rsync mirrors and verified with the provider's official GPG key.
 - Optional VirusTotal Cloud second-opinion layer for Results refinement, real-time Shield cloud checks, and user-controlled unknown-file uploads with configurable size limits.
 - Optional Microsoft Defender compatibility exclusions for ClamShield YARA folders and quarantine storage.
 - Optional Windows DNS protection using public, account-free filtering resolvers from Cloudflare, AdGuard, CleanBrowsing, or Control D, with saved settings for restoration.
@@ -62,10 +76,10 @@ Recommended defaults for most users:
 
 ## Installation
 
-Download the latest installer from the GitHub Releases page:
+Download the latest installer from the [official GitHub Releases page](https://github.com/orloxgr/ClamShield/releases/latest):
 
 ```text
-ClamShield Setup x.y.z.exe
+ClamShield-Setup-<version>.exe
 ```
 
 Run the installer as administrator. On first launch, ClamShield can download and configure the Windows ClamAV engine and then download the latest virus definitions.
@@ -74,7 +88,7 @@ During install or upgrade, the installer closes a running `ClamShield.exe` proce
 
 ### Microsoft Defender SmartScreen
 
-Because ClamShield is a new public beta application, Windows may show a Microsoft Defender SmartScreen warning the first time the installer or app is opened. This can happen when an app is not yet commonly downloaded, even if the file is clean.
+Current official installers have Authenticode signatures using the project's self-signed certificate. This does not establish a publicly trusted publisher identity or SmartScreen reputation, so Windows may still show a warning. See the [release verification instructions](docs/release-process.md#verify-a-downloaded-release) to check the signing identity, checksums and build provenance.
 
 If you downloaded ClamShield from the official GitHub Releases page and you trust the release, use:
 
@@ -137,12 +151,14 @@ The Updates page groups its cards under **Signatures & Rules** and **Apps & Engi
 
 - `Update ClamAV`: runs FreshClam for virus signatures.
 - `Update SecuriteInfo`: updates optional account-linked SecuriteInfo databases through FreshClam.
-- `Update SaneSecurity`: downloads and verifies the selected public SaneSecurity database profile.
+- `Update SaneSecurity`: downloads and verifies the individually selected public SaneSecurity databases.
 - `Update YARA Rules`: checks the local YARA engine and downloads the selected YARA Forge ruleset.
 - `Check YARA`: checks for a newer installable Windows YARA engine package.
 - `Check ClamShield`: checks GitHub Releases for a newer ClamShield installer.
 
 Dashboard → Engine Info → Manage also shows live update output inside the SecuriteInfo and SaneSecurity dialogs. Logs remain available when a dialog is reopened, and a read-only polling fallback keeps progress visible if the event stream disconnects. SecuriteInfo setup stays open while its first update runs. FreshClam runs use the existing 30-minute timeout so an unresponsive process cannot hold the signature-update lock indefinitely.
+
+The same provider dialogs are available under **Updates → Settings** on the SecuriteInfo and SaneSecurity cards. Each database has a checkbox and a description. **Save** removes deselected databases; **Save & Update** also downloads newly selected databases. Choices persist across restarts and updates. Active scans finish before in-memory ClamAV databases reload.
 
 ClamShield update checks can be enabled weekly from Settings. Silent app install is available as an explicit setting; when enabled, ClamShield downloads the latest installer, launches it, and closes itself so the installer can replace application files.
 
@@ -150,12 +166,13 @@ ClamShield update checks can be enabled weekly from Settings. Silent app install
 
 SecuriteInfo integration is disabled by default and requires an account-specific `DatabaseCustomURL` from the user's SecuriteInfo account.
 
-- Basic mode configures `securiteinfo.ign2` and `securiteinfoold.hdb`.
-- Paid mode configures supported paid databases, including the 0-hour databases.
-- The mailserver spam-domain database (`spam_marketing.ndb`) is not installed by ClamShield because it is mainly useful for mailserver filtering, not normal Windows folder or disk scans.
-- The PUA and vulnerability database (`securiteinfo-pua-app-and-vulnerabilities.ndb`) is optional and disabled by default because it can generate many false positives.
+- Every supported database can be selected individually. New connections preselect all databases available for the selected account plan; upgrades preserve existing choices.
+- Basic offers `securiteinfo.ign2` and `securiteinfoold.hdb`. Paid plans expose all 15 supported databases, including 0-hour signatures, YARA rules, spam patterns and PUA/vulnerability signatures.
+- `spam_marketing.ndb` targets marketing spam and is mainly useful for mailserver filtering. `securiteinfo-pua-app-and-vulnerabilities.ndb` detects potentially unwanted applications and vulnerable components and may increase false positives. Both can be deselected.
+- `securiteinfo.ign2` and `securiteinfo.wdb` help reduce false positives. The descriptions distinguish these correction/allowlist files from detection databases.
+- The PUA database selection controls that particular database. Rules with PUA names also exist inside `securiteinfo.yara`; deselecting the separate PUA database does not disable those YARA rules.
 - The private account token is encrypted with Electron `safeStorage` on Windows.
-- The token is not stored in `settings.json`, returned by the API, written to source control, or placed on the FreshClam command line.
+- The token is not stored in the SQLite settings table, returned by the API, written to source control, or placed on the FreshClam command line.
 - ClamShield generates a temporary FreshClam configuration for the update and deletes it afterward.
 
 SecuriteInfo is an independent third-party provider. Detection-rate statements shown in ClamShield are attributed provider claims and are not guarantees by ClamShield.
@@ -164,27 +181,31 @@ SecuriteInfo is an independent third-party provider. Detection-rate statements s
 
 SaneSecurity integration is disabled by default and does not require an account.
 
-- Malware Protection installs 9 malware, phishing, macro, hash, whitelist, and exploit-focused databases.
-- Complete installs 20 databases, adding spam, scam, URL, attachment, image, and spear-phishing signatures.
+- All 20 supported databases are individually selectable, with descriptions. New connections preselect all of them.
+- Existing installations retain their previous database choices, including the older 9-database Malware Protection selection, until the user changes them.
 - Databases and detached signatures are downloaded from SaneSecurity's public rsync mirrors.
 - ClamShield verifies every database with SaneSecurity's official GPG signing key and asks ClamAV to load-test it before installation.
-- First-time setup extracts isolated, SHA-256-pinned official MSYS2 packages (rsync 3.5.1 and 7-Zip 26.05) and the official Windows GnuPG 2.5.24 distribution inside `C:\ProgramData\ClamShield\tools\sanesecurity-native`. No package installer or package hooks are executed. The helpers use approximately 50 MB, plus download cache, and require outbound TCP port 873 for database updates.
-- Subsequent automatic updates follow ClamShield's configured ClamAV signature update interval.
+- First-time setup extracts isolated, SHA-256-pinned official MSYS2 packages (including rsync 3.5.2, liblz4 1.11.0 and 7-Zip 26.05 in v1.4.6) and the official Windows GnuPG 2.5.24 distribution inside `C:\ProgramData\ClamShield\tools\sanesecurity-native`. No package installer or package hooks are executed. The helpers use approximately 50 MB, plus download cache, and require outbound TCP port 873 for database updates. Exact package versions and checksums are pinned in the [native helper inventory](addons/sanesecurity/server/native-tools.json).
+- Subsequent automatic updates use SaneSecurity's own configured update interval.
 
 SaneSecurity is an independent third-party provider. Its signatures can improve detection coverage but may also increase false positives. ClamShield does not guarantee provider availability or detection results.
 
 ### VirusTotal Cloud integration
 
-VirusTotal integration is disabled by default. Users can add their own VirusTotal API key from the Dashboard or Settings. The key is stored locally with Electron `safeStorage`; it is not written into `settings.json`.
+VirusTotal integration is disabled by default. Users can add their own VirusTotal API key from the Dashboard or Settings. The key is stored locally with Electron `safeStorage`; it is not stored in the SQLite settings table.
 
 When enabled, ClamShield can:
 
 - check Results items against VirusTotal by SHA-256
-- label findings as likely false positive, needs review, suspicious, malicious, unknown, upload skipped, or analysis queued
+- label completed reports as likely false positive, needs review, suspicious or malicious, while separately showing hash-check, upload, analysis, retry and action-required stages
 - recheck all Results items through a rate-limited background queue
 - optionally upload Results files that are unknown to VirusTotal, only after the hash has no report
 - optionally use VirusTotal as a background Real-Time Shield engine
 - optionally upload unknown Shield-scanned files, subject to the Shield upload size limit
+
+**Shield → VT popup threshold** accepts 1–20 engines reporting malicious or suspicious, with a default of 4. It filters VirusTotal-only popups. With the **Ask** action, lower-count findings are stored in Results without a popup or Results reminder. Configured automatic quarantine still runs below this popup threshold. Local ClamAV and YARA notification policies are unchanged.
+
+Popup decisions preserve the complete VirusTotal report in Results, avoiding an unnecessary hash lookup. Local lookup/quota limits retry at the next available time; failed rechecks retain the previous report for the same hash. A missing analysis or rejected upload remains an actionable queue task rather than becoming a malware detection.
 
 The On-Demand Scan page offers **Check every file with VirusTotal** for Full, Folder, File, and Process scans. This independently queues every eligible file, including files that ClamAV and YARA did not flag. Built-in exclusions and user exceptions still apply. Each file is checked by SHA-256 first; if its hash needs analysis, ClamShield automatically uploads the file and retrieves the completed analysis. The existing switch enables the complete flow. There is no file-count or executable-only filter. Files larger than 32 MB use VirusTotal's large-file upload endpoint, up to its 650 MB upload limit. Unreadable, excluded, changing, oversized, or provider-rejected files are skipped with a reason.
 
@@ -241,7 +262,7 @@ Backend readiness has a 45-second deadline and initial protection-status loading
 
 ### Scheduled scanner
 
-The Scheduled Scanner page supports weekly schedules using selected weekdays or monthly schedules using selected calendar days. The start time and scan targets are stored in `settings.json`, including Full disk, reusable directory selections, and running-process scanning.
+The Scheduled Scanner page supports weekly schedules using selected weekdays or monthly schedules using selected calendar days. The start time and scan targets are stored in the SQLite settings table in `C:\ProgramData\ClamShield\app_state.sqlite`, including Full disk, reusable directory selections, and running-process scanning. Older JSON settings are migrated when upgrading.
 
 When **Scan only if the computer is not being used** is enabled, ClamShield begins reading Windows keyboard and mouse inactivity 15 minutes before the scheduled time. It continues only while waiting for the idle threshold or while the scheduled scan is running. If user activity resumes during the scan, the active job is stopped and its temporary resume state is discarded. ClamShield must remain running in the tray for its internal scheduler to operate.
 
@@ -291,7 +312,7 @@ Requirements:
 Install dependencies:
 
 ```powershell
-npm install
+npm ci
 ```
 
 Run the TypeScript check:
@@ -300,11 +321,32 @@ Run the TypeScript check:
 npm run lint
 ```
 
+Run the automated backend tests and language validation:
+
+```powershell
+npm test
+npm run languages:check
+```
+
 Build the frontend and bundled backend:
 
 ```powershell
 npm run build
 ```
+
+Run the real Electron interface checks after building:
+
+```powershell
+npm run test:desktop-navigation
+node scripts/test-desktop-alerts.cjs
+npm run test:virustotal-ui
+npm run test:localization-ui
+npm run test:provider-settings-ui
+```
+
+The backend tests cover quarantine/restore, exceptions, settings persistence, engine activation, API/IPC authorization, Defender refusal, scan/watch behavior and VirusTotal queue failure paths. Electron fixtures exercise navigation, startup diagnostics, notifications, localization and provider settings. See the [shared CI/release validation action](.github/actions/validate/action.yml) for the checks required by both workflows.
+
+Backend code lives in `modules/<feature>/server`, `engines/<engine>/server`, `addons/<provider>/server` and shared `server/` infrastructure. `server.ts` starts logging and calls `server/bootstrap.ts`; it no longer contains the application backend. See the [architecture guide](docs/modules-and-localization.md) for module ownership.
 
 Create the Windows installer:
 

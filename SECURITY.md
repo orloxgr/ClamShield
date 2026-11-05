@@ -1,10 +1,16 @@
 # Security, Trust, and Build Transparency
 
-ClamShield is a public beta Windows desktop application that orchestrates third-party security tools. It runs with administrator privileges for installation and for some Windows integration features, so the project should be easy to audit and conservative about claims.
+ClamShield is a public beta Windows desktop application that orchestrates third-party security tools. The installer and current desktop application request administrator privileges, so the project should be easy to audit and conservative about claims. Separating the elevated service from the interface remains planned work.
+
+## Verified release baseline: v1.4.6
+
+The published [v1.4.6 release](https://github.com/orloxgr/ClamShield/releases/tag/v1.4.6) was built and signed by [GitHub Actions run 42041293270](https://github.com/orloxgr/ClamShield/actions/runs/42041293270) from source commit `9d083f77344557b88adef2cf8f395ce297434861`. That run passed 194 automated tests, the Electron interface checks and the dependency security gate before building the installer. The separate publishing job verified the final checksums and GitHub provenance and uploaded those same sealed artifacts.
+
+The installer has an Authenticode signature using the project's **self-signed** code-signing certificate. It is signed, but it does not have a publicly trusted publisher certificate. Builds are still **not reproducible byte-for-byte**. Provenance, signature trust and reproducibility are separate properties; see the verification steps below.
 
 ## AI-Assisted Development
 
-ClamShield has been developed with significant AI/LLM assistance, including code generation, refactoring suggestions, UI iteration, documentation, and release-checklist work. Human review and local testing are still required before release.
+ClamShield has been developed with significant AI/LLM assistance, including code generation, refactoring suggestions, UI iteration, documentation, and release-checklist work. Human review and clean-Windows acceptance testing supplement the automated CI and release checks described below.
 
 AI assistance is not used at runtime. ClamShield does not send scanned files, file contents, file paths, signatures, quarantine contents, or user settings to an AI service.
 
@@ -30,6 +36,7 @@ The repository includes GitHub Actions CI for:
 - TypeScript validation with `npm run lint`
 - every automated test, including failure paths for quarantine/restore, exception/report transactions, settings persistence, engine activation, API/IPC authorization, Defender refusal, desktop startup and VirusTotal queues
 - real Electron checks for interface navigation, preload IPC and threat popup actions
+- real Electron checks for VirusTotal queues, localization and signature-provider settings, including the Shield VT popup threshold
 - production build with `npm run build`
 - full dependency audit and installed-version verification with `npm run audit:security`
 
@@ -54,14 +61,14 @@ proposed service design. The service migration has not been implemented.
 
 ## Binary Provenance
 
-Release installers are built from the source in this repository with Electron Builder. Release assets should include:
+Official workflow releases are built from a fixed published source commit with Electron Builder. The v1.4.6 release contains all of the following assets:
 
 - `ClamShield-Setup-<version>.exe`
 - `ClamShield-Setup-<version>.exe.blockmap`
 - `latest.yml`
 - `SHA256SUMS.txt`
-- `release-manifest.json` (new workflow releases)
-- `provenance.json` (new workflow releases)
+- `release-manifest.json`
+- `provenance.json`
 
 The [release workflow](docs/release-process.md) requires a fixed published source,
 all tests and the full audit before packaging. It requires signing, verifies the
@@ -70,17 +77,19 @@ attests the final bytes. A separate publishing job verifies source-bound
 provenance, uploads the same immutable workflow artifact and compares GitHub's
 asset digests before publication. It cannot overwrite an existing release.
 Signing secrets must be configured before using this workflow; missing secrets
-block the release. Previous maintainer-built releases retain their original
-provenance and are not retroactively attested.
+block the release. Older maintainer-built releases are not retroactively
+attested; inspect the assets and notes of the particular historical release.
+Locally built test installers are separate from official workflow releases.
 
 Current limitations:
 
 - builds are not reproducible byte-for-byte
-- public releases may be maintainer-built unless the release notes explicitly say the GitHub Actions artifact was used
-- maintainer-built installers may use a local self-signed Authenticode certificate; this is not a publicly trusted publisher certificate and does not remove Windows trust warnings
+- the current official installer uses a self-signed Authenticode certificate; this is not a publicly trusted publisher certificate and does not remove Windows trust warnings
 - release-workflow builds without access to a signing certificate fail; local development builds are not a substitute for the signed release process
 
 Publicly trusted code signing remains a separate requirement from GitHub build provenance.
+
+Follow [Verify a downloaded release](docs/release-process.md#verify-a-downloaded-release) to check checksums, the source-bound manifest, GitHub attestation and the installer signing identity. A provenance attestation establishes the workflow/source origin of those bytes; it does not establish that independently rebuilding the source will produce identical bytes.
 
 ## Third-Party Engines and Rules
 
