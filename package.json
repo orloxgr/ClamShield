@@ -151,7 +151,7 @@
     "unzipper": "^0.12.5"
   },
   "devDependencies": {
-    "@babel/parser": "^8.0.8",
+    "@babel/parser": "^8.1.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
