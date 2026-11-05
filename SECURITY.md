@@ -1,5 +1,9 @@
 # Security, Trust, and Build Transparency
 
+See the [Privacy policy](PRIVACY.md), [Code signing policy](CODE_SIGNING_POLICY.md)
+and [distribution review](docs/distribution-review.md) for network behavior,
+signing responsibilities and third-party licensing boundaries.
+
 ClamShield is a public beta Windows desktop application that orchestrates third-party security tools. The installer and current desktop application request administrator privileges, so the project should be easy to audit and conservative about claims. Separating the elevated service from the interface remains planned work.
 
 ## Verified release baseline: v1.4.6

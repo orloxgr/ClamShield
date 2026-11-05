@@ -6,6 +6,11 @@ ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine.
 
 For development transparency, runtime AI/cloud-service behavior, CI status, binary provenance, and current security limitations, see [Security, Trust, and Build Transparency](SECURITY.md).
 
+Read the [Privacy policy](PRIVACY.md), [Code signing policy](CODE_SIGNING_POLICY.md)
+and [distribution and license review](docs/distribution-review.md). SignPath
+Foundation signing is being prepared; current releases use the project's
+self-signed certificate.
+
 ## Verification and architecture
 
 The published [v1.4.6 release](https://github.com/orloxgr/ClamShield/releases/tag/v1.4.6) provides the following verifiable baseline. Earlier issues and release notes describe the project at the time they were written.
@@ -77,6 +82,9 @@ Recommended defaults for most users:
 ## Installation
 
 Download the latest installer from the [official GitHub Releases page](https://github.com/orloxgr/ClamShield/releases/latest):
+
+[Privacy policy](PRIVACY.md) · [Code signing policy](CODE_SIGNING_POLICY.md) ·
+[Third-party notices](THIRD_PARTY_NOTICES.txt)
 
 ```text
 ClamShield-Setup-<version>.exe

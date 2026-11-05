@@ -7,6 +7,18 @@ both call `.github/actions/validate`, including **every** `server/*.test.ts`
 test and the real Electron navigation, notifications, VirusTotal and language
 interface checks. A release cannot skip those checks.
 
+## Policies and dependency notices
+
+Read the [Privacy policy](../PRIVACY.md), [Code signing policy](../CODE_SIGNING_POLICY.md)
+and [distribution review](distribution-review.md). After dependency changes, run
+`npm run licenses:generate`, review the notice changes and commit them. CI and
+release validation require `npm run licenses:check` to pass. The packager includes
+the policies, project license and third-party notice bundle in subsequent builds.
+
+SignPath Foundation integration is being prepared. The PFX-based configuration
+below remains the current workflow; Foundation signing must not be claimed until
+acceptance, configuration and a verified test build.
+
 ## One-time signing configuration
 
 Configure these repository Actions secrets through GitHub's settings:

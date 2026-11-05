@@ -12,7 +12,7 @@
     "desktop": "electron .",
     "build": "node scripts/patch-chokidar.cjs --check && npm run build:localization && vite build && esbuild server.ts --platform=node --packages=external --bundle --outfile=dist/server.cjs && esbuild server/uninstall.ts --platform=node --packages=external --bundle --outfile=dist/uninstall.cjs",
     "build:shell": "node scripts/build-shell-extension.cjs",
-    "prebuild:exe": "npm run audit:security && node scripts/prepare-release.cjs",
+    "prebuild:exe": "npm run licenses:check && npm run audit:security && node scripts/prepare-release.cjs",
     "build:exe": "npm run build:shell && npm run build && node --import tsx scripts/build-installer.ts",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
@@ -38,7 +38,9 @@
     "test:localization-ui": "node scripts/test-localization-ui.cjs",
     "test:provider-settings-ui": "node scripts/test-provider-settings-ui.cjs",
     "languages:check": "tsx scripts/check-languages.ts",
-    "languages:template": "tsx scripts/language-template.ts"
+    "languages:template": "tsx scripts/language-template.ts",
+    "licenses:generate": "node scripts/generate-third-party-notices.cjs",
+    "licenses:check": "node scripts/generate-third-party-notices.cjs --check"
   },
   "build": {
     "appId": "com.clamshield.app",
@@ -86,6 +88,22 @@
       "public/**/*"
     ],
     "extraFiles": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "PRIVACY.md",
+        "to": "PRIVACY.md"
+      },
+      {
+        "from": "CODE_SIGNING_POLICY.md",
+        "to": "CODE_SIGNING_POLICY.md"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
+      },
       {
         "from": "shell",
         "to": "shell",

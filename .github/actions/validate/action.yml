@@ -3,6 +3,9 @@ description: The same complete checks for pull requests and release builds
 runs:
   using: composite
   steps:
+    - name: Dependency license notices
+      shell: pwsh
+      run: npm run licenses:check
     - name: TypeScript
       shell: pwsh
       run: npm run lint
