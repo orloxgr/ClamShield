@@ -10,11 +10,20 @@ import { virusTotalLimitWarningsEnabled } from "../../../../addons/virustotal/se
 import { ensureDirs, saveConfig } from "../service";
 import { saveSettingsPatchRows } from "../storage";
 import { normalizeScheduledScanSettings, normalizeSettingsPatch } from "../validation";
+import { getConfiguredSaneSecurityDatabaseNames, getSaneSecurityDatabaseNames, removeSaneSecurityDatabaseFiles } from "../../../../addons/sanesecurity/server/status";
+import { runtimeState } from "../../../../server/core/runtimeState";
 export function registerPostApiSettings(app: any, context: Pick<ApplicationContext, "settings" | "virusTotalScanQueue" | "scheduleVirusTotalScan" | "startShield" | "scheduleDefenderEnforcement" | "scheduleNextUpdate" | "scheduleNextYaraUpdate" | "scheduleNextAppUpdateCheck" | "scheduleVirusTotalRefinement" | "scheduleShieldVirusTotalCheck">) {
     app.post("/api/settings", async (req, res) => {
+        let configuring = false;
         try {
             const normalizedRequest = normalizeSettingsPatch(req.body, context.settings);
             const requestedSettings = normalizedRequest.patch;
+            if (Object.keys(requestedSettings).length === 1 && "virusTotalShieldPopupMinDetections" in requestedSettings) {
+                const nextSettings = { ...context.settings, ...requestedSettings };
+                saveSettingsPatchRows(nextSettings, ["virusTotalShieldPopupMinDetections"]);
+                context.settings = nextSettings;
+                return res.json({ success: true, settings: context.settings });
+            }
             if (Object.keys(requestedSettings).length === 1 && "virusTotalShowLimitWarnings" in requestedSettings) {
                 const nextSettings = { ...context.settings, virusTotalShowLimitWarnings: requestedSettings.virusTotalShowLimitWarnings };
                 // Save just this preference; do not rewrite installation defaults or restart engines.
@@ -30,7 +39,15 @@ export function registerPostApiSettings(app: any, context: Pick<ApplicationConte
                 console.warn(englishText("backend.settings.ignored_unknown_settings_keys"), normalizedRequest.unknownKeys.join(", "));
             }
             const securiteInfoDatabaseSelectionChanged = ("securiteInfoPlan" in requestedSettings && requestedSettings.securiteInfoPlan !== context.settings.securiteInfoPlan) ||
+                "securiteInfoDatabases" in requestedSettings ||
                 ("securiteInfoIncludePua" in requestedSettings && requestedSettings.securiteInfoIncludePua !== context.settings.securiteInfoIncludePua);
+            const saneSecurityDatabaseSelectionChanged = "saneSecurityDatabases" in requestedSettings || "saneSecurityProfile" in requestedSettings;
+            if ((securiteInfoDatabaseSelectionChanged && runtimeState.freshclamUpdateInProgress) ||
+                (saneSecurityDatabaseSelectionChanged && runtimeState.saneSecurityUpdateInProgress) ||
+                ((securiteInfoDatabaseSelectionChanged || saneSecurityDatabaseSelectionChanged) && runtimeState.signatureDatabaseConfigurationInProgress))
+                return res.status(409).json({ error: "Wait for the signature update to finish before changing databases." });
+            if (securiteInfoDatabaseSelectionChanged || saneSecurityDatabaseSelectionChanged)
+                runtimeState.signatureDatabaseConfigurationInProgress = configuring = true;
             const hasScheduledScanSettings = Object.keys(requestedSettings).some(key => key.startsWith("scheduledScan"));
             if (hasScheduledScanSettings) {
                 Object.assign(requestedSettings, normalizeScheduledScanSettings({
@@ -40,6 +57,16 @@ export function registerPostApiSettings(app: any, context: Pick<ApplicationConte
             }
             const nextSettings = { ...context.settings, ...requestedSettings };
             const settingsKeysToPersist = new Set(Object.keys(requestedSettings));
+            if ("saneSecurityProfile" in requestedSettings && !("saneSecurityDatabases" in requestedSettings)) {
+                nextSettings.saneSecurityDatabases = getSaneSecurityDatabaseNames(nextSettings.saneSecurityProfile);
+                settingsKeysToPersist.add("saneSecurityDatabases");
+            }
+            if ("securiteInfoIncludePua" in requestedSettings && !("securiteInfoDatabases" in requestedSettings)) {
+                const selected = getConfiguredSecuriteInfoDatabaseNames(context.settings).filter(name => name !== "securiteinfo-pua-app-and-vulnerabilities.ndb");
+                if (requestedSettings.securiteInfoIncludePua && nextSettings.securiteInfoPlan === "paid") selected.push("securiteinfo-pua-app-and-vulnerabilities.ndb");
+                nextSettings.securiteInfoDatabases = selected;
+                settingsKeysToPersist.add("securiteInfoDatabases");
+            }
             if (normalizeSecuriteInfoPlan(nextSettings.securiteInfoPlan) !== "paid") {
                 nextSettings.securiteInfoIncludePua = false;
                 if ("securiteInfoPlan" in requestedSettings || "securiteInfoIncludePua" in requestedSettings) {
@@ -72,6 +99,10 @@ export function registerPostApiSettings(app: any, context: Pick<ApplicationConte
                 await removeSecuriteInfoDatabaseFiles(context.settings.databaseDir, getConfiguredSecuriteInfoDatabaseNames(context.settings));
                 await reloadClamdDatabases(context.settings);
             }
+            if (saneSecurityDatabaseSelectionChanged) {
+                await removeSaneSecurityDatabaseFiles(context.settings.databaseDir, getConfiguredSaneSecurityDatabaseNames(context.settings));
+                await reloadClamdDatabases(context.settings);
+            }
             res.json({
                 success: true,
                 settings: context.settings,
@@ -97,5 +128,6 @@ export function registerPostApiSettings(app: any, context: Pick<ApplicationConte
         catch (e: any) {
             res.status(500).json({ success: false, error: e?.message || englishText("settings.settings_save_failed") });
         }
+        finally { if (configuring) runtimeState.signatureDatabaseConfigurationInProgress = false; }
     });
 }

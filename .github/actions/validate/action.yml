@@ -27,3 +27,6 @@ runs:
     - name: Localization interface
       shell: pwsh
       run: npm run test:localization-ui
+    - name: Signature provider settings interface
+      shell: pwsh
+      run: npm run test:provider-settings-ui

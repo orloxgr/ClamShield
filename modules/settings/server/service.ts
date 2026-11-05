@@ -167,6 +167,13 @@ export async function buildLoadedSettingsFromRows(rows: any[], installerConsent:
         scanDetectionAction,
         securiteInfoPlan: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan),
         securiteInfoIncludePua: normalizeSecuriteInfoPlan(parsedWithInstallerOptions.securiteInfoPlan) === "paid" && normalizeSecuriteInfoIncludePua(parsedWithInstallerOptions.securiteInfoIncludePua),
+        // Preserve legacy provider choices instead of silently enabling extra databases on upgrade.
+        securiteInfoDatabases: Array.isArray(parsedWithInstallerOptions.securiteInfoDatabases)
+            ? parsedWithInstallerOptions.securiteInfoDatabases
+            : getSecuriteInfoDatabaseNames(parsedWithInstallerOptions.securiteInfoPlan, parsedWithInstallerOptions.securiteInfoIncludePua),
+        saneSecurityDatabases: Array.isArray(parsedWithInstallerOptions.saneSecurityDatabases)
+            ? parsedWithInstallerOptions.saneSecurityDatabases
+            : getSaneSecurityDatabaseNames(parsedWithInstallerOptions.saneSecurityProfile),
         eulaAccepted,
         eulaVersion: eulaAccepted ? legalNoticeVersion : "",
         eulaAcceptedAt: settingsConsentAccepted

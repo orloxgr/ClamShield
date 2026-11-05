@@ -1,8 +1,8 @@
-import { englishText } from "../../../shared/localization/runtime";
 import { pathExists } from "../../../server/scanning/files";
 import { saneSecurityAllDatabases, saneSecurityCompleteDatabases, saneSecurityCygpathPath, saneSecurityDonateUrl, saneSecurityGpgPath, saneSecurityMalwareDatabases, saneSecurityRsyncPath, saneSecurityUsageUrl, saneSecurityWebsiteUrl } from "./constants";
 import fs from "fs/promises";
 import path from "path";
+import { normalizeDatabaseSelection, saneSecurityDatabaseCatalog } from "../../../shared/signatureDatabases";
 export function normalizeSaneSecurityProfile(value: any) {
     return String(value || "").toLowerCase() === "complete" ? "complete" : "malware";
 }
@@ -10,6 +10,11 @@ export function getSaneSecurityDatabaseNames(profile: any) {
     return normalizeSaneSecurityProfile(profile) === "complete"
         ? saneSecurityCompleteDatabases
         : saneSecurityMalwareDatabases;
+}
+export function getConfiguredSaneSecurityDatabaseNames(settings: any) {
+    return Array.isArray(settings?.saneSecurityDatabases)
+        ? normalizeDatabaseSelection(settings.saneSecurityDatabases, saneSecurityDatabaseCatalog)
+        : getSaneSecurityDatabaseNames(settings?.saneSecurityProfile);
 }
 export async function removeSaneSecurityDatabaseFiles(databaseDir: string, keep: string[] = []) {
     const keepSet = new Set(keep.map(name => name.toLowerCase()));
@@ -23,16 +28,14 @@ export async function removeSaneSecurityDatabaseFiles(databaseDir: string, keep:
         }
         catch (e: any) {
             if (e?.code !== "ENOENT")
-                console.warn(englishText("backend.sanesecurity.failed_to_remove_sanesecurity_database", {
-                    fileName: String(fileName)
-                }), e?.message || e);
+                throw e;
         }
     }
     return removed;
 }
 export async function getSaneSecurityStatus(settings: any) {
     const profile = normalizeSaneSecurityProfile(settings.saneSecurityProfile);
-    const expectedFiles = getSaneSecurityDatabaseNames(profile);
+    const expectedFiles = getConfiguredSaneSecurityDatabaseNames(settings);
     const downloadedFiles: Array<{
         name: string;
         size: number;
@@ -62,6 +65,7 @@ export async function getSaneSecurityStatus(settings: any) {
         connected: settings.saneSecurityEnabled === true,
         enabled: settings.saneSecurityEnabled === true,
         profile,
+        selectedDatabases: expectedFiles,
         expectedCount: expectedFiles.length,
         installedCount,
         installed: installedCount > 0,

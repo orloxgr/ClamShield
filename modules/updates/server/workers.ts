@@ -1,5 +1,6 @@
 import { englishText } from "../../../shared/localization/runtime";
 import { downloadAndInstallSaneSecurityDatabases } from "../../../addons/sanesecurity/server/install";
+import { getConfiguredSaneSecurityDatabaseNames } from "../../../addons/sanesecurity/server/status";
 import { getConfiguredSecuriteInfoDatabaseNames, redactSecuriteInfoSecret } from "../../../addons/securiteinfo/server/service";
 import { freshclamRunTimeoutMs } from "../../../engines/clamav/server/constants";
 import { reloadClamdDatabases } from "../../../engines/clamav/server/daemon";
@@ -44,6 +45,8 @@ export function createScheduleAppExitForUpdate(context: Pick<ApplicationContext,
 }
 export function createStartSaneSecurityUpdate(context: Pick<ApplicationContext, "settings" | "activeJobs" | "appendJobLogs" | "broadcastJobEvent">) {
     return async (source: "manual" | "automatic" = "manual") => {
+        if (runtimeState.signatureDatabaseConfigurationInProgress)
+            throw new Error("Database settings are being saved. Retry the update shortly.");
         if (!context.settings.saneSecurityEnabled) {
             throw new Error(englishText("backend.updates.sanesecurity_signatures_are_not_enabled_install_them_from_dashboa"));
         }
@@ -55,6 +58,9 @@ export function createStartSaneSecurityUpdate(context: Pick<ApplicationContext, 
                 clamscanPath: String(context.settings.clamscanPath)
             }));
         }
+        // The filesystem check yields; configuration or another update may have started meanwhile.
+        if (runtimeState.signatureDatabaseConfigurationInProgress || runtimeState.saneSecurityUpdateInProgress)
+            throw new Error("Database settings or an update are already in progress. Retry shortly.");
         const jobId = `sanesecurity-update-${Date.now()}`;
         const startedAt = Date.now();
         runtimeState.saneSecurityUpdateInProgress = true;
@@ -141,7 +147,7 @@ export function createScheduleNextUpdate(context: Pick<ApplicationContext, "auto
         // 1 minute poll
         context.autoUpdateTimer = setTimeout(async () => {
             try {
-                if (!runtimeState.isSimulated && context.settings.autoUpdateEnabled) {
+                if (!runtimeState.isSimulated && context.settings.autoUpdateEnabled && !runtimeState.signatureDatabaseConfigurationInProgress) {
                     const now = Date.now();
                     const lastClamAVHistory = await getLatestSuccessfulClamAVUpdateHistory();
                     const lastClamAVTime = context.settings.lastClamAVUpdate
@@ -152,12 +158,16 @@ export function createScheduleNextUpdate(context: Pick<ApplicationContext, "auto
                     const lastSecuriteTime = context.settings.lastSecuriteInfoUpdate ? new Date(context.settings.lastSecuriteInfoUpdate).getTime() : 0;
                     const updateTarget = !lastClamAVTime || now - lastClamAVTime > clamavIntervalMs
                         ? "clamav"
-                        : context.settings.securiteInfoEnabled === true && (!lastSecuriteTime || now - lastSecuriteTime > securiteIntervalMs)
+                        : context.settings.securiteInfoEnabled === true && getConfiguredSecuriteInfoDatabaseNames(context.settings).length > 0 && (!lastSecuriteTime || now - lastSecuriteTime > securiteIntervalMs)
                             ? "securiteinfo"
                             : "";
                     const saneIntervalMs = normalizePositiveNumber(context.settings.saneSecurityUpdateIntervalHours, 1, 1, 24) * 60 * 60 * 1000;
                     const lastSaneTime = context.settings.lastSaneSecurityUpdate ? new Date(context.settings.lastSaneSecurityUpdate).getTime() : 0;
-                    const saneDue = context.settings.saneSecurityEnabled && !runtimeState.saneSecurityUpdateInProgress && (!lastSaneTime || now - lastSaneTime > saneIntervalMs);
+                    const saneDue = context.settings.saneSecurityEnabled && getConfiguredSaneSecurityDatabaseNames(context.settings).length > 0 && !runtimeState.saneSecurityUpdateInProgress && (!lastSaneTime || now - lastSaneTime > saneIntervalMs);
+                    if (runtimeState.signatureDatabaseConfigurationInProgress) {
+                        context.scheduleNextUpdate();
+                        return;
+                    }
                     if (updateTarget) {
                         if (runtimeState.freshclamUpdateInProgress) {
                             console.log("Skipping automatic signature update because FreshClam is already running.");

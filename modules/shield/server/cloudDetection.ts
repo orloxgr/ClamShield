@@ -1,5 +1,6 @@
 import { englishText } from "../../../shared/localization/runtime";
-import { buildVirusTotalRefinement, buildVirusTotalThreatName } from "../../../addons/virustotal/server/refinement";
+import { buildVirusTotalRefinement, buildVirusTotalThreatName, getVirusTotalDetectionCount } from "../../../addons/virustotal/server/refinement";
+import { virusTotalShieldPopupThreshold } from "../../../addons/virustotal/shared/shieldPolicy";
 import { flushPendingClamdDatabaseReload } from "../../../engines/clamav/server/daemon";
 import { getExceptions, isExcluded } from "../../exceptions/server/service";
 import { getQuarantineMap } from "../../quarantine/server/storage";
@@ -19,15 +20,20 @@ export function createHandleVirusTotalShieldDetection(context: Pick<ApplicationC
             return "Ignored";
         const threatName = buildVirusTotalThreatName(report);
         const refinement = buildVirusTotalRefinement(report);
+        const detections = getVirusTotalDetectionCount(report);
+        if (!(detections > 0)) return "Ignored";
+        const showPopup = detections >= virusTotalShieldPopupThreshold(context.settings.virusTotalShieldPopupMinDetections);
+        const evidence = { sha256: report?.hash || "", virusTotalRefinement: refinement, virusTotalChecks: { cloud: refinement.checkedAt } };
         const action = normalizeShieldDetectionAction(context.settings.actionOnDetection || (context.settings.autoQuarantine ? "quarantine_silent" : "ask"));
         const actionKind = shieldActionKind(action);
         if (actionKind === "quarantine") {
             try {
                 const quarantined = await quarantineFile(filePath, threatName, context.settings.quarantineDir);
+                Object.assign(quarantined.metadata, evidence, { engine: "VirusTotal" });
                 const qMap = await getQuarantineMap();
                 qMap[quarantined.fileName] = quarantined.metadata;
                 await saveQuarantineMap(qMap);
-                if (shieldActionNotifies(action)) {
+                if (showPopup && shieldActionNotifies(action)) {
                     context.sendApiEvent("threat", {
                         id: Date.now().toString() + Math.random().toString(36).substring(7),
                         originalPath: filePath,
@@ -46,12 +52,13 @@ export function createHandleVirusTotalShieldDetection(context: Pick<ApplicationC
                 return "Quarantine Failed";
             }
         }
-        if (actionKind === "ask") {
+        if (actionKind === "ask" && showPopup) {
             const pendingThreat = {
                 id: Date.now().toString() + Math.random().toString(36).substring(7),
                 originalPath: filePath,
                 threatName,
                 engine: "VirusTotal",
+                ...evidence,
                 timestamp: Date.now()
             };
             await context.queuePendingThreat(pendingThreat);
@@ -64,10 +71,10 @@ export function createHandleVirusTotalShieldDetection(context: Pick<ApplicationC
             originalPath: filePath,
             threatName,
             engine: "VirusTotal",
-            sha256: report?.hash || "",
-            virusTotalRefinement: refinement
+            ...(showPopup ? {} : { resultsReminderAt: 0 }),
+            ...evidence
         });
-        if (shieldActionNotifies(action)) {
+        if (showPopup && shieldActionNotifies(action)) {
             context.sendApiEvent("threat", {
                 id: Date.now().toString() + Math.random().toString(36).substring(7),
                 originalPath: filePath,

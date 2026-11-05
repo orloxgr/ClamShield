@@ -2,6 +2,7 @@ import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
 import { useEffect, useState } from "react";
 import { Bell, Cloud, Plus, RotateCcw, Save, SlidersHorizontal, X } from "lucide-react";
 import PageHeader from "../../../src/components/PageHeader";
+import { virusTotalShieldPopupThreshold } from "../../../addons/virustotal/shared/shieldPolicy";
 export default function ShieldSettings() {
     useLanguage();
     const [settings, setSettings] = useState<any>(null);
@@ -17,10 +18,16 @@ export default function ShieldSettings() {
         fetch("/api/system-paths").then(r => r.json()).then(d => setSystemPaths(d));
     }, []);
     const updateSettings = async (nextSettings: any) => {
+        const previousSettings = settings;
         const patch = getSettingsPatch(settings, nextSettings);
         setSettings(nextSettings);
         setSaving(true);
-        await persistSettings(patch);
+        const saved = await persistSettings(patch);
+        if (saved === false) setSettings((current: any) => {
+            const restored = { ...current };
+            for (const key of Object.keys(patch)) if (JSON.stringify(current[key]) === JSON.stringify(nextSettings[key])) restored[key] = previousSettings[key];
+            return restored;
+        });
         setSaving(false);
     };
     const getSettingsPatch = (previousSettings: any, nextSettings: any) => {
@@ -44,18 +51,24 @@ export default function ShieldSettings() {
         }
         setSaving(true);
         try {
-            await fetch("/api/settings", {
+            const response = await fetch("/api/settings", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(patch)
             });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.error || "Failed to save Shield settings.");
+            }
             if (showMessage) {
                 setMessage("Shield settings saved.");
                 setTimeout(() => setMessage(""), 3000);
             }
+            return true;
         }
         catch (e: any) {
             setMessage(e.message || "Failed to save Shield settings.");
+            return false;
         }
         finally {
             setSaving(false);
@@ -297,6 +310,15 @@ export default function ShieldSettings() {
             virusTotalShieldBackgroundCheckEnabled: e.target.checked,
             virusTotalShieldUploadUnknownEnabled: e.target.checked ? settings.virusTotalShieldUploadUnknownEnabled === true : false
         })} className="w-5 h-5 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900 bg-slate-800"/>
+            </div>
+            <div className="p-2 space-y-3">
+              <label htmlFor="vt-shield-popup-threshold" className="flex items-center justify-between gap-4 text-slate-300">
+                <span>{localizeText("VT popup threshold")}</span>
+                <output htmlFor="vt-shield-popup-threshold" className="text-cyan-300 tabular-nums">{virusTotalShieldPopupThreshold(settings.virusTotalShieldPopupMinDetections)}</output>
+              </label>
+              <input id="vt-shield-popup-threshold" type="range" min={1} max={20} step={1} value={virusTotalShieldPopupThreshold(settings.virusTotalShieldPopupMinDetections)} onChange={event => updateNumberSetting("virusTotalShieldPopupMinDetections", event.target.value, 4, 1, 20)} className="w-full accent-cyan-500"/>
+              <div className="flex justify-between text-xs text-slate-500"><span>1</span><span>20</span></div>
+              <p className="text-xs text-slate-400">{localizeText("Show VirusTotal-only popups when at least this many engines report malicious or suspicious. Lower counts go to Results when the action is Ask. Automatic quarantine is unchanged; ClamAV and YARA popups are unaffected.")}</p>
             </div>
             <div className={`space-y-3 p-2 rounded-lg ${settings.virusTotalShieldBackgroundCheckEnabled === true && virusTotalReady ? "hover:bg-slate-800/50" : "opacity-60"}`}>
               <div className="flex items-center justify-between gap-6">

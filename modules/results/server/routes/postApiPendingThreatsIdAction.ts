@@ -40,6 +40,7 @@ export function registerPostApiPendingThreatsIdAction(app: any, context: Pick<Ap
                     await rememberExceptionDetection(threat, "shield");
                 }
                 else if (action === "results") {
+                    const cloudEvidence = (threat.detections || [threat]).find((item: any) => item.engine === "VirusTotal" && item.virusTotalRefinement) || {};
                     for (const detection of threat.detections || [threat]) {
                         await addScanResult({
                             source: "shield",
@@ -48,6 +49,10 @@ export function registerPostApiPendingThreatsIdAction(app: any, context: Pick<Ap
                             originalPath: threat.originalPath,
                             threatName: detection.threatName,
                             engine: detection.engine || (String(detection.threatName || "").startsWith("YARA:") ? "YARA" : "ClamAV"),
+                            sha256: detection.sha256 || cloudEvidence.sha256 || "",
+                            virusTotalRefinement: detection.virusTotalRefinement || cloudEvidence.virusTotalRefinement,
+                            virusTotalChecks: detection.virusTotalChecks || cloudEvidence.virusTotalChecks,
+                            detections: threat.detections,
                             yaraRuleset: detection.engine === "YARA" ? normalizeYaraRuleset(context.settings.yaraRuleset) : undefined
                         });
                     }

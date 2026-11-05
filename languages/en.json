@@ -11930,6 +11930,276 @@
       "StringInEng": "The file cannot be uploaded. Check file access and the upload size limit in Settings, then recheck its hash.",
       "translation": "The file cannot be uploaded. Check file access and the upload size limit in Settings, then recheck its hash.",
       "maxChars": 108
+    },
+    "signature_databases.android_malware": {
+      "StringInEng": "Android malware.",
+      "translation": "Android malware.",
+      "maxChars": 16
+    },
+    "signature_databases.anti_phishing_allowlist_that_reduces_false_positives": {
+      "StringInEng": "Anti-phishing allowlist that reduces false positives.",
+      "translation": "Anti-phishing allowlist that reduces false positives.",
+      "maxChars": 53
+    },
+    "signature_databases.anti_phishing_checks_for_impersonated_domains": {
+      "StringInEng": "Anti-phishing checks for impersonated domains.",
+      "translation": "Anti-phishing checks for impersonated domains.",
+      "maxChars": 46
+    },
+    "signature_databases.connect_securiteinfo_before_saving_database_settings": {
+      "StringInEng": "Connect SecuriteInfo before saving database settings.",
+      "translation": "Connect SecuriteInfo before saving database settings.",
+      "maxChars": 53
+    },
+    "signature_databases.could_not_save_provider_settings": {
+      "StringInEng": "Could not save provider settings.",
+      "translation": "Could not save provider settings.",
+      "maxChars": 33
+    },
+    "signature_databases.dangerous_macros_and_scripts_in_documents": {
+      "StringInEng": "Dangerous macros and scripts in documents.",
+      "translation": "Dangerous macros and scripts in documents.",
+      "maxChars": 42
+    },
+    "signature_databases.database_selection_saved": {
+      "StringInEng": "Database selection saved.",
+      "translation": "Database selection saved.",
+      "maxChars": 25
+    },
+    "signature_databases.database_selection_saved_signature_update_started": {
+      "StringInEng": "Database selection saved. Signature update started.",
+      "translation": "Database selection saved. Signature update started.",
+      "maxChars": 51
+    },
+    "signature_databases.database_selection_saved_update_could_not_start": {
+      "StringInEng": "Database selection saved. Update could not start.",
+      "translation": "Database selection saved. Update could not start.",
+      "maxChars": 49
+    },
+    "signature_databases.database_settings_are_being_saved_retry_the_update_shortly": {
+      "StringInEng": "Database settings are being saved. Retry the update shortly.",
+      "translation": "Database settings are being saved. Retry the update shortly.",
+      "maxChars": 60
+    },
+    "signature_databases.deselect_all_databases": {
+      "StringInEng": "Deselect all databases",
+      "translation": "Deselect all databases",
+      "maxChars": 22
+    },
+    "signature_databases.email_addresses_associated_with_spear_phishing": {
+      "StringInEng": "Email addresses associated with spear phishing.",
+      "translation": "Email addresses associated with spear phishing.",
+      "maxChars": 47
+    },
+    "signature_databases.false_positive_corrections_ignores_problematic_sanesecurity_signatures": {
+      "StringInEng": "False-positive corrections: ignores problematic SaneSecurity signatures.",
+      "translation": "False-positive corrections: ignores problematic SaneSecurity signatures.",
+      "maxChars": 72
+    },
+    "signature_databases.false_positive_corrections_ignores_signatures_withdrawn_by_securiteinfo": {
+      "StringInEng": "False-positive corrections: ignores signatures withdrawn by SecuriteInfo.",
+      "translation": "False-positive corrections: ignores signatures withdrawn by SecuriteInfo.",
+      "maxChars": 73
+    },
+    "signature_databases.general_junk_mail_phishing_lottery_and_scam_patterns": {
+      "StringInEng": "General junk mail, phishing, lottery and scam patterns.",
+      "translation": "General junk mail, phishing, lottery and scam patterns.",
+      "maxChars": 55
+    },
+    "signature_databases.generic_malware_detection_using_sections_of_executable_files": {
+      "StringInEng": "Generic malware detection using sections of executable files.",
+      "translation": "Generic malware detection using sections of executable files.",
+      "maxChars": 61
+    },
+    "signature_databases.generic_yara_rules_for_malware_phishing_and_potentially_unwanted_content_scanned_by_clamav": {
+      "StringInEng": "Generic YARA rules for malware, phishing and potentially unwanted content; scanned by ClamAV.",
+      "translation": "Generic YARA rules for malware, phishing and potentially unwanted content; scanned by ClamAV.",
+      "maxChars": 93
+    },
+    "signature_databases.html_and_javascript_malware_patterns_including_phishing_pages": {
+      "StringInEng": "HTML and JavaScript malware patterns, including phishing pages.",
+      "translation": "HTML and JavaScript malware patterns, including phishing pages.",
+      "maxChars": 63
+    },
+    "signature_databases.images_used_in_spam": {
+      "StringInEng": "Images used in spam.",
+      "translation": "Images used in spam.",
+      "maxChars": 20
+    },
+    "signature_databases.invalid_signature_database_selection": {
+      "StringInEng": "Invalid signature database selection.",
+      "translation": "Invalid signature database selection.",
+      "maxChars": 37
+    },
+    "signature_databases.junk_mail_urls_collected_automatically_from_feeds": {
+      "StringInEng": "Junk-mail URLs collected automatically from feeds.",
+      "translation": "Junk-mail URLs collected automatically from feeds.",
+      "maxChars": 50
+    },
+    "signature_databases.known_malware_file_hashes": {
+      "StringInEng": "Known malware file hashes.",
+      "translation": "Known malware file hashes.",
+      "maxChars": 26
+    },
+    "signature_databases.known_spam_attachments_including_documents_and_archives": {
+      "StringInEng": "Known spam attachments, including documents and archives.",
+      "translation": "Known spam attachments, including documents and archives.",
+      "maxChars": 57
+    },
+    "signature_databases.logical_rules_for_phishing_and_malware": {
+      "StringInEng": "Logical rules for phishing and malware.",
+      "translation": "Logical rules for phishing and malware.",
+      "maxChars": 39
+    },
+    "signature_databases.logical_rules_for_spam": {
+      "StringInEng": "Logical rules for spam.",
+      "translation": "Logical rules for spam.",
+      "maxChars": 23
+    },
+    "signature_databases.lottery_scam_patterns": {
+      "StringInEng": "Lottery scam patterns.",
+      "translation": "Lottery scam patterns.",
+      "maxChars": 22
+    },
+    "signature_databases.malicious_html_content": {
+      "StringInEng": "Malicious HTML content.",
+      "translation": "Malicious HTML content.",
+      "maxChars": 23
+    },
+    "signature_databases.malicious_pdf_files_and_pdf_spam": {
+      "StringInEng": "Malicious PDF files and PDF spam.",
+      "translation": "Malicious PDF files and PDF spam.",
+      "maxChars": 33
+    },
+    "signature_databases.malicious_text_and_scripts_including_bat_shell_and_perl": {
+      "StringInEng": "Malicious text and scripts, including BAT, shell and Perl.",
+      "translation": "Malicious text and scripts, including BAT, shell and Perl.",
+      "maxChars": 58
+    },
+    "signature_databases.malware_collected_within_the_last_hour": {
+      "StringInEng": "Malware collected within the last hour.",
+      "translation": "Malware collected within the last hour.",
+      "maxChars": 39
+    },
+    "signature_databases.malware_fake_antivirus_programs_and_fake_codecs": {
+      "StringInEng": "Malware, fake antivirus programs and fake codecs.",
+      "translation": "Malware, fake antivirus programs and fake codecs.",
+      "maxChars": 49
+    },
+    "signature_databases.malware_older_than_one_year_increases_memory_use": {
+      "StringInEng": "Malware older than one year; increases memory use.",
+      "translation": "Malware older than one year; increases memory use.",
+      "maxChars": 50
+    },
+    "signature_databases.marketing_spam_patterns_mainly_intended_for_mail_servers": {
+      "StringInEng": "Marketing spam patterns, mainly intended for mail servers.",
+      "translation": "Marketing spam patterns, mainly intended for mail servers.",
+      "maxChars": 58
+    },
+    "signature_databases.no_signature_databases_selected_choose_databases_in_provider_settings": {
+      "StringInEng": "No signature databases selected. Choose databases in provider settings.",
+      "translation": "No signature databases selected. Choose databases in provider settings.",
+      "maxChars": 71
+    },
+    "signature_databases.paste_your_securiteinfo_databasecustomurl": {
+      "StringInEng": "Paste your SecuriteInfo DatabaseCustomURL",
+      "translation": "Paste your SecuriteInfo DatabaseCustomURL",
+      "maxChars": 41
+    },
+    "signature_databases.phishing_and_malware_patterns": {
+      "StringInEng": "Phishing and malware patterns.",
+      "translation": "Phishing and malware patterns.",
+      "maxChars": 30
+    },
+    "signature_databases.potentially_unwanted_applications_and_vulnerable_components_may_increase_false_positives": {
+      "StringInEng": "Potentially unwanted applications and vulnerable components; may increase false positives.",
+      "translation": "Potentially unwanted applications and vulnerable components; may increase false positives.",
+      "maxChars": 90
+    },
+    "signature_databases.recent_malware_mainly_windows_executable_files": {
+      "StringInEng": "Recent malware, mainly Windows executable files.",
+      "translation": "Recent malware, mainly Windows executable files.",
+      "maxChars": 48
+    },
+    "signature_databases.recently_blocked_malware_spam_and_phishing_urls": {
+      "StringInEng": "Recently blocked malware, spam and phishing URLs.",
+      "translation": "Recently blocked malware, spam and phishing URLs.",
+      "maxChars": 49
+    },
+    "signature_databases.recognizes_message_file_types_to_improve_scanning": {
+      "StringInEng": "Recognizes message file types to improve scanning.",
+      "translation": "Recognizes message file types to improve scanning.",
+      "maxChars": 50
+    },
+    "signature_databases.replace_account_token_optional": {
+      "StringInEng": "Replace account token (optional)",
+      "translation": "Replace account token (optional)",
+      "maxChars": 32
+    },
+    "signature_databases.save_to_remove_deselected_databases_save_update_also_downloads_newly_selected_databases_active_": {
+      "StringInEng": "Save to remove deselected databases. Save & Update also downloads newly selected databases. Active scans finish before in-memory databases reload.",
+      "translation": "Save to remove deselected databases. Save & Update also downloads newly selected databases. Active scans finish before in-memory databases reload.",
+      "maxChars": 146
+    },
+    "signature_databases.select_all_databases": {
+      "StringInEng": "Select all databases",
+      "translation": "Select all databases",
+      "maxChars": 20
+    },
+    "signature_databases.select_the_sanesecurity_databases_used_by_clamav_no_account_is_required": {
+      "StringInEng": "Select the SaneSecurity databases used by ClamAV. No account is required.",
+      "translation": "Select the SaneSecurity databases used by ClamAV. No account is required.",
+      "maxChars": 73
+    },
+    "signature_databases.select_the_securiteinfo_databases_used_by_clamav_a_securiteinfo_account_is_required": {
+      "StringInEng": "Select the SecuriteInfo databases used by ClamAV. A SecuriteInfo account is required.",
+      "translation": "Select the SecuriteInfo databases used by ClamAV. A SecuriteInfo account is required.",
+      "maxChars": 85
+    },
+    "signature_databases.signature_databases": {
+      "StringInEng": "Signature databases",
+      "translation": "Signature databases",
+      "maxChars": 19
+    },
+    "signature_databases.spam_and_scam_patterns": {
+      "StringInEng": "Spam and scam patterns.",
+      "translation": "Spam and scam patterns.",
+      "maxChars": 23
+    },
+    "signature_databases.suspicious_archive_contents_and_structures": {
+      "StringInEng": "Suspicious archive contents and structures.",
+      "translation": "Suspicious archive contents and structures.",
+      "maxChars": 43
+    },
+    "signature_databases.suspicious_filenames_inside_archives": {
+      "StringInEng": "Suspicious filenames inside archives.",
+      "translation": "Suspicious filenames inside archives.",
+      "maxChars": 37
+    },
+    "signature_databases.urls_associated_with_junk_mail": {
+      "StringInEng": "URLs associated with junk mail.",
+      "translation": "URLs associated with junk mail.",
+      "maxChars": 31
+    },
+    "signature_databases.urls_associated_with_spear_phishing": {
+      "StringInEng": "URLs associated with spear phishing.",
+      "translation": "URLs associated with spear phishing.",
+      "maxChars": 36
+    },
+    "signature_databases.wait_for_the_signature_update_to_finish_before_changing_databases": {
+      "StringInEng": "Wait for the signature update to finish before changing databases.",
+      "translation": "Wait for the signature update to finish before changing databases.",
+      "maxChars": 66
+    },
+    "shield.vt_popup_threshold": {
+      "StringInEng": "VT popup threshold",
+      "translation": "VT popup threshold",
+      "maxChars": 18
+    },
+    "shield.show_virustotal_only_popups_when_at_least_this_many_engines_report_malicious_or_suspicious_lowe": {
+      "StringInEng": "Show VirusTotal-only popups when at least this many engines report malicious or suspicious. Lower counts go to Results when the action is Ask. Automatic quarantine is unchanged; ClamAV and YARA popups are unaffected.",
+      "translation": "Show VirusTotal-only popups when at least this many engines report malicious or suspicious. Lower counts go to Results when the action is Ask. Automatic quarantine is unchanged; ClamAV and YARA popups are unaffected.",
+      "maxChars": 216
     }
   }
 }

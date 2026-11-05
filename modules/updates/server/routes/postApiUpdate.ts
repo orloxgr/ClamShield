@@ -14,6 +14,8 @@ export function registerPostApiUpdate(app: any, context: Pick<ApplicationContext
         const jobId = Date.now().toString();
         let preparedConfig: Awaited<ReturnType<typeof prepareFreshclamConfig>> | null = null;
         const requestedTarget = req.body?.target === "securiteinfo" ? "securiteinfo" : "clamav";
+        if (runtimeState.signatureDatabaseConfigurationInProgress)
+            return res.status(409).json({ error: "Database settings are being saved. Retry the update shortly." });
         if (runtimeState.freshclamUpdateInProgress) {
             if (runtimeState.freshclamUpdateTarget === requestedTarget && runtimeState.freshclamUpdateJobId && context.activeJobs[runtimeState.freshclamUpdateJobId]?.status === "running") {
                 return res.json({ jobId: runtimeState.freshclamUpdateJobId, status: "already_running" });
@@ -23,6 +25,8 @@ export function registerPostApiUpdate(app: any, context: Pick<ApplicationContext
         if (requestedTarget === "securiteinfo" && context.settings.securiteInfoEnabled !== true) {
             return res.status(400).json({ error: englishText("backend.updates.securiteinfo_signatures_are_not_enabled") });
         }
+        if (requestedTarget === "securiteinfo" && getConfiguredSecuriteInfoDatabaseNames(context.settings).length === 0)
+            return res.status(400).json({ error: "No signature databases selected. Choose databases in provider settings." });
         if (runtimeState.isSimulated) {
             setTimeout(async () => {
                 await addHistory({

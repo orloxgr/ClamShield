@@ -4,7 +4,7 @@ import { appTempDir } from "../../../server/core/paths";
 import { runHiddenProcess } from "../../../server/platform/processes";
 import { pathExists } from "../../../server/scanning/files";
 import { saneSecurityCygpathPath, saneSecurityGpgHomeDir, saneSecurityGpgPath, saneSecurityMirrorHost, saneSecurityPublicKeyUrl, saneSecurityRsyncPath, saneSecuritySigningKeyFingerprint, saneSecurityWorkingDir } from "./constants";
-import { getSaneSecurityDatabaseNames, removeSaneSecurityDatabaseFiles } from "./status";
+import { getConfiguredSaneSecurityDatabaseNames, removeSaneSecurityDatabaseFiles } from "./status";
 import { resolve4 } from "dns/promises";
 import fs from "fs/promises";
 import path from "path";
@@ -82,9 +82,13 @@ export async function replaceDatabaseFile(sourcePath: string, destinationPath: s
     }
 }
 export async function downloadAndInstallSaneSecurityDatabases(settings: any, onLog: (line: string) => void) {
+    const databases = getConfiguredSaneSecurityDatabaseNames(settings);
+    if (databases.length === 0) {
+        await removeSaneSecurityDatabaseFiles(settings.databaseDir);
+        return databases;
+    }
     await ensureSaneSecurityTools(onLog);
     const gpgHome = await ensureSaneSecuritySigningKey(onLog);
-    const databases = getSaneSecurityDatabaseNames(settings.saneSecurityProfile);
     const stagingDir = path.join(saneSecurityWorkingDir, "staging");
     await fs.mkdir(stagingDir, { recursive: true });
     const includePath = path.join(saneSecurityWorkingDir, "include.txt");

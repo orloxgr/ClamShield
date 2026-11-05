@@ -3,7 +3,7 @@
   "description": "ClamShield - Windows GUI for ClamAV",
   "author": "Byron Iniotakis",
   "private": true,
-  "version": "1.4.5",
+  "version": "1.4.6",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -36,6 +36,7 @@
     "predesktop": "npm run build:localization",
     "test": "npm run build:localization && node --import tsx --test server/*.test.ts",
     "test:localization-ui": "node scripts/test-localization-ui.cjs",
+    "test:provider-settings-ui": "node scripts/test-provider-settings-ui.cjs",
     "languages:check": "tsx scripts/check-languages.ts",
     "languages:template": "tsx scripts/language-template.ts"
   },

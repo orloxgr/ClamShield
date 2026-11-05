@@ -1,5 +1,6 @@
 import { defaultLogsDir, engineBaseDir, programDataDir, yaraCacheDir, yaraCustomRulesDir, yaraForgeRulesDir } from "../../../server/core/paths";
 import path from "path";
+import { saneSecurityDatabaseCatalog, securiteInfoDatabaseCatalog } from "../../../shared/signatureDatabases";
 
 export const defaultSettings = {
     languageCode: "en",
@@ -32,12 +33,14 @@ export const defaultSettings = {
     securiteInfoEnabled: false,
     securiteInfoPlan: "basic",
     securiteInfoIncludePua: false,
+    securiteInfoDatabases: securiteInfoDatabaseCatalog.map(([name]) => name),
     lastClamAVUpdate: "",
     lastClamAVUpdateResult: "",
     lastSecuriteInfoUpdate: "",
     lastSecuriteInfoUpdateResult: "",
     saneSecurityEnabled: false,
     saneSecurityProfile: "malware",
+    saneSecurityDatabases: saneSecurityDatabaseCatalog.map(([name]) => name),
     lastSaneSecurityUpdate: "",
     lastSaneSecurityUpdateResult: "",
     virusTotalCloudEnabled: false,
@@ -45,6 +48,7 @@ export const defaultSettings = {
     virusTotalResultsUploadUnknownEnabled: false,
     virusTotalResultsUploadMaxSizeMb: 20,
     virusTotalShieldBackgroundCheckEnabled: false,
+    virusTotalShieldPopupMinDetections: 4,
     virusTotalShieldUploadUnknownEnabled: false,
     virusTotalShieldUploadMaxSizeMb: 20,
     virusTotalUsageRefreshEveryRequests: 500,
@@ -207,6 +211,7 @@ export const numberSettingSpecs: Record<string, {
     max: number;
     integer?: boolean;
 }> = {
+    virusTotalShieldPopupMinDetections: { fallback: 4, min: 1, max: 20, integer: true },
     updateIntervalHours: { fallback: 24, min: 1, max: 720 },
     clamavUpdateIntervalHours: { fallback: 24, min: 24, max: 720 },
     securiteInfoUpdateIntervalHours: { fallback: 1, min: 1, max: 24 },
@@ -246,6 +251,8 @@ export const enumSettingKeys = new Set([
 ]);
 
 export const userWritableSettingKeys = new Set([
+    "securiteInfoDatabases",
+    "saneSecurityDatabases",
     ...Array.from(pathSettingKeys),
     ...Array.from(pathListSettingKeys),
     ...Array.from(booleanSettingKeys),

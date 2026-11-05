@@ -305,7 +305,7 @@ export async function addScanResult(result: any) {
             id: existing.id,
             originalPath,
             timestamp,
-            resultsReminderAt: source === "shield" ? timestamp : existing.resultsReminderAt || 0
+            resultsReminderAt: result.resultsReminderAt === 0 ? 0 : source === "shield" ? timestamp : existing.resultsReminderAt || 0
         }
         : {
             id: timestamp.toString() + randomBytes(4).toString("hex"),

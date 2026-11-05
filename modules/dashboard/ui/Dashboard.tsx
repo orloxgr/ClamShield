@@ -4,28 +4,14 @@ import { Link } from "react-router";
 import { Shield, ShieldAlert, Cpu, Database, Clock, Activity, FileWarning, DownloadCloud, Loader2, ExternalLink, X, RefreshCw, Cloud, KeyRound, SearchCheck, Trash2, UploadCloud } from "lucide-react";
 
 import PageHeader from "../../../src/components/PageHeader";
-import UpdateJobProgress from "../../../src/components/UpdateJobProgress";
+import SignatureProviderDialog, { type SignatureProvider } from "../../../src/components/SignatureProviderDialog";
 import VirusTotalQueueDialog from "../../../addons/virustotal/ui/VirusTotalQueueDialog";
 import { formatRelativeTime, formatSystemDateTime } from "../../../src/lib/dateFormat";
 import { dashboardProtectionState } from "./protection";
 export default function Dashboard() {
     useLanguage();
     const [status, setStatus] = useState<any>(null);
-    const [securiteInfoDialogOpen, setSecuriteInfoDialogOpen] = useState(false);
-    const [securiteInfoSetupUrl, setSecuriteInfoSetupUrl] = useState("");
-    const [securiteInfoPlan, setSecuriteInfoPlan] = useState<"basic" | "paid">("basic");
-    const [securiteInfoIncludePua, setSecuriteInfoIncludePua] = useState(false);
-    const [securiteInfoBusy, setSecuriteInfoBusy] = useState(false);
-    const [securiteInfoMessage, setSecuriteInfoMessage] = useState("");
-    const [securiteInfoJob, setSecuriteInfoJob] = useState<{
-        jobId: string;
-        simulated?: boolean;
-    } | null>(null);
-    const [saneSecurityDialogOpen, setSaneSecurityDialogOpen] = useState(false);
-    const [saneSecurityProfile, setSaneSecurityProfile] = useState<"malware" | "complete">("malware");
-    const [saneSecurityBusy, setSaneSecurityBusy] = useState(false);
-    const [saneSecurityMessage, setSaneSecurityMessage] = useState("");
-    const [saneSecurityJobId, setSaneSecurityJobId] = useState<string | null>(null);
+    const [signatureProvider, setSignatureProvider] = useState<SignatureProvider | null>(null);
     const [virusTotalDialogOpen, setVirusTotalDialogOpen] = useState(false);
     const [virusTotalQueueOpen, setVirusTotalQueueOpen] = useState(false);
     const [virusTotalApiKey, setVirusTotalApiKey] = useState("");
@@ -41,13 +27,6 @@ export default function Dashboard() {
     const fetchStatus = useCallback(() => {
         fetch("/api/status", { cache: "no-store" }).then(r => r.json()).then(setStatus).catch(() => { });
     }, []);
-    useEffect(() => {
-        if (status?.signatureUpdateTarget === "securiteinfo" && status.signatureUpdateJobId) {
-            setSecuriteInfoJob(current => current?.jobId === status.signatureUpdateJobId ? current : { jobId: status.signatureUpdateJobId });
-        }
-        if (status?.saneSecurityUpdateJobId)
-            setSaneSecurityJobId(status.saneSecurityUpdateJobId);
-    }, [status?.signatureUpdateTarget, status?.signatureUpdateJobId, status?.saneSecurityUpdateJobId]);
     useEffect(() => {
         fetchStatus();
         const interval = setInterval(fetchStatus, 3000);
@@ -100,171 +79,6 @@ export default function Dashboard() {
         }
         catch (e) {
             console.error(e);
-        }
-    };
-    const connectSecuriteInfo = async () => {
-        setSecuriteInfoBusy(true);
-        setSecuriteInfoMessage("");
-        try {
-            const configureRes = await fetch("/api/securiteinfo/configure", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    setupText: securiteInfoSetupUrl,
-                    plan: securiteInfoPlan,
-                    includePua: securiteInfoIncludePua
-                })
-            });
-            const configureData = await configureRes.json();
-            if (!configureRes.ok)
-                throw new Error(configureData.error || "Could not connect SecuriteInfo.");
-            fetchStatus();
-            const updateRes = await fetch("/api/update", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ target: "securiteinfo" })
-            });
-            const updateData = await updateRes.json();
-            if (!updateRes.ok)
-                throw new Error(updateData.error || "Connected, but the signature update could not start.");
-            setSecuriteInfoSetupUrl("");
-            setSecuriteInfoJob({ jobId: updateData.jobId, simulated: updateData.simulated });
-            setSecuriteInfoMessage("SecuriteInfo connected. Signature update started.");
-            fetchStatus();
-        }
-        catch (e: any) {
-            setSecuriteInfoMessage(e.message || "Could not connect SecuriteInfo.");
-        }
-        finally {
-            setSecuriteInfoBusy(false);
-        }
-    };
-    const updateSecuriteInfo = async () => {
-        setSecuriteInfoBusy(true);
-        setSecuriteInfoMessage("");
-        try {
-            const settingsRes = await fetch("/api/settings", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    securiteInfoPlan,
-                    securiteInfoIncludePua
-                })
-            });
-            const settingsData = await settingsRes.json();
-            if (!settingsRes.ok)
-                throw new Error(settingsData.error || "Could not save SecuriteInfo settings.");
-            const res = await fetch("/api/update", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ target: "securiteinfo" })
-            });
-            const data = await res.json();
-            if (!res.ok)
-                throw new Error(data.error || "Could not start the signature update.");
-            setSecuriteInfoJob({ jobId: data.jobId, simulated: data.simulated });
-            setSecuriteInfoMessage("SecuriteInfo settings saved. Signature update started.");
-            fetchStatus();
-        }
-        catch (e: any) {
-            setSecuriteInfoMessage(e.message || "Could not start the signature update.");
-        }
-        finally {
-            setSecuriteInfoBusy(false);
-        }
-    };
-    const disconnectSecuriteInfo = async () => {
-        if (!window.confirm(t("dashboard.disconnect_securiteinfo_and_remove_its_downloaded_signature_files")))
-            return;
-        setSecuriteInfoBusy(true);
-        setSecuriteInfoMessage("");
-        try {
-            const res = await fetch("/api/securiteinfo/disconnect", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ removeDatabases: true })
-            });
-            const data = await res.json();
-            if (!res.ok)
-                throw new Error(data.error || "Could not disconnect SecuriteInfo.");
-            setSecuriteInfoMessage("SecuriteInfo disconnected and its signature files were removed.");
-            fetchStatus();
-        }
-        catch (e: any) {
-            setSecuriteInfoMessage(e.message || "Could not disconnect SecuriteInfo.");
-        }
-        finally {
-            setSecuriteInfoBusy(false);
-        }
-    };
-    const configureSaneSecurity = async () => {
-        setSaneSecurityBusy(true);
-        setSaneSecurityMessage("");
-        try {
-            const configureRes = await fetch("/api/sanesecurity/configure", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ profile: saneSecurityProfile })
-            });
-            const configureData = await configureRes.json();
-            if (!configureRes.ok)
-                throw new Error(configureData.error || "Could not configure SaneSecurity.");
-            const updateRes = await fetch("/api/update-sanesecurity", { method: "POST" });
-            const updateData = await updateRes.json();
-            if (!updateRes.ok)
-                throw new Error(updateData.error || "Configured, but the signature update could not start.");
-            setSaneSecurityJobId(updateData.jobId);
-            setSaneSecurityMessage("Installation started. The first setup downloads the helper tools before verifying and installing the databases.");
-            fetchStatus();
-        }
-        catch (e: any) {
-            setSaneSecurityMessage(e.message || "Could not configure SaneSecurity.");
-        }
-        finally {
-            setSaneSecurityBusy(false);
-        }
-    };
-    const updateSaneSecurity = async () => {
-        setSaneSecurityBusy(true);
-        setSaneSecurityMessage("");
-        try {
-            const res = await fetch("/api/update-sanesecurity", { method: "POST" });
-            const data = await res.json();
-            if (!res.ok)
-                throw new Error(data.error || "Could not start the SaneSecurity update.");
-            setSaneSecurityJobId(data.jobId);
-            setSaneSecurityMessage("SaneSecurity update started.");
-            fetchStatus();
-        }
-        catch (e: any) {
-            setSaneSecurityMessage(e.message || "Could not start the SaneSecurity update.");
-        }
-        finally {
-            setSaneSecurityBusy(false);
-        }
-    };
-    const disconnectSaneSecurity = async () => {
-        if (!window.confirm(t("dashboard.disconnect_sanesecurity_and_remove_its_downloaded_signature_files")))
-            return;
-        setSaneSecurityBusy(true);
-        setSaneSecurityMessage("");
-        try {
-            const res = await fetch("/api/sanesecurity/disconnect", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ removeDatabases: true })
-            });
-            const data = await res.json();
-            if (!res.ok)
-                throw new Error(data.error || "Could not disconnect SaneSecurity.");
-            setSaneSecurityMessage("SaneSecurity disconnected and its signature databases were removed.");
-            fetchStatus();
-        }
-        catch (e: any) {
-            setSaneSecurityMessage(e.message || "Could not disconnect SaneSecurity.");
-        }
-        finally {
-            setSaneSecurityBusy(false);
         }
     };
     const saveVirusTotalCloud = async () => {
@@ -363,12 +177,7 @@ export default function Dashboard() {
     const formatUpdateDate = (value: any) => formatSystemDateTime(value);
     const metadataValueClass = "font-medium text-slate-200";
     const attentionValueClass = "font-medium text-amber-400";
-    const openSecuriteInfoDialog = () => {
-        setSecuriteInfoPlan(securiteInfo.plan === "paid" ? "paid" : "basic");
-        setSecuriteInfoIncludePua(securiteInfo.includePua === true);
-        setSecuriteInfoMessage("");
-        setSecuriteInfoDialogOpen(true);
-    };
+    const openSecuriteInfoDialog = () => setSignatureProvider("securiteinfo");
     const openVirusTotalDialog = () => {
         setVirusTotalCloudEnabled(virusTotalEnabled || !virusTotalConfigured);
         setVirusTotalAutoRefineEnabled(virusTotalAutoRefine);
@@ -456,8 +265,8 @@ export default function Dashboard() {
               <span className="text-slate-500">SecuriteInfo</span>
               {localizeText(securiteInfoInstalled ? (<div className="flex items-center gap-3">
                   <span className="font-medium text-slate-200 text-right">{localizeText(formatUpdateDate(securiteInfo.lastUpdated))}</span>
-                  <button onClick={openSecuriteInfoDialog} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">{t("dashboard.manage")}</button>
-                </div>) : (<button onClick={openSecuriteInfoDialog} className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-xs font-medium transition-colors">
+                  <button onClick={openSecuriteInfoDialog} aria-label={localizeText("Manage SecuriteInfo")} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">{t("dashboard.manage")}</button>
+                </div>) : (<button onClick={openSecuriteInfoDialog} aria-label={localizeText("Manage SecuriteInfo")} className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg text-xs font-medium transition-colors">
                   {localizeText(securiteInfo.connected ? "Finish setup" : "Install")}
                 </button>))}
             </div>
@@ -465,16 +274,8 @@ export default function Dashboard() {
               <span className="text-slate-500">SaneSecurity</span>
               {localizeText(saneSecurityInstalled ? (<div className="flex items-center gap-3">
                   <span className="font-medium text-slate-200 text-right">{localizeText(formatUpdateDate(saneSecurity.lastUpdated))}</span>
-                  <button onClick={() => {
-                setSaneSecurityProfile(saneSecurity.profile === "complete" ? "complete" : "malware");
-                setSaneSecurityMessage("");
-                setSaneSecurityDialogOpen(true);
-            }} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">{t("dashboard.manage")}</button>
-                </div>) : (<button onClick={() => {
-                setSaneSecurityProfile(saneSecurity.profile === "complete" ? "complete" : "malware");
-                setSaneSecurityMessage("");
-                setSaneSecurityDialogOpen(true);
-            }} className="px-3 py-1.5 bg-violet-700 hover:bg-violet-600 text-white rounded-lg text-xs font-medium transition-colors">
+                  <button onClick={() => setSignatureProvider("sanesecurity")} aria-label={localizeText("Manage SaneSecurity")} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">{t("dashboard.manage")}</button>
+                </div>) : (<button onClick={() => setSignatureProvider("sanesecurity")} aria-label={localizeText("Manage SaneSecurity")} className="px-3 py-1.5 bg-violet-700 hover:bg-violet-600 text-white rounded-lg text-xs font-medium transition-colors">
                   {localizeText(saneSecurity.connected ? "Finish setup" : saneSecurityFilesPresent ? "Reconnect" : "Install")}
                 </button>))}
             </div>
@@ -573,164 +374,7 @@ export default function Dashboard() {
       </div>
 
       {localizeText(virusTotalQueueOpen && <VirusTotalQueueDialog onClose={() => setVirusTotalQueueOpen(false)}/>)}
-      {localizeText(securiteInfoDialogOpen && (<div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl">
-            <div className="sticky top-0 z-10 bg-slate-900 flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-800">
-              <div className="min-w-0">
-                <h2 className="text-xl font-semibold text-white">
-                  {localizeText(securiteInfo.connected ? "Manage SecuriteInfo" : "Install SecuriteInfo Signatures")}
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">{t("dashboard.your_private_token_is_encrypted_by_windows_and_is_never_returned")}</p>
-              </div>
-              <button onClick={() => setSecuriteInfoDialogOpen(false)} aria-label={t("dashboard.close_securiteinfo")} className="shrink-0 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg">
-                <X className="w-5 h-5"/>
-              </button>
-            </div>
-            <div className="p-6 space-y-5">
-              <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4 space-y-2">
-                <p className="text-sm text-slate-300">{t("dashboard.securiteinfo_is_an_optional_third_party_clamav_signature_source_a")}</p>
-                <p className="text-xs text-slate-500">{t("dashboard.basic_installs")}<code className="text-cyan-300">securiteinfo.ign2</code>{t("dashboard.and")}{localizeText(" ")}
-                  <code className="text-cyan-300">securiteinfoold.hdb</code>{t("dashboard.paid_plan_details")}
-                </p>
-                <p className="text-xs text-slate-500">{t("dashboard.securiteinfo_reports_over_90_and_up_to_99_zero_day_detection_in_i")}</p>
-                {localizeText(securiteInfo.connected && (<p className="text-xs text-emerald-400">{t("dashboard.connected_as")}{localizeText(securiteInfo.plan === "paid" ? "Paid" : "Basic")} - {localizeText(securiteInfo.installedCount || 0)}/{localizeText(securiteInfo.expectedCount || 0)}{t("dashboard.databases_installed")}{localizeText(securiteInfo.plan === "paid" ? ` - PUA ${securiteInfo.includePua ? "on" : "off"}` : "")}
-                  </p>))}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">{t("dashboard.account_plan")}</label>
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <button onClick={() => {
-                setSecuriteInfoPlan("basic");
-                setSecuriteInfoIncludePua(false);
-            }} className={`text-left p-4 rounded-xl border transition-colors ${securiteInfoPlan === "basic"
-                ? "border-cyan-500 bg-cyan-500/10"
-                : "border-slate-700 bg-slate-950/40 hover:border-slate-600"}`}>
-                    <span className="block text-white font-medium">{t("dashboard.basic_free")}</span>
-                    <span className="block text-slate-500 text-xs mt-1">{t("dashboard.downloads")}<code>securiteinfo.ign2</code>{t("dashboard.and_e3ee915")}<code>securiteinfoold.hdb</code>.
-                    </span>
-                  </button>
-                  <button onClick={() => setSecuriteInfoPlan("paid")} className={`text-left p-4 rounded-xl border transition-colors ${securiteInfoPlan === "paid"
-                ? "border-cyan-500 bg-cyan-500/10"
-                : "border-slate-700 bg-slate-950/40 hover:border-slate-600"}`}>
-                    <span className="block text-white font-medium">{t("updates.paid")}</span>
-                    <span className="block text-slate-500 text-xs mt-1">{t("dashboard.downloads_supported_paid_databases_including_0_hour_signatures_pu")}</span>
-                  </button>
-                </div>
-              </div>
-              <div className={`flex items-start justify-between gap-4 rounded-xl border p-4 ${securiteInfoPlan === "paid"
-                ? "border-amber-500/30 bg-amber-500/10"
-                : "border-slate-800 bg-slate-950/40 opacity-60"}`}>
-                <div className="space-y-1">
-                  <span className="text-sm font-medium text-slate-200 flex items-center gap-2">
-                    <FileWarning className="w-4 h-4 text-amber-300"/>{t("dashboard.include_pua_and_vulnerability_signatures")}</span>
-                  <span className="block text-xs text-amber-100/80">{t("dashboard.caution")}<code>{localizeText(securiteInfo.puaDatabase || "securiteinfo-pua-app-and-vulnerabilities.ndb")}</code>{t("dashboard.detects_potentially_unwanted_applications_and_vulnerable_componen")}</span>
-                  {localizeText(securiteInfoPlan !== "paid" && (<span className="block text-xs text-slate-500">{t("updates.available_for_paid_securiteinfo_plans")}</span>))}
-                </div>
-                <input type="checkbox" checked={securiteInfoPlan === "paid" && securiteInfoIncludePua} disabled={securiteInfoPlan !== "paid"} onChange={event => setSecuriteInfoIncludePua(event.target.checked)} className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"/>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">{t("dashboard.paste_any_one_of_your")}<code className="text-cyan-300">{t("dashboard.databasecustomurl")}</code> lines
-                </label>
-                <input type="password" value={securiteInfoSetupUrl} onChange={event => setSecuriteInfoSetupUrl(event.target.value)} placeholder={t("dashboard.databasecustomurl_https_www_securiteinfo_com_get_signatures_secur")} autoComplete="off" className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-sm text-slate-200 focus:outline-none focus:border-cyan-500"/>
-                <p className="text-xs text-slate-500 mt-2">{t("dashboard.both_urls_contain_the_same_private_account_token_paste_either_one")}</p>
-              </div>
-              {localizeText(securiteInfoMessage && (<div className="p-3 rounded-lg border border-cyan-500/20 bg-cyan-500/10 text-cyan-200 text-sm">
-                  {localizeText(securiteInfoMessage)}
-                </div>))}
-              <UpdateJobProgress jobId={securiteInfoJob?.jobId || null} title={t("updates.securiteinfo_output")} simulated={securiteInfoJob?.simulated} onFinished={fetchStatus}/>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <a href="https://www.securiteinfo.com/clients/customers/signup" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-cyan-400 hover:text-cyan-300">
-                  <ExternalLink className="w-4 h-4"/>{t("dashboard.requires_a_free_securiteinfo_account")}</a>
-                <div className="flex flex-wrap gap-2 justify-end">
-                  {localizeText(securiteInfo.connected && (<>
-                      <button onClick={updateSecuriteInfo} disabled={securiteInfoBusy || status.isSignatureUpdateRunning} className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors">
-                        <RefreshCw className={`w-4 h-4 ${status.isSignatureUpdateRunning ? "animate-spin" : ""}`}/>
-                        {localizeText(status.isSignatureUpdateRunning ? "Updating..." : "Save & Update")}
-                      </button>
-                      <button onClick={disconnectSecuriteInfo} disabled={securiteInfoBusy} className="px-4 py-2.5 bg-slate-800 hover:bg-rose-950/60 disabled:opacity-50 text-slate-300 hover:text-rose-300 rounded-lg text-sm font-medium transition-colors">{t("dashboard.disconnect")}</button>
-                    </>))}
-                  <button onClick={connectSecuriteInfo} disabled={securiteInfoBusy || status.isSignatureUpdateRunning || !securiteInfoSetupUrl.trim()} className="inline-flex items-center gap-2 px-5 py-2.5 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors">
-                    {localizeText(securiteInfoBusy && <Loader2 className="w-4 h-4 animate-spin"/>)}
-                    {localizeText(securiteInfo.connected ? "Replace & Update" : "Connect & Update")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>))}
-
-      {localizeText(saneSecurityDialogOpen && (<div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl">
-            <div className="sticky top-0 bg-slate-900 flex items-center justify-between px-6 py-4 border-b border-slate-800">
-              <div>
-                <h2 className="text-xl font-semibold text-white">
-                  {localizeText(saneSecurity.connected ? "Manage SaneSecurity" : saneSecurityFilesPresent ? "Reconnect SaneSecurity" : "Install SaneSecurity Signatures")}
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">{t("dashboard.public_third_party_signatures_for_clamav_no_account_is_required")}</p>
-                {localizeText(saneSecurityFilesPresent && (<p className={`text-xs mt-1 ${saneSecurity.connected ? "text-emerald-400" : "text-amber-300"}`}>
-                    {localizeText(saneSecurity.profile === "complete" ? "Complete" : "Malware Protection")} - {localizeText(saneSecurity.installedCount || 0)}/{localizeText(saneSecurity.expectedCount || 0)}{t("dashboard.databases_installed")}{localizeText(saneSecurity.connected ? "" : " - reconnect required")}
-                  </p>))}
-              </div>
-              <button onClick={() => setSaneSecurityDialogOpen(false)} aria-label={t("dashboard.close_sanesecurity")} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg">
-                <X className="w-5 h-5"/>
-              </button>
-            </div>
-            <div className="p-6 space-y-5">
-              <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 space-y-2">
-                <p className="text-sm text-slate-300">{t("dashboard.clamshield_downloads_the_databases_from_sanesecurity_s_public_rsy")}</p>
-                <p className="text-xs text-slate-500">{t("dashboard.first_time_setup_downloads_an_official_signed_cygwin_helper_of_ap")}</p>
-                <p className="text-xs text-amber-300/80">{t("dashboard.third_party_signatures_can_improve_detection_but_may_also_increas")}</p>
-                {localizeText(false && saneSecurity.connected && (<p className="text-xs text-emerald-400">
-                    {localizeText(saneSecurity.profile === "complete" ? "Complete" : "Malware Protection")} · {localizeText(saneSecurity.installedCount || 0)}/{localizeText(saneSecurity.expectedCount || 0)}{t("dashboard.databases_installed_1917fb8")}</p>))}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">{t("dashboard.signature_profile")}</label>
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <button onClick={() => setSaneSecurityProfile("malware")} className={`text-left p-4 rounded-xl border transition-colors ${saneSecurityProfile === "malware"
-                ? "border-violet-500 bg-violet-500/10"
-                : "border-slate-700 bg-slate-950/40 hover:border-slate-600"}`}>
-                    <span className="block text-white font-medium">{t("updates.malware_protection")}</span>
-                    <span className="block text-slate-500 text-xs mt-1">{t("dashboard.installs_9_malware_phishing_macro_hash_whitelist_and_exploit_focu")}</span>
-                  </button>
-                  <button onClick={() => setSaneSecurityProfile("complete")} className={`text-left p-4 rounded-xl border transition-colors ${saneSecurityProfile === "complete"
-                ? "border-violet-500 bg-violet-500/10"
-                : "border-slate-700 bg-slate-950/40 hover:border-slate-600"}`}>
-                    <span className="block text-white font-medium">{t("scan.complete")}</span>
-                    <span className="block text-slate-500 text-xs mt-1">{t("dashboard.installs_20_databases_adding_spam_scam_url_attachment_image_and_s")}</span>
-                  </button>
-                </div>
-              </div>
-
-              {localizeText(saneSecurityMessage && (<div className="p-3 rounded-lg border border-violet-500/20 bg-violet-500/10 text-violet-200 text-sm">
-                  {localizeText(saneSecurityMessage)}
-                </div>))}
-              <UpdateJobProgress jobId={saneSecurityJobId} title={t("updates.sanesecurity_output")} onFinished={fetchStatus}/>
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex flex-wrap gap-4">
-                  <a href={saneSecurity.usageUrl || "https://sanesecurity.com/usage/signatures/"} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-violet-400 hover:text-violet-300">
-                    <ExternalLink className="w-4 h-4"/>{t("dashboard.signature_information")}</a>
-                  <a href={saneSecurity.donateUrl || "https://sanesecurity.com/donate/"} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-slate-300">
-                    <ExternalLink className="w-4 h-4"/>{t("dashboard.support_sanesecurity")}</a>
-                </div>
-                <div className="flex flex-wrap gap-2 justify-end">
-                  {localizeText(saneSecurity.connected && (<>
-                      <button onClick={updateSaneSecurity} disabled={saneSecurityBusy || status.isSaneSecurityUpdateRunning} className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors">
-                        <RefreshCw className={`w-4 h-4 ${status.isSaneSecurityUpdateRunning ? "animate-spin" : ""}`}/>
-                        {localizeText(status.isSaneSecurityUpdateRunning ? "Updating..." : "Update now")}
-                      </button>
-                      <button onClick={disconnectSaneSecurity} disabled={saneSecurityBusy || status.isSaneSecurityUpdateRunning} className="px-4 py-2.5 bg-slate-800 hover:bg-rose-950/60 disabled:opacity-50 text-slate-300 hover:text-rose-300 rounded-lg text-sm font-medium transition-colors">{t("dashboard.disconnect")}</button>
-                    </>))}
-                  <button onClick={configureSaneSecurity} disabled={saneSecurityBusy || status.isSaneSecurityUpdateRunning} className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-700 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors">
-                    {localizeText((saneSecurityBusy || status.isSaneSecurityUpdateRunning) && <Loader2 className="w-4 h-4 animate-spin"/>)}
-                    {localizeText(saneSecurity.connected ? "Save & Update" : saneSecurityFilesPresent ? "Reconnect & Update" : "Install & Update")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>))}
+      {signatureProvider && <SignatureProviderDialog provider={signatureProvider} status={status} onClose={() => setSignatureProvider(null)} onChanged={fetchStatus}/>}
 
       {localizeText(virusTotalDialogOpen && (<div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl">

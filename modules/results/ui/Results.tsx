@@ -614,7 +614,7 @@ export default function ResultsPage() {
                                     "Hash checked: no report returned."
                                 : "VirusTotal report"))}
                           </span>
-                          {localizeText(report?.url && cloudState.state === "checked" && (<a href={report.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-sky-300 hover:text-sky-200">{t("results.open_vt")}</a>))}
+                          {localizeText(report?.url && report.found !== false && (<a href={report.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-sky-300 hover:text-sky-200">{t("results.open_vt")}</a>))}
                         </div>
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-400">
                           {localizeText(cloudState.checkedAt > 0 && <span>{t("results.updated")}{localizeText(formatSystemDateTime(cloudState.checkedAt))}</span>)}

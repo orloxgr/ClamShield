@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
 import { installNativeTools } from '../addons/sanesecurity/server/tools';
 
 // Use the same current, verified 7-Zip as the application instead of the
@@ -16,4 +17,17 @@ const child = spawn(process.execPath, [require.resolve('electron-builder/out/cli
     cwd: root, env: process.env, stdio: 'inherit', windowsHide: true
 });
 child.once('error', error => { console.error(error); process.exitCode = 1; });
-child.once('exit', code => { process.exitCode = code ?? 1; });
+child.once('exit', async code => {
+    process.exitCode = code ?? 1;
+    if (code !== 0 || process.platform !== 'win32') return;
+    try {
+        const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+        const output = path.resolve(root, pkg.build.directories.output.replaceAll('${version}', pkg.version));
+        const installer = path.join(output, `ClamShield-Setup-${pkg.version}.exe`);
+        // --dir builds produce no installer. Finalize metadata only when one was built.
+        if (!process.argv.includes('--dir')) {
+            await require('./sign-windows-artifacts.cjs').refreshInstallerMetadata(installer);
+            console.log('Final update metadata matches the signed installer.');
+        }
+    } catch (error) { console.error(error); process.exitCode = 1; }
+});

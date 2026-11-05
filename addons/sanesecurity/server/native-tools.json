@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-11-04",
+  "reviewedAt": "2026-11-05",
   "packages": [
     {
       "name": "gcc-libs",
@@ -48,10 +48,10 @@
     },
     {
       "name": "liblz4",
-      "version": "1.10.0-1",
+      "version": "1.11.0-1",
       "source": "https://packages.msys2.org/packages/liblz4",
-      "url": "https://repo.msys2.org/msys/x86_64/liblz4-1.10.0-1-x86_64.pkg.tar.zst",
-      "sha256": "1cbbe51ee91bf32691aabb15bdb7c8548e8b5ef8195122ef31f10edcca6e952f",
+      "url": "https://repo.msys2.org/msys/x86_64/liblz4-1.11.0-1-x86_64.pkg.tar.zst",
+      "sha256": "37e03980a8eb56166eaadbebf9042ec7d1aefc06a303deca0e3136ac7e26f3f0",
       "family": "msys",
       "dependencies": [
         "gcc-libs"
@@ -185,10 +185,10 @@
     },
     {
       "name": "rsync",
-      "version": "3.5.1-2",
+      "version": "3.5.2-1",
       "source": "https://packages.msys2.org/packages/rsync",
-      "url": "https://repo.msys2.org/msys/x86_64/rsync-3.5.1-2-x86_64.pkg.tar.zst",
-      "sha256": "cba52e41d16f9873324fcf09853619964da87bc1ce116781a5449c968d4ffecc",
+      "url": "https://repo.msys2.org/msys/x86_64/rsync-3.5.2-1-x86_64.pkg.tar.zst",
+      "sha256": "d9c7bfb82d67ebad007c7359fdab753b60a9ef42962db4f02f6dc64d3bd6d176",
       "family": "msys",
       "dependencies": [
         "libiconv",

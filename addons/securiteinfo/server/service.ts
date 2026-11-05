@@ -4,6 +4,7 @@ import { loadEncryptedSecret, saveEncryptedSecret } from "../../../server/core/s
 import { securiteInfoAccountUrl, securiteInfoAllDatabases, securiteInfoBaseUrl, securiteInfoBasicDatabases, securiteInfoPaidDatabases, securiteInfoPuaDatabase, securiteInfoSignupUrl } from "./constants";
 import fs from "fs/promises";
 import path from "path";
+import { availableSecuriteInfoDatabases, normalizeDatabaseSelection, securiteInfoDatabaseCatalog } from "../../../shared/signatureDatabases";
 export function normalizeSecuriteInfoPlan(value: any) {
     return String(value || "").toLowerCase() === "paid" ? "paid" : "basic";
 }
@@ -19,6 +20,10 @@ export function getSecuriteInfoDatabaseNames(plan: any, includePua: any = false)
     return databases;
 }
 export function getConfiguredSecuriteInfoDatabaseNames(settings: any) {
+    if (Array.isArray(settings?.securiteInfoDatabases)) {
+        const available = new Set(availableSecuriteInfoDatabases(normalizeSecuriteInfoPlan(settings?.securiteInfoPlan)));
+        return normalizeDatabaseSelection(settings.securiteInfoDatabases, securiteInfoDatabaseCatalog).filter(name => available.has(name));
+    }
     return getSecuriteInfoDatabaseNames(settings?.securiteInfoPlan, settings?.securiteInfoIncludePua);
 }
 export function extractSecuriteInfoToken(input: any) {
@@ -59,9 +64,7 @@ export async function removeSecuriteInfoDatabaseFiles(databaseDir: string, keep:
         }
         catch (e: any) {
             if (e?.code !== "ENOENT")
-                console.warn(englishText("backend.securiteinfo.failed_to_remove_securiteinfo_database", {
-                    fileName: String(fileName)
-                }), e?.message || e);
+                throw e;
         }
     }
     return removed;
@@ -69,8 +72,8 @@ export async function removeSecuriteInfoDatabaseFiles(databaseDir: string, keep:
 export async function getSecuriteInfoStatus(settings: any) {
     const connected = Boolean(await loadSecuriteInfoToken());
     const plan = normalizeSecuriteInfoPlan(settings.securiteInfoPlan);
-    const includePua = normalizeSecuriteInfoIncludePua(settings.securiteInfoIncludePua);
-    const expectedFiles = getSecuriteInfoDatabaseNames(plan, includePua);
+    const expectedFiles = getConfiguredSecuriteInfoDatabaseNames(settings);
+    const includePua = expectedFiles.includes(securiteInfoPuaDatabase);
     const downloadedFiles: Array<{
         name: string;
         size: number;
@@ -99,6 +102,7 @@ export async function getSecuriteInfoStatus(settings: any) {
         connected,
         enabled: connected && settings.securiteInfoEnabled === true,
         plan,
+        selectedDatabases: expectedFiles,
         includePua,
         puaDatabase: securiteInfoPuaDatabase,
         puaInstalled: downloadedNames.has(securiteInfoPuaDatabase.toLowerCase()),

@@ -1,8 +1,9 @@
 import { t, localizeText, useLanguage } from "../../../src/lib/i18n";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Database, DownloadCloud, FileWarning, KeyRound, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { Link } from "react-router";
 import PageHeader from "../../../src/components/PageHeader";
+import SignatureProviderDialog, { type SignatureProvider } from "../../../src/components/SignatureProviderDialog";
 import { formatSystemDateTime } from "../../../src/lib/dateFormat";
 const MAX_TERMINAL_LINES = 800;
 type DetailsPanel = "clamav" | "securiteinfo" | "sanesecurity" | "yara" | "clamavEngine" | "yaraEngine" | "app";
@@ -13,6 +14,7 @@ function appendOutput(previous: string[], next: string[]) {
 }
 export default function Updates() {
     useLanguage();
+    const [signatureProvider, setSignatureProvider] = useState<SignatureProvider | null>(null);
     const [updateState, setUpdateState] = useState<"idle" | "running" | "done">("idle");
     const [output, setOutput] = useState<string[]>([]);
     const [jobId, setJobId] = useState<string | null>(null);
@@ -52,7 +54,7 @@ export default function Updates() {
             ref.current = null;
         }
     };
-    const refreshStatus = async () => {
+    const refreshStatus = useCallback(async () => {
         try {
             const res = await fetch("/api/status");
             const data = await res.json();
@@ -61,7 +63,7 @@ export default function Updates() {
         catch {
             setStatus(null);
         }
-    };
+    }, []);
     useEffect(() => {
         refreshStatus();
         const interval = window.setInterval(refreshStatus, 3000);
@@ -387,6 +389,7 @@ export default function Updates() {
     const cardHeaderClass = "update-card-header p-8 grid grid-cols-1 gap-6 lg:items-center";
     const cardActionsClass = "update-card-actions flex flex-wrap items-center gap-2 [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap";
     return (<div className="px-8 max-w-6xl mx-auto pb-20 flex flex-col gap-8">
+      {signatureProvider && <SignatureProviderDialog provider={signatureProvider} status={status} onClose={() => setSignatureProvider(null)} onChanged={refreshStatus}/>}
       <PageHeader title={t("updates.updates")} description={t("updates.update_signatures_and_rules_clamshield_and_scanning_engines")}/>
 
       <h2 className="text-xl font-semibold text-white">{t("updates.signatures_amp_rules")}</h2>
@@ -443,7 +446,7 @@ export default function Updates() {
             {localizeText(status?.securiteInfo?.connected ? (<button onClick={() => runUpdate("securiteinfo")} disabled={signatureUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <RefreshCw className={`w-5 h-5 ${signatureUpdateActive ? "animate-spin" : ""}`}/>
                 {localizeText(signatureUpdateActive ? "Updating..." : "Update SecuriteInfo")}
-              </button>) : (<Link to="/" className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"><KeyRound className="w-4 h-4"/>{t("updates.configure_on_dashboard")}</Link>))}
+              </button>) : (<button onClick={() => setSignatureProvider("securiteinfo")} className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-cyan-700 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"><KeyRound className="w-4 h-4"/>{localizeText("Manage SecuriteInfo")}</button>))}
           </div>
         </div>
         {localizeText(openPanel === "securiteinfo" && (<div className="px-8 pb-8 pt-2 border-t border-cyan-500/20 space-y-4">
@@ -451,14 +454,7 @@ export default function Updates() {
               <span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span>
               <input type="number" min={1} max={24} value={updateSettings.securiteInfoUpdateIntervalHours || 1} onChange={event => updateNumberSetting("securiteInfoUpdateIntervalHours", event.target.value, 1, 1, 24)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/>
             </label>
-            <div className={`flex items-start justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-4 ${updateSettings.securiteInfoPlan === "paid" ? "" : "opacity-60"}`}>
-              <div>
-                <span className="text-slate-200 font-medium flex items-center gap-2"><FileWarning className="w-4 h-4 text-amber-300"/>{t("updates.securiteinfo_pua_signatures")}</span>
-                <span className="text-slate-500 text-xs block mt-1">{t("updates.optional_database")}<code>securiteinfo-pua-app-and-vulnerabilities.ndb</code>{t("updates.pua_false_positive_note")}</span>
-                {localizeText(updateSettings.securiteInfoPlan !== "paid" && <span className="text-slate-500 text-xs block mt-1">{t("updates.available_for_paid_securiteinfo_plans")}</span>)}
-              </div>
-              <input type="checkbox" checked={updateSettings.securiteInfoPlan === "paid" && updateSettings.securiteInfoIncludePua === true} disabled={updateSettings.securiteInfoPlan !== "paid"} onChange={event => saveUpdateSettings({ securiteInfoIncludePua: event.target.checked })} className="mt-1 w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-slate-900 bg-slate-800"/>
-            </div>
+            <button onClick={() => setSignatureProvider("securiteinfo")} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm">{localizeText("Manage SecuriteInfo")}</button>
           </div>))}
         {localizeText(signatureTarget === "securiteinfo" && (signatureUpdateActive || updateState === "done") && (<ProgressPanel title={signatureUpdateActive ? t("updates.updating_securiteinfo_signatures") : signatureUpdateFailed ? t("updates.securiteinfo_update_failed") : t("updates.securiteinfo_update_complete")} progress={signatureProgress} failed={signatureUpdateFailed} active={signatureUpdateActive} label={signatureProgressLabel} barClass="bg-gradient-to-r from-cyan-500 to-sky-400" borderClass="border-cyan-500/20"/>))}
         {localizeText(signatureTarget === "securiteinfo" && (updateState === "running" || updateState === "done") && (<div className="px-8 pb-8 pt-4 border-t border-cyan-500/20">
@@ -475,7 +471,7 @@ export default function Updates() {
                 <h3 className="font-semibold text-white text-lg">{t("updates.sanesecurity_signatures")}</h3>
                 <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[11px] border border-slate-700">{t("updates.signed_third_party_source")}</span>
               </div>
-              <p className="text-slate-400 text-sm mt-1">{localizeText(status?.saneSecurity?.connected ? `${status.saneSecurity.profile === "complete" ? "Complete" : "Malware Protection"} - ${status.saneSecurity.installedCount || 0}/${status.saneSecurity.expectedCount || 0} databases - ${statusLine(status.saneSecurity.lastUpdated, status.saneSecurity.lastResult)}` : "Not installed")}</p>
+              <p className="text-slate-400 text-sm mt-1">{localizeText(status?.saneSecurity?.connected ? `${status.saneSecurity.installedCount || 0}/${status.saneSecurity.expectedCount || 0} databases - ${statusLine(status.saneSecurity.lastUpdated, status.saneSecurity.lastResult)}` : "Not installed")}</p>
             </div>
           </div>
           <div className={cardActionsClass}>
@@ -484,14 +480,15 @@ export default function Updates() {
             {localizeText(status?.saneSecurity?.connected ? (<button onClick={runSaneUpdate} disabled={saneUpdateActive} className="update-primary-action flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 <RefreshCw className={`w-5 h-5 ${saneUpdateActive ? "animate-spin" : ""}`}/>
                 {localizeText(saneUpdateActive ? "Updating..." : "Update SaneSecurity")}
-              </button>) : (<Link to="/" className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors"><ShieldCheck className="w-4 h-4"/>{t("updates.configure_on_dashboard")}</Link>))}
+              </button>) : (<button onClick={() => setSignatureProvider("sanesecurity")} className="update-primary-action inline-flex items-center gap-2 px-6 py-3 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-medium transition-colors"><ShieldCheck className="w-4 h-4"/>{localizeText("Manage SaneSecurity")}</button>))}
           </div>
         </div>
-        {localizeText(openPanel === "sanesecurity" && (<div className="px-8 pb-8 pt-2 border-t border-violet-500/20 max-w-xs">
+        {localizeText(openPanel === "sanesecurity" && (<div className="px-8 pb-8 pt-2 border-t border-violet-500/20 space-y-4">
             <label className="block">
               <span className="text-xs font-medium text-slate-400">{t("updates.update_interval_hours")}</span>
               <input type="number" min={1} max={24} value={updateSettings.saneSecurityUpdateIntervalHours || 1} onChange={event => updateNumberSetting("saneSecurityUpdateIntervalHours", event.target.value, 1, 1, 24)} className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-indigo-500"/>
             </label>
+            <button onClick={() => setSignatureProvider("sanesecurity")} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm">{localizeText("Manage SaneSecurity")}</button>
           </div>))}
         {localizeText((saneUpdateActive || saneUpdateState === "done") && (<ProgressPanel title={saneUpdateActive ? t("updates.downloading_and_verifying_sanesecurity_databases") : saneUpdateFailed ? t("updates.sanesecurity_update_failed") : t("updates.sanesecurity_update_complete")} progress={saneProgress} failed={saneUpdateFailed} active={saneUpdateActive} label={saneOutput.at(-1) || t("updates.sanesecurity_is_preparing_its_signed_database_update")} barClass="bg-gradient-to-r from-violet-500 to-fuchsia-400" borderClass="border-violet-500/20"/>))}
         {localizeText((saneUpdateState === "running" || saneUpdateState === "done") && (<div className="px-8 pb-8 pt-4 border-t border-violet-500/20">

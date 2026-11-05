@@ -7,6 +7,7 @@ import { virusTotalLimitWarningsEnabled } from "../../../addons/virustotal/serve
 import { normalizeShieldDetectionAction } from "../../shield/server/actions";
 import { booleanSettingKeys, defaultSettings, enumSettingKeys, numberSettingSpecs, pathListSettingKeys, pathSettingKeys, readOnlySettingKeys, userWritableSettingKeys } from "./schema";
 import path from "path";
+import { normalizeDatabaseSelection, saneSecurityDatabaseCatalog, securiteInfoDatabaseCatalog } from "../../../shared/signatureDatabases";
 
 export function normalizePositiveNumber(value: any, fallback: number, min: number, max: number) {
     const parsed = Number(value);
@@ -146,7 +147,10 @@ export function normalizeSettingsPatch(rawSettings: any, currentSettings: any) {
             continue;
         }
         const fallback = getSettingFallback(key, currentSettings);
-        if (pathSettingKeys.has(key)) {
+        if (key === "securiteInfoDatabases" || key === "saneSecurityDatabases") {
+            patch[key] = normalizeDatabaseSelection(value, key === "securiteInfoDatabases" ? securiteInfoDatabaseCatalog : saneSecurityDatabaseCatalog);
+        }
+        else if (pathSettingKeys.has(key)) {
             patch[key] = normalizeSettingsPath(value, fallback);
         }
         else if (pathListSettingKeys.has(key)) {

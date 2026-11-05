@@ -8565,7 +8565,7 @@
     },
     "updates.paid": {
       "StringInEng": "Paid",
-      "translation": "Πληρώθηκε",
+      "translation": "Επί πληρωμή",
       "maxChars": 4
     },
     "updates.remind_tomorrow": {
@@ -11994,6 +11994,276 @@
       "StringInEng": "The file cannot be uploaded. Check file access and the upload size limit in Settings, then recheck its hash.",
       "translation": "Το αρχείο δεν μπορεί να σταλεί. Ελέγξτε την πρόσβαση και το όριο μεγέθους στις Ρυθμίσεις και ελέγξτε ξανά το hash.",
       "maxChars": 108
+    },
+    "signature_databases.android_malware": {
+      "StringInEng": "Android malware.",
+      "translation": "Κακόβουλο λογισμικό Android.",
+      "maxChars": 16
+    },
+    "signature_databases.anti_phishing_allowlist_that_reduces_false_positives": {
+      "StringInEng": "Anti-phishing allowlist that reduces false positives.",
+      "translation": "Λίστα επιτρεπόμενων ιστοτόπων που μειώνει τα false positives phishing.",
+      "maxChars": 53
+    },
+    "signature_databases.anti_phishing_checks_for_impersonated_domains": {
+      "StringInEng": "Anti-phishing checks for impersonated domains.",
+      "translation": "Έλεγχοι phishing για πλαστοπροσωπία ιστοτόπων.",
+      "maxChars": 46
+    },
+    "signature_databases.connect_securiteinfo_before_saving_database_settings": {
+      "StringInEng": "Connect SecuriteInfo before saving database settings.",
+      "translation": "Συνδέστε τη SecuriteInfo πριν αποθηκεύσετε τις ρυθμίσεις βάσεων.",
+      "maxChars": 53
+    },
+    "signature_databases.could_not_save_provider_settings": {
+      "StringInEng": "Could not save provider settings.",
+      "translation": "Αποτυχία αποθήκευσης ρυθμίσεων παρόχου.",
+      "maxChars": 33
+    },
+    "signature_databases.dangerous_macros_and_scripts_in_documents": {
+      "StringInEng": "Dangerous macros and scripts in documents.",
+      "translation": "Επικίνδυνες μακροεντολές και scripts σε έγγραφα.",
+      "maxChars": 42
+    },
+    "signature_databases.database_selection_saved": {
+      "StringInEng": "Database selection saved.",
+      "translation": "Αποθηκεύτηκαν οι επιλογές βάσεων.",
+      "maxChars": 25
+    },
+    "signature_databases.database_selection_saved_signature_update_started": {
+      "StringInEng": "Database selection saved. Signature update started.",
+      "translation": "Αποθηκεύτηκαν οι επιλογές. Ξεκίνησε η ενημέρωση υπογραφών.",
+      "maxChars": 51
+    },
+    "signature_databases.database_selection_saved_update_could_not_start": {
+      "StringInEng": "Database selection saved. Update could not start.",
+      "translation": "Οι επιλογές αποθηκεύτηκαν. Η ενημέρωση δεν ξεκίνησε.",
+      "maxChars": 49
+    },
+    "signature_databases.database_settings_are_being_saved_retry_the_update_shortly": {
+      "StringInEng": "Database settings are being saved. Retry the update shortly.",
+      "translation": "Αποθηκεύονται οι ρυθμίσεις βάσεων. Δοκιμάστε ξανά σε λίγο.",
+      "maxChars": 60
+    },
+    "signature_databases.deselect_all_databases": {
+      "StringInEng": "Deselect all databases",
+      "translation": "Αποεπιλογή όλων των βάσεων",
+      "maxChars": 22
+    },
+    "signature_databases.email_addresses_associated_with_spear_phishing": {
+      "StringInEng": "Email addresses associated with spear phishing.",
+      "translation": "Διευθύνσεις email που σχετίζονται με στοχευμένο phishing.",
+      "maxChars": 47
+    },
+    "signature_databases.false_positive_corrections_ignores_problematic_sanesecurity_signatures": {
+      "StringInEng": "False-positive corrections: ignores problematic SaneSecurity signatures.",
+      "translation": "Διορθώσεις false positives: αγνοεί προβληματικές υπογραφές SaneSecurity.",
+      "maxChars": 72
+    },
+    "signature_databases.false_positive_corrections_ignores_signatures_withdrawn_by_securiteinfo": {
+      "StringInEng": "False-positive corrections: ignores signatures withdrawn by SecuriteInfo.",
+      "translation": "Διορθώσεις false positives: αγνοεί υπογραφές που απέσυρε η SecuriteInfo.",
+      "maxChars": 73
+    },
+    "signature_databases.general_junk_mail_phishing_lottery_and_scam_patterns": {
+      "StringInEng": "General junk mail, phishing, lottery and scam patterns.",
+      "translation": "Μοτίβα ανεπιθύμητης αλληλογραφίας, phishing, λοταριών και απάτης.",
+      "maxChars": 55
+    },
+    "signature_databases.generic_malware_detection_using_sections_of_executable_files": {
+      "StringInEng": "Generic malware detection using sections of executable files.",
+      "translation": "Γενική ανίχνευση κακόβουλου λογισμικού από τμήματα εκτελέσιμων.",
+      "maxChars": 61
+    },
+    "signature_databases.generic_yara_rules_for_malware_phishing_and_potentially_unwanted_content_scanned_by_clamav": {
+      "StringInEng": "Generic YARA rules for malware, phishing and potentially unwanted content; scanned by ClamAV.",
+      "translation": "Κανόνες YARA για malware, phishing και δυνητικά ανεπιθύμητο περιεχόμενο· ελέγχονται από το ClamAV.",
+      "maxChars": 93
+    },
+    "signature_databases.html_and_javascript_malware_patterns_including_phishing_pages": {
+      "StringInEng": "HTML and JavaScript malware patterns, including phishing pages.",
+      "translation": "Μοτίβα κακόβουλου HTML και JavaScript, μαζί με σελίδες phishing.",
+      "maxChars": 63
+    },
+    "signature_databases.images_used_in_spam": {
+      "StringInEng": "Images used in spam.",
+      "translation": "Εικόνες που χρησιμοποιούνται σε spam.",
+      "maxChars": 20
+    },
+    "signature_databases.invalid_signature_database_selection": {
+      "StringInEng": "Invalid signature database selection.",
+      "translation": "Μη έγκυρη επιλογή βάσεων υπογραφών.",
+      "maxChars": 37
+    },
+    "signature_databases.junk_mail_urls_collected_automatically_from_feeds": {
+      "StringInEng": "Junk-mail URLs collected automatically from feeds.",
+      "translation": "URL ανεπιθύμητης αλληλογραφίας από αυτόματες συλλογές.",
+      "maxChars": 50
+    },
+    "signature_databases.known_malware_file_hashes": {
+      "StringInEng": "Known malware file hashes.",
+      "translation": "Hash γνωστών κακόβουλων αρχείων.",
+      "maxChars": 26
+    },
+    "signature_databases.known_spam_attachments_including_documents_and_archives": {
+      "StringInEng": "Known spam attachments, including documents and archives.",
+      "translation": "Γνωστά συνημμένα spam, όπως έγγραφα και συμπιεσμένα αρχεία.",
+      "maxChars": 57
+    },
+    "signature_databases.logical_rules_for_phishing_and_malware": {
+      "StringInEng": "Logical rules for phishing and malware.",
+      "translation": "Λογικοί κανόνες για phishing και κακόβουλο λογισμικό.",
+      "maxChars": 39
+    },
+    "signature_databases.logical_rules_for_spam": {
+      "StringInEng": "Logical rules for spam.",
+      "translation": "Λογικοί κανόνες για spam.",
+      "maxChars": 23
+    },
+    "signature_databases.lottery_scam_patterns": {
+      "StringInEng": "Lottery scam patterns.",
+      "translation": "Μοτίβα απάτης με λοταρίες.",
+      "maxChars": 22
+    },
+    "signature_databases.malicious_html_content": {
+      "StringInEng": "Malicious HTML content.",
+      "translation": "Κακόβουλο περιεχόμενο HTML.",
+      "maxChars": 23
+    },
+    "signature_databases.malicious_pdf_files_and_pdf_spam": {
+      "StringInEng": "Malicious PDF files and PDF spam.",
+      "translation": "Κακόβουλα PDF και ανεπιθύμητο περιεχόμενο PDF.",
+      "maxChars": 33
+    },
+    "signature_databases.malicious_text_and_scripts_including_bat_shell_and_perl": {
+      "StringInEng": "Malicious text and scripts, including BAT, shell and Perl.",
+      "translation": "Κακόβουλο κείμενο και scripts, όπως BAT, shell και Perl.",
+      "maxChars": 58
+    },
+    "signature_databases.malware_collected_within_the_last_hour": {
+      "StringInEng": "Malware collected within the last hour.",
+      "translation": "Κακόβουλο λογισμικό που συλλέχθηκε την τελευταία ώρα.",
+      "maxChars": 39
+    },
+    "signature_databases.malware_fake_antivirus_programs_and_fake_codecs": {
+      "StringInEng": "Malware, fake antivirus programs and fake codecs.",
+      "translation": "Κακόβουλο λογισμικό, ψεύτικα antivirus και ψεύτικοι codecs.",
+      "maxChars": 49
+    },
+    "signature_databases.malware_older_than_one_year_increases_memory_use": {
+      "StringInEng": "Malware older than one year; increases memory use.",
+      "translation": "Κακόβουλο λογισμικό παλαιότερο του έτους· αυξάνει τη χρήση μνήμης.",
+      "maxChars": 50
+    },
+    "signature_databases.marketing_spam_patterns_mainly_intended_for_mail_servers": {
+      "StringInEng": "Marketing spam patterns, mainly intended for mail servers.",
+      "translation": "Μοτίβα διαφημιστικού spam, κυρίως για διακομιστές email.",
+      "maxChars": 58
+    },
+    "signature_databases.no_signature_databases_selected_choose_databases_in_provider_settings": {
+      "StringInEng": "No signature databases selected. Choose databases in provider settings.",
+      "translation": "Δεν επιλέχθηκαν βάσεις υπογραφών. Επιλέξτε βάσεις στις ρυθμίσεις παρόχου.",
+      "maxChars": 71
+    },
+    "signature_databases.paste_your_securiteinfo_databasecustomurl": {
+      "StringInEng": "Paste your SecuriteInfo DatabaseCustomURL",
+      "translation": "Επικολλήστε το SecuriteInfo DatabaseCustomURL σας",
+      "maxChars": 41
+    },
+    "signature_databases.phishing_and_malware_patterns": {
+      "StringInEng": "Phishing and malware patterns.",
+      "translation": "Μοτίβα phishing και κακόβουλου λογισμικού.",
+      "maxChars": 30
+    },
+    "signature_databases.potentially_unwanted_applications_and_vulnerable_components_may_increase_false_positives": {
+      "StringInEng": "Potentially unwanted applications and vulnerable components; may increase false positives.",
+      "translation": "Δυνητικά ανεπιθύμητες εφαρμογές και ευάλωτα στοιχεία· μπορεί να αυξήσει τα false positives.",
+      "maxChars": 90
+    },
+    "signature_databases.recent_malware_mainly_windows_executable_files": {
+      "StringInEng": "Recent malware, mainly Windows executable files.",
+      "translation": "Πρόσφατο κακόβουλο λογισμικό, κυρίως εκτελέσιμα Windows.",
+      "maxChars": 48
+    },
+    "signature_databases.recently_blocked_malware_spam_and_phishing_urls": {
+      "StringInEng": "Recently blocked malware, spam and phishing URLs.",
+      "translation": "Πρόσφατα αποκλεισμένα URL για malware, spam και phishing.",
+      "maxChars": 49
+    },
+    "signature_databases.recognizes_message_file_types_to_improve_scanning": {
+      "StringInEng": "Recognizes message file types to improve scanning.",
+      "translation": "Αναγνώριση τύπων αρχείων μηνυμάτων για καλύτερη σάρωση.",
+      "maxChars": 50
+    },
+    "signature_databases.replace_account_token_optional": {
+      "StringInEng": "Replace account token (optional)",
+      "translation": "Αλλαγή token λογαριασμού (προαιρετικά)",
+      "maxChars": 32
+    },
+    "signature_databases.save_to_remove_deselected_databases_save_update_also_downloads_newly_selected_databases_active_": {
+      "StringInEng": "Save to remove deselected databases. Save & Update also downloads newly selected databases. Active scans finish before in-memory databases reload.",
+      "translation": "Η αποθήκευση αφαιρεί τις αποεπιλεγμένες βάσεις. Το «Αποθήκευση και ενημέρωση» κατεβάζει και τις νέες. Οι ενεργές σαρώσεις ολοκληρώνονται πριν επαναφορτωθούν οι βάσεις στη μνήμη.",
+      "maxChars": 146
+    },
+    "signature_databases.select_all_databases": {
+      "StringInEng": "Select all databases",
+      "translation": "Επιλογή όλων των βάσεων",
+      "maxChars": 20
+    },
+    "signature_databases.select_the_sanesecurity_databases_used_by_clamav_no_account_is_required": {
+      "StringInEng": "Select the SaneSecurity databases used by ClamAV. No account is required.",
+      "translation": "Επιλέξτε τις βάσεις SaneSecurity για το ClamAV. Δεν απαιτείται λογαριασμός.",
+      "maxChars": 73
+    },
+    "signature_databases.select_the_securiteinfo_databases_used_by_clamav_a_securiteinfo_account_is_required": {
+      "StringInEng": "Select the SecuriteInfo databases used by ClamAV. A SecuriteInfo account is required.",
+      "translation": "Επιλέξτε τις βάσεις SecuriteInfo για το ClamAV. Απαιτείται λογαριασμός SecuriteInfo.",
+      "maxChars": 85
+    },
+    "signature_databases.signature_databases": {
+      "StringInEng": "Signature databases",
+      "translation": "Βάσεις υπογραφών",
+      "maxChars": 19
+    },
+    "signature_databases.spam_and_scam_patterns": {
+      "StringInEng": "Spam and scam patterns.",
+      "translation": "Μοτίβα spam και απάτης.",
+      "maxChars": 23
+    },
+    "signature_databases.suspicious_archive_contents_and_structures": {
+      "StringInEng": "Suspicious archive contents and structures.",
+      "translation": "Ύποπτα περιεχόμενα και δομές συμπιεσμένων αρχείων.",
+      "maxChars": 43
+    },
+    "signature_databases.suspicious_filenames_inside_archives": {
+      "StringInEng": "Suspicious filenames inside archives.",
+      "translation": "Ύποπτα ονόματα αρχείων μέσα σε συμπιεσμένα αρχεία.",
+      "maxChars": 37
+    },
+    "signature_databases.urls_associated_with_junk_mail": {
+      "StringInEng": "URLs associated with junk mail.",
+      "translation": "URL που σχετίζονται με ανεπιθύμητη αλληλογραφία.",
+      "maxChars": 31
+    },
+    "signature_databases.urls_associated_with_spear_phishing": {
+      "StringInEng": "URLs associated with spear phishing.",
+      "translation": "URL που σχετίζονται με στοχευμένο phishing.",
+      "maxChars": 36
+    },
+    "signature_databases.wait_for_the_signature_update_to_finish_before_changing_databases": {
+      "StringInEng": "Wait for the signature update to finish before changing databases.",
+      "translation": "Περιμένετε να ολοκληρωθεί η ενημέρωση πριν αλλάξετε βάσεις.",
+      "maxChars": 66
+    },
+    "shield.vt_popup_threshold": {
+      "StringInEng": "VT popup threshold",
+      "translation": "Όριο popup VT",
+      "maxChars": 18
+    },
+    "shield.show_virustotal_only_popups_when_at_least_this_many_engines_report_malicious_or_suspicious_lowe": {
+      "StringInEng": "Show VirusTotal-only popups when at least this many engines report malicious or suspicious. Lower counts go to Results when the action is Ask. Automatic quarantine is unchanged; ClamAV and YARA popups are unaffected.",
+      "translation": "Εμφάνιση popup μόνο από VirusTotal όταν τουλάχιστον τόσα engines αναφέρουν κακόβουλο ή ύποπτο αρχείο. Κάτω από το όριο, η επιλογή «Ρώτησέ με» στέλνει το εύρημα στα Results. Η αυτόματη καραντίνα παραμένει ενεργή· τα popup ClamAV και YARA δεν επηρεάζονται.",
+      "maxChars": 216
     }
   }
 }

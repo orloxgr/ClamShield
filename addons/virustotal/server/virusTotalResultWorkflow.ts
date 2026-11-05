@@ -33,12 +33,13 @@ export function nextVirusTotalResultAttempt(item: any) {
 export async function advanceVirusTotalResult(item: any, hash: string, deps: Dependencies, explicitUpload = false) {
     const now = deps.now || Date.now;
     const c = item.virusTotalChecks = { ...item.virusTotalChecks };
+    const previousRefinement = item.virusTotalRefinement;
     const missing = () => ({ found: false, hash, url: `https://www.virustotal.com/gui/file/${hash}/detection` });
     const setStage = (status: string, message: string, retryAt = 0, report: any = missing()) => {
         c.resultsWorkflowRetryAt = retryAt;
         c.resultsUploadCheckAfter = retryAt;
         c.resultsQueueMessage = message;
-        item.virusTotalRefinement = { status, label: stageLabels[status], severity: "neutral", checkedAt: now(), hash, message, report };
+        item.virusTotalRefinement = { status, label: stageLabels[status], severity: "neutral", checkedAt: now(), hash, message, report, stats: report?.stats || null };
     };
     const finish = (report: any) => {
         c.resultsWorkflowRetryAt = 0;
@@ -138,15 +139,23 @@ export async function advanceVirusTotalResult(item: any, hash: string, deps: Dep
         const status = Number(error.status || error.response?.status || 0);
         const changed = isVirusTotalContentChange(error);
         const blocked = changed || error.fileError || [401, 403].includes(status) || ["ENOENT", "EACCES", "EPERM"].includes(error.code);
-        const retryAt = blocked ? 0 : Math.max(now() + (status === 429 ? 15 * 60000 : 60000), Number(error.nextAllowedAt || 0));
+        const nextAllowedAt = Number(error.nextAllowedAt || 0);
+        const validNextAllowedAt = Number.isFinite(nextAllowedAt) ? nextAllowedAt : 0;
+        const localLimit = error.localRateLimit || error.localQuotaLimit;
+        const retryAt = blocked ? 0 : localLimit && validNextAllowedAt > 0
+            ? Math.max(now() + 1000, validNextAllowedAt)
+            : Math.max(now() + (status === 429 ? 15 * 60000 : 60000), validNextAllowedAt);
         c.resultsBlockedReason = changed ? "content_changed" : [401, 403].includes(status) ? "api_key" : blocked ? "file" : "";
         if (changed) {
             c.resultsUploadRequestedHash = "";
             c.resultsPendingUploadHash = "";
         }
+        const previousReport = !changed && previousRefinement?.report?.found !== false && previousRefinement?.report?.hash === hash
+            ? previousRefinement.report : undefined;
         setStage(blocked ? "blocked" : "retry_pending", changed ? virusTotalContentChangedMessage : `${error.message || String(error)} ${blocked
             ? c.resultsBlockedReason === "api_key" ? "Open Settings to fix the API key, then retry the check." : "Restore access to the original file and retry, or remove this finding if the file is already gone."
-            : "ClamShield will retry automatically. You can also quarantine the file while waiting."}`, retryAt);
+            : "ClamShield will retry automatically. You can also quarantine the file while waiting."}`, retryAt, previousReport);
+        if (previousReport) item.virusTotalRefinement.checkedAt = previousRefinement.checkedAt;
     }
     await deps.persist();
     return response();

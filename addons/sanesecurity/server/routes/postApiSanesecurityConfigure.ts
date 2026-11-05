@@ -1,33 +1,37 @@
 import { reloadClamdDatabases } from "../../../../engines/clamav/server/daemon";
 import { saveConfig } from "../../../../modules/settings/server/service";
 import { ApplicationContext } from "../../../../server/core/applicationContext";
-import { saneSecurityMalwareDatabases } from "../constants";
-import { getSaneSecurityStatus, normalizeSaneSecurityProfile, removeSaneSecurityDatabaseFiles } from "../status";
+import { saneSecurityAllDatabases } from "../constants";
+import { getSaneSecurityStatus, removeSaneSecurityDatabaseFiles } from "../status";
+import { normalizeDatabaseSelection, saneSecurityDatabaseCatalog } from "../../../../shared/signatureDatabases";
+import { runtimeState } from "../../../../server/core/runtimeState";
 export function registerPostApiSanesecurityConfigure(app: any, context: Pick<ApplicationContext, "settings">) {
 app.post("/api/sanesecurity/configure", async (req, res) => {
+    let configuring = false;
     try {
-        const profile = normalizeSaneSecurityProfile(req.body?.profile);
-        context.settings = {
+        if (runtimeState.saneSecurityUpdateInProgress || runtimeState.signatureDatabaseConfigurationInProgress)
+            return res.status(409).json({ error: "Wait for the signature update to finish before changing databases." });
+        runtimeState.signatureDatabaseConfigurationInProgress = configuring = true;
+        const databases = normalizeDatabaseSelection(req.body?.databases ?? saneSecurityAllDatabases, saneSecurityDatabaseCatalog);
+        const nextSettings = {
             ...context.settings,
             saneSecurityEnabled: true,
-            saneSecurityProfile: profile,
+            saneSecurityDatabases: databases,
             lastSaneSecurityUpdateResult: "Configured; update required"
         };
-        if (profile === "malware") {
-            await removeSaneSecurityDatabaseFiles(context.settings.databaseDir, saneSecurityMalwareDatabases);
-            await reloadClamdDatabases(context.settings);
-        }
-        await saveConfig(context.settings);
+        await removeSaneSecurityDatabaseFiles(nextSettings.databaseDir, databases);
+        await saveConfig(nextSettings, { keys: ["saneSecurityEnabled", "saneSecurityDatabases", "lastSaneSecurityUpdateResult"] });
+        context.settings = nextSettings;
+        await reloadClamdDatabases(context.settings);
         res.json({
             success: true,
-            message: profile === "complete"
-                ? "SaneSecurity Complete is configured. Run an update to install the malware and email-focused databases."
-                : "SaneSecurity Malware Protection is configured. Run an update to install its malware-focused databases.",
+            message: "Database selection saved.",
             saneSecurity: await getSaneSecurityStatus(context.settings)
         });
     }
     catch (e: any) {
         res.status(400).json({ error: e?.message || String(e) });
     }
+    finally { if (configuring) runtimeState.signatureDatabaseConfigurationInProgress = false; }
 });
 }

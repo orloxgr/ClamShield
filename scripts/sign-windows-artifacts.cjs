@@ -117,6 +117,10 @@ module.exports = async function signWindowsArtifacts(context) {
   }
 };
 
+// electron-builder may write latest.yml after afterAllArtifactBuild has run.
+// The CLI wrapper calls this once more after the builder exits, without re-signing.
+module.exports.refreshInstallerMetadata = refreshInstallerMetadata;
+
 if (require.main === module) {
   module.exports().catch((error) => {
     console.error(error.message);

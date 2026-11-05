@@ -42,5 +42,10 @@ test('a failed package hash cannot execute or replace the active native tools', 
 
 test('native version verification rejects an older executable rather than accepting it', async () => {
     const tools = fixture({ '../../../server/platform/processes': { runHiddenProcess: async () => ({ code: 0, stdout: 'rsync version 3.3.0', stderr: '' }) } });
-    await assert.rejects(tools.verifyNativeTools('unused'), /expected 3\.5\.1, received 3\.3\.0/);
+    const inventory = JSON.parse(await fs.readFile('addons/sanesecurity/server/native-tools.json', 'utf8'));
+    const expected = inventory.packages.find((item: any) => item.name === 'rsync').version.split('-')[0];
+    await assert.rejects(tools.verifyNativeTools('unused'), (error: Error) => {
+        assert.ok(error.message.includes(`expected ${expected}, received 3.3.0`));
+        return true;
+    });
 });

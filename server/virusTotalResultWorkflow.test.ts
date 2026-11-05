@@ -90,6 +90,32 @@ test("an upload rate limit retries the pending upload without losing explicit pe
   assert.equal(f.counts().lookups, 1);
 });
 
+test("local lookup throttling retries at the next real slot and retains the last complete report", async () => {
+  const f = fixture();
+  const previous = { found: true, hash, stats: { malicious: 1, undetected: 60 }, detections: [{ engine: "Fixture", result: "Test" }] };
+  f.item.virusTotalRefinement = { status: "needs_review", checkedAt: 500, hash, report: previous, stats: previous.stats };
+  f.deps.lookup = async () => { throw Object.assign(new Error("Local lookup queue"), { status: 429, localRateLimit: true, nextAllowedAt: 16000 }); };
+  await f.advance();
+  assert.equal(nextVirusTotalResultAttempt(f.item), 16000);
+  assert.deepEqual(f.item.virusTotalRefinement.report, previous);
+  assert.deepEqual(f.item.virusTotalRefinement.stats, previous.stats);
+  assert.equal(f.item.virusTotalRefinement.checkedAt, 500);
+});
+
+test("local quota times are respected while actual HTTP 429 keeps provider backoff and foreign reports are discarded", async () => {
+  for (const [error, expected] of [
+    [{ status: 429, localQuotaLimit: true, nextAllowedAt: 31000 }, 31000],
+    [{ status: 429, nextAllowedAt: 16000 }, 901000],
+    [{ status: 429, localRateLimit: true, nextAllowedAt: 10 }, 2000]
+  ] as const) {
+    const f = fixture();
+    f.item.virusTotalRefinement = { status: "needs_review", report: { found: true, hash: "different-content", stats: { malicious: 20 } } };
+    f.deps.lookup = async () => { throw Object.assign(new Error("Rate limit"), error); };
+    await f.advance(); assert.equal(nextVirusTotalResultAttempt(f.item), expected);
+    assert.equal(f.item.virusTotalRefinement.report.found, false);
+  }
+});
+
 test("rejected API keys stop retrying and direct the user to Settings", async () => {
   const f = fixture(); await f.advance(); await f.advance(true);
   f.failPoll(Object.assign(new Error("API key rejected"), { status: 403 })); await f.advance();
