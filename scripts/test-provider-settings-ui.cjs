@@ -29,6 +29,15 @@ app.whenReady().then(async () => {
   const status = { settings, stats: {}, hasEngine: true, hasDb: true, virusTotalCloud: {},
     securiteInfo: { connected: true, plan: 'paid', installedCount: 4, expectedCount: 4, selectedDatabases: ['securiteinfo.ign2', 'securiteinfoold.hdb', 'javascript.ndb', 'securiteinfo.yara'] }, saneSecurity: {} };
   let language = runtime.englishPack;
+  let heldStatusResponses = null;
+  const releaseStatusResponses = (statusCode = 200) => {
+    const responses = heldStatusResponses || [];
+    heldStatusResponses = null;
+    for (const response of responses) {
+      response.statusCode = statusCode;
+      response.end(JSON.stringify(statusCode === 200 ? status : { error: 'Fixture status unavailable' }));
+    }
+  };
   try {
     const bundle = buildSync({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import App from './src/App';import {applyLanguage} from './src/lib/i18n';window.fixtureLanguage=applyLanguage;window.fixtureErrors=[];window.addEventListener('error',e=>window.fixtureErrors.push(e.message));createRoot(document.getElementById('root')).render(<App/>);`, resolveDir: root, loader: 'tsx' }, bundle: true, write: false, format: 'iife', define: { 'process.env.NODE_ENV': '"production"' } }).outputFiles[0].text;
     const css = fs.readdirSync(path.join(root, 'dist/assets')).find(file => file.endsWith('.css'));
@@ -45,7 +54,10 @@ app.whenReady().then(async () => {
             Object.assign(settings, parsed);
           }
         }
-        if (url.pathname === '/api/status') body = status;
+        if (url.pathname === '/api/status') {
+          if (heldStatusResponses) { heldStatusResponses.push(res); return; }
+          body = status;
+        }
         if (url.pathname === '/api/languages/current') body = language;
         return res.end(JSON.stringify(body));
       }
@@ -57,7 +69,7 @@ app.whenReady().then(async () => {
     win.webContents.on('render-process-gone', (_e, value) => errors.push(value));
     const js = code => win.webContents.executeJavaScript(code);
     const click = text => js(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('Missing button: '+${JSON.stringify(text)});b.click();})()`);
-    const snapshot = () => js(`(()=>{const d=document.querySelector('[role=dialog]');return {files:[...d.querySelectorAll('input[type=checkbox]')].map(b=>b.getAttribute('aria-label')),checked:[...d.querySelectorAll('input[type=checkbox]:checked')].map(b=>b.getAttribute('aria-label')),overflow:d.scrollWidth>d.clientWidth,footerVisible:d.querySelector('footer').getBoundingClientRect().bottom<=innerHeight};})()`);
+    const snapshot = () => js(`(()=>{const d=document.querySelector('[role=dialog]');return {files:[...d.querySelectorAll('input[type=checkbox]')].map(b=>b.getAttribute('aria-label')),checked:[...d.querySelectorAll('input[type=checkbox]:checked')].map(b=>b.getAttribute('aria-label')),overflow:d.scrollWidth>d.clientWidth,footerVisible:!d.querySelector('footer')||d.querySelector('footer').getBoundingClientRect().bottom<=innerHeight};})()`);
     await win.loadURL(origin + '/');
     await until(() => js(`Boolean(document.querySelector('button[aria-label="Manage SecuriteInfo"]'))`), 'dashboard provider');
     await js(`document.querySelector('button[aria-label="Manage SecuriteInfo"]').click()`);
@@ -67,12 +79,32 @@ app.whenReady().then(async () => {
     await click('Save'); await until(() => requests.some(r => r.url === '/api/securiteinfo/configure'), 'save selection');
     assert.deepEqual(requests.at(-1).body.databases, ['securiteinfo.ign2', 'securiteinfoold.hdb', 'securiteinfo.yara']);
     assert.ok(!requests.some(r => r.url === '/api/update'));
-    await win.loadURL(origin + '/updates');
+    heldStatusResponses = [];
+    await js(`document.querySelector('a[href="/updates"]').click()`);
     await until(() => js(`Boolean([...document.querySelectorAll('h3')].find(n=>n.textContent==='SecuriteInfo Signatures'))`), 'updates');
     await js(`[...document.querySelectorAll('h3')].find(n=>n.textContent==='SecuriteInfo Signatures').closest('section').querySelector('button').click()`);
     await click('Manage SecuriteInfo');
     await until(() => js(`Boolean(document.querySelector('[role=dialog]'))`), 'updates dialog');
+    await until(() => heldStatusResponses.length > 0, 'pending provider status');
+    assert.equal((await snapshot()).files.length, 0, 'No default databases may appear before saved settings load');
+    assert.equal(await js(`Boolean([...document.querySelectorAll('[role=dialog] button')].find(b=>/^Save/.test(b.textContent.trim())))`), false, 'Saving is unavailable while provider settings load');
+    releaseStatusResponses();
+    await until(() => js(`document.querySelectorAll('[role=dialog] input[type=checkbox]').length === 15`), 'loaded provider settings');
     assert.deepEqual((await snapshot()).files, dashboard.files); assert.equal((await snapshot()).checked.length, 3);
+    await js(`document.querySelector('input[aria-label="securiteinfoold.hdb"]').click()`);
+    const draftSelection = ['securiteinfo.ign2', 'securiteinfo.yara'];
+    assert.deepEqual((await snapshot()).checked, draftSelection);
+    await js(`window.fixtureStatusResponses=0;const originalFetch=window.fetch;window.fetch=async(...args)=>{const response=await originalFetch(...args);if(String(args[0])==='/api/status')window.fixtureStatusResponses++;return response;};void 0;`);
+    for (const statusCode of [500, 200]) {
+      heldStatusResponses = [];
+      await until(() => heldStatusResponses.length > 0, 'provider status refresh');
+      const previousResponses = await js('window.fixtureStatusResponses');
+      releaseStatusResponses(statusCode);
+      await until(() => js(`window.fixtureStatusResponses > ${previousResponses}`), 'provider refresh received');
+      // Run after the response and React updates have had a chance to commit.
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      assert.deepEqual((await snapshot()).checked, draftSelection, 'Status refreshes must preserve unsaved edits');
+    }
     language = JSON.parse(fs.readFileSync(path.join(root, 'languages/el.json'), 'utf8'));
     await js(`window.fixtureLanguage(${JSON.stringify(language)})`); await pause(100);
     win.setSize(940, 740); await pause(100);
@@ -89,6 +121,22 @@ app.whenReady().then(async () => {
     assert.deepEqual(requests.at(-1).body.databases, []);
     fs.writeFileSync(path.join(profile, 'sanesecurity.png'), (await win.webContents.capturePage()).toPNG());
     assert.equal((await snapshot()).overflow, false); assert.equal((await snapshot()).footerVisible, true);
+    await js(`document.querySelector('[role=dialog] header button').click()`);
+    await js(`document.querySelector('a[href="/"]').click()`);
+    await until(() => js(`Boolean(document.querySelector('button[aria-label="Manage SecuriteInfo"]'))`), 'dashboard reload');
+    heldStatusResponses = [];
+    await js(`document.querySelector('a[href="/updates"]').click()`);
+    await until(() => js(`Boolean([...document.querySelectorAll('h3')].find(n=>n.textContent==='SaneSecurity Signatures'))`), 'updates reload');
+    await js(`[...document.querySelectorAll('h3')].find(n=>n.textContent==='SaneSecurity Signatures').closest('section').querySelector('button').click()`);
+    await click('Manage SaneSecurity');
+    await until(() => heldStatusResponses.length > 0, 'pending SaneSecurity status');
+    assert.equal((await snapshot()).files.length, 0);
+    await js(`document.querySelector('[role=dialog] header button').click()`);
+    assert.equal(await js(`Boolean(document.querySelector('[role=dialog]'))`), false, 'Loading dialog can be closed');
+    releaseStatusResponses();
+    await click('Manage SaneSecurity');
+    await until(() => js(`document.querySelectorAll('[role=dialog] input[type=checkbox]').length === 20`), 'saved SaneSecurity settings');
+    assert.deepEqual((await snapshot()).checked, [], 'An intentionally empty selection must stay empty');
     await win.loadURL(origin + '/shield');
     await until(() => js(`Boolean(document.getElementById('vt-shield-popup-threshold'))`), 'VT popup threshold');
     assert.deepEqual(await js(`(()=>{const r=document.getElementById('vt-shield-popup-threshold');return {min:r.min,max:r.max,value:r.value}})()`), {min:'1',max:'20',value:'4'});
@@ -98,6 +146,6 @@ app.whenReady().then(async () => {
     await js(`(()=>{const r=document.getElementById('vt-shield-popup-threshold');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(r,'8');r.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     await until(() => js(`document.body.textContent.includes('Fixture settings write failed') && document.getElementById('vt-shield-popup-threshold').value==='7'`), 'failed preference save stays visible and rolls back');
     assert.deepEqual(await js('window.fixtureErrors'), []); assert.deepEqual(errors, []);
-    console.log('Provider settings UI passed: shared entry points, descriptions, preserved choices, all defaults, empty selection, Greek layout, visible footer, VT slider bounds/default, saved preference and visible save failure with rollback.');
+    console.log('Provider settings UI passed: delayed settings for both providers, no premature saves, draft preservation on failed/successful refresh, shared entry points, descriptions, preserved choices, all defaults, empty selection, Greek layout, visible footer, VT slider bounds/default, saved preference and visible save failure with rollback.');
   } finally { if (win && !win.isDestroyed()) win.destroy(); if (server) await new Promise(resolve => server.close(resolve)); app.quit(); }
 }).catch(error => { console.error(error); app.exit(1); });

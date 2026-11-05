@@ -56,12 +56,13 @@ export default function Updates() {
     };
     const refreshStatus = useCallback(async () => {
         try {
-            const res = await fetch("/api/status");
+            const res = await fetch("/api/status", { cache: "no-store" });
+            if (!res.ok) return;
             const data = await res.json();
             setStatus(data);
         }
         catch {
-            setStatus(null);
+            // Keep the last successful status and any open provider edits.
         }
     }, []);
     useEffect(() => {

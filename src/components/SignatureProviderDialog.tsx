@@ -6,9 +6,35 @@ import UpdateJobProgress from "./UpdateJobProgress";
 
 export type SignatureProvider = "securiteinfo" | "sanesecurity";
 
-export default function SignatureProviderDialog({ provider, status, onClose, onChanged }: {
+type SignatureProviderDialogProps = {
     provider: SignatureProvider; status: any; onClose: () => void; onChanged: () => void;
-}) {
+};
+
+export default function SignatureProviderDialog(props: SignatureProviderDialogProps) {
+    useLanguage();
+    const { provider, status, onClose } = props;
+    const current = provider === "securiteinfo" ? status?.securiteInfo : status?.saneSecurity;
+    useEffect(() => {
+        if (current) return;
+        const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+        window.addEventListener("keydown", close);
+        return () => window.removeEventListener("keydown", close);
+    }, [current, onClose]);
+    // Mount the editor only after status arrives. Its initial state must never be
+    // guessed from missing data, or overwritten by subsequent status polling.
+    if (current) return <LoadedSignatureProviderDialog key={provider} {...props}/>;
+    return <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6">
+        <section role="dialog" aria-modal="true" aria-busy="true" aria-labelledby="signature-provider-title" className="w-full max-w-3xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl">
+            <header className="flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-800">
+                <h2 id="signature-provider-title" className="text-xl font-semibold text-white">{localizeText(provider === "securiteinfo" ? "Manage SecuriteInfo" : "Manage SaneSecurity")}</h2>
+                <button onClick={onClose} aria-label={t(provider === "securiteinfo" ? "dashboard.close_securiteinfo" : "dashboard.close_sanesecurity")} className="p-2 text-slate-400 hover:text-white rounded-lg"><X className="w-5 h-5"/></button>
+            </header>
+            <p role="status" className="flex items-center gap-2 p-6 text-slate-400"><Loader2 className="w-4 h-4 animate-spin"/>{t("shield.loading")}</p>
+        </section>
+    </div>;
+}
+
+function LoadedSignatureProviderDialog({ provider, status, onClose, onChanged }: SignatureProviderDialogProps) {
     useLanguage();
     const isSecuriteInfo = provider === "securiteinfo";
     const name = isSecuriteInfo ? "SecuriteInfo" : "SaneSecurity";
