@@ -1,6 +1,6 @@
 # ClamShield - Windows GUI for ClamAV
 
-ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine. It is designed for advanced users who want configurable, low-impact protection powered by ClamAV, with direct control over scans, signature updates, real-time monitoring, exclusions, and quarantine.
+ClamShield is a lightweight Windows desktop GUI for the ClamAV antivirus engine. It is designed for users who want configurable, low-impact protection powered by ClamAV, with direct control over scans, signature updates, real-time monitoring, exclusions, and quarantine.
 
 > Public beta: ClamShield is intended for users who understand basic security hygiene and want a transparent ClamAV-based tool. It should not be presented as a commercial antivirus replacement.
 
